@@ -28,6 +28,8 @@ export interface Manifest {
   }
   quantity_by_unit: Array<{ collection_id: string; unit: string; total: string; entry_count: number }>
   files: Array<{ path: string; byte_size: number; sha256: string }>
+  /** Always empty for device exports (server exports list photos without uploaded originals). */
+  missing_originals: Array<{ photo_id: string; path: string }>
 }
 export interface BuildOptions {
   scope: 'all' | 'selected'
@@ -128,24 +130,24 @@ class Sha256 {
     ]
     const w = new Uint32Array(64)
     for (let i = 0; i < 16; i++)
-      w[i] = ((b[i * 4] << 24) | (b[i * 4 + 1] << 16) | (b[i * 4 + 2] << 8) | b[i * 4 + 3]) >>> 0
+      w[i] = ((b[i * 4]! << 24) | (b[i * 4 + 1]! << 16) | (b[i * 4 + 2]! << 8) | b[i * 4 + 3]!) >>> 0
     for (let i = 16; i < 64; i++) {
-      const x = w[i - 15],
-        y = w[i - 2]
+      const x = w[i - 15]!,
+        y = w[i - 2]!
       w[i] =
-        (w[i - 16] +
+        (w[i - 16]! +
           (rotr(x, 7) ^ rotr(x, 18) ^ (x >>> 3)) +
-          w[i - 7] +
+          w[i - 7]! +
           (rotr(y, 17) ^ rotr(y, 19) ^ (y >>> 10))) >>>
         0
     }
-    let [a, bv, c, d, e, f, g, h] = this.h
+    let [a, bv, c, d, e, f, g, h] = this.h as [number, number, number, number, number, number, number, number]
     for (let i = 0; i < 64; i++) {
-      const t1 = (h + (rotr(e, 6) ^ rotr(e, 11) ^ rotr(e, 25)) + ((e & f) ^ (~e & g)) + k[i] + w[i]) >>> 0
+      const t1 = (h + (rotr(e, 6) ^ rotr(e, 11) ^ rotr(e, 25)) + ((e & f) ^ (~e & g)) + k[i]! + w[i]!) >>> 0
       const t2 = ((rotr(a, 2) ^ rotr(a, 13) ^ rotr(a, 22)) + ((a & bv) ^ (a & c) ^ (bv & c))) >>> 0
       ;[h, g, f, e, d, c, bv, a] = [g, f, e, (d + t1) >>> 0, c, bv, a, (t1 + t2) >>> 0]
     }
-    this.h = this.h.map((x, i) => (x + [a, bv, c, d, e, f, g, h][i]) >>> 0)
+    this.h = this.h.map((x, i) => (x + [a, bv, c, d, e, f, g, h][i]!) >>> 0)
   }
   digest(): string {
     const bitLength = this.bytes * 8
@@ -174,7 +176,7 @@ const crcTable = (() => {
 })()
 function updateCrc(crc: number, bytes: Uint8Array): number {
   let c = crc
-  for (const b of bytes) c = crcTable[(c ^ b) & 255] ^ (c >>> 8)
+  for (const b of bytes) c = crcTable[(c ^ b) & 255]! ^ (c >>> 8)
   return c >>> 0
 }
 async function hashBlob(blob: Blob): Promise<{ sha256: string; crc32: number }> {
@@ -221,7 +223,8 @@ function extension(photo: Photo): string {
     'image/webp': 'webp',
     'image/gif': 'gif',
   }
-  if (known[photo.mime_type.toLowerCase()]) return known[photo.mime_type.toLowerCase()]
+  const knownExt = known[photo.mime_type.toLowerCase()]
+  if (knownExt) return knownExt
   const ext = photo.original_filename.toLowerCase().match(/\.([a-z0-9]{1,5})$/)?.[1]
   return ext ?? 'bin'
 }
@@ -357,15 +360,19 @@ export async function buildExport(
   const members: ZipMember[] = []
   const fileHashes: Manifest['files'] = []
   const add = async (path: string, data: Uint8Array | Blob, hash?: string) => {
+    // Test for bytes, not `instanceof Blob`: Blobs from another realm (e.g. Node's in tests,
+    // or structured-cloned) are still Blobs but fail that check.
+    const bytes = ArrayBuffer.isView(data) ? (data as Uint8Array) : null
+    const blob = bytes ? null : (data as Blob)
     const digest =
       hash ??
       hex(
         new Uint8Array(
-          await crypto.subtle.digest('SHA-256', data instanceof Blob ? await data.arrayBuffer() : data),
+          await crypto.subtle.digest('SHA-256', (bytes ?? (await blob!.arrayBuffer())) as BufferSource),
         ),
       )
-    const size = data instanceof Blob ? data.size : data.byteLength
-    const crc = data instanceof Blob ? (await hashBlob(data)).crc32 : crc32Bytes(data)
+    const size = bytes ? bytes.byteLength : blob!.size
+    const crc = bytes ? crc32Bytes(bytes) : (await hashBlob(blob!)).crc32
     members.push({ name: `capture-export/${path}`, data, crc32: crc, size, mtime: opts.exportedAt })
     fileHashes.push({ path, byte_size: size, sha256: digest })
   }
@@ -409,7 +416,7 @@ export async function buildExport(
       groups.set(key, [...(groups.get(key) ?? []), e])
     }
     for (const [, group] of [...groups].sort(([a], [b]) => a.localeCompare(b))) {
-      const recent = [...group].sort((a, b) => b.updated_at.localeCompare(a.updated_at))[0]
+      const recent = [...group].sort((a, b) => b.updated_at.localeCompare(a.updated_at))[0]!
       quantities.push({
         collection_id: c.id,
         unit: recent.unit,
@@ -437,6 +444,7 @@ export async function buildExport(
     },
     quantity_by_unit: quantities,
     files: fileHashes,
+    missing_originals: [],
   }
   const manifestBytes = jsonBytes(manifest)
   const allMembers: ZipMember[] = [

@@ -783,6 +783,17 @@ export function createRepo(options: RepoOptions = {}): Repo {
       }) as Watchable<Photo[]>,
     getSetting: async <T>(key: string, fallback: T): Promise<T> =>
       ((await db.settings.get(key))?.value as T) ?? fallback,
+    readForExport: async (collectionIds) =>
+      db.transaction('r', db.collections, db.entries, db.photos, async () => {
+        const collections =
+          collectionIds === 'all'
+            ? await db.collections.toArray()
+            : (await db.collections.bulkGet(collectionIds)).filter((c): c is Collection => !!c)
+        const ids = collections.map((c) => c.id)
+        const entries = await db.entries.where('collection_id').anyOf(ids).toArray()
+        const photos = await db.photos.where('collection_id').anyOf(ids).toArray()
+        return { collections, entries, photos }
+      }),
     setSetting: async (key, value) => {
       await db.transaction('rw', db.settings, async () => {
         await db.settings.put({ key, value })

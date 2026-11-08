@@ -131,6 +131,17 @@ export interface Repo {
   /** Deleted photos whose entries are NOT deleted (entry-level trash shows its own photos). */
   watchDeletedPhotos(collectionId: Id): Watchable<Photo[]>
 
+  // Export
+  /**
+   * Snapshot of the given collections (or all) with ALL their entries and photos, including
+   * soft-deleted ones (the exporter decides active vs trash), read in one transaction.
+   */
+  readForExport(collectionIds: Id[] | 'all'): Promise<{
+    collections: Collection[]
+    entries: Entry[]
+    photos: Photo[]
+  }>
+
   // Settings and storage
   getSetting<T>(key: string, fallback: T): Promise<T>
   setSetting(key: string, value: unknown): Promise<void>

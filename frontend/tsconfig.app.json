@@ -4,7 +4,7 @@
     "tsBuildInfoFile": "./node_modules/.tmp/tsconfig.app.tsbuildinfo",
     "target": "es2023",
     "module": "esnext",
-    "types": ["svelte", "vite/client", "vite-plugin-pwa/svelte", "vite-plugin-pwa/info"],
+    "types": ["svelte", "vite/client", "vite-plugin-pwa/svelte", "vite-plugin-pwa/info", "node"],
     "allowArbitraryExtensions": true,
     "noEmit": true,
     "allowJs": true,
@@ -17,5 +17,5 @@
       "$lib/*": ["./src/lib/*"]
     }
   },
-  "include": ["src*.js", "src/**/*.svelte"]
+  "include": ["src/**/*.ts", "src/**/*.js", "src/**/*.svelte"]
 }

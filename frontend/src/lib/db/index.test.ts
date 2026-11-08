@@ -1,6 +1,9 @@
 import { describe, expect, it } from 'vitest'
 import Dexie from 'dexie'
-import { Blob as NodeBlob } from 'node:buffer'
+import { Blob as NodeBlobImpl } from 'node:buffer'
+
+// Node's Blob survives fake-indexeddb structured cloning; type it as the DOM Blob.
+const NodeBlob = NodeBlobImpl as unknown as typeof Blob
 import { createRepo } from './index'
 import { crc32, readBlob } from '../photos'
 import { addDecimals, isIncomplete, normalizeUnit } from '../summary'

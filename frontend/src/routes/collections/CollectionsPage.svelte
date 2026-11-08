@@ -12,6 +12,7 @@
   import TextField from '../../components/ui/TextField.svelte'
   import type { Unsubscriber } from 'svelte/store'
   import { relativeTime } from './relativeTime'
+  import { exportFromDevice } from '$lib/export/device'
 
   let summaries = $state<CollectionSummary[]>([])
   let includeArchived = $state(false)
@@ -22,6 +23,21 @@
   let storageMode = $state<StorageMode>('local_only')
   let saving = $state(false)
   let error = $state('')
+  let exporting = $state<string | null>(null)
+
+  async function exportCollection(item: CollectionSummary) {
+    if (exporting) return
+    exporting = item.collection.id
+    showToast({ message: `Preparing ZIP for ${item.collection.name}…` })
+    try {
+      const result = await exportFromDevice([item.collection.id])
+      if (result.delivery !== 'cancelled') showToast({ message: `Exported ${result.filename}` })
+    } catch (err) {
+      showToast({ message: err instanceof Error ? err.message : 'Export failed.', duration: 12000 })
+    } finally {
+      exporting = null
+    }
+  }
 
   onMount(() => {
     let subscription: Unsubscriber | { unsubscribe(): void } | undefined
@@ -146,7 +162,9 @@
               <button role="menuitem" onclick={() => toggleArchive(item)}>
                 {item.collection.status === 'archived' ? 'Unarchive' : 'Archive'}
               </button>
-              <button role="menuitem" disabled title="Coming soon">Export ZIP · Coming soon</button>
+              <button role="menuitem" disabled={!!exporting} onclick={() => exportCollection(item)}
+                >Export ZIP</button
+              >
               <button role="menuitem" disabled title="Coming soon"
                 >Clear from this device… · Coming soon</button
               >

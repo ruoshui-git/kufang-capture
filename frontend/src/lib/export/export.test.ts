@@ -105,7 +105,7 @@ async function fixture(includeTrash = false) {
     const bytes = new Uint8Array(await blobs.get(p.id)!.arrayBuffer())
     p.crc32 = crc32(bytes)
     // Filled with Web Crypto so the fixture matches the actual original bytes.
-    p.sha256 = [...new Uint8Array(await crypto.subtle.digest('SHA-256', bytes))]
+    p.sha256 = [...new Uint8Array(await crypto.subtle.digest('SHA-256', bytes as BufferSource))]
       .map((x) => x.toString(16).padStart(2, '0'))
       .join('')
   }
@@ -140,7 +140,7 @@ describe('device export', () => {
       'capture-export/photos/E2/P2.jpg',
     ])
     expect(result.filename).toBe('kufang-capture-all-20261108-070000Z.zip')
-    expect([...files['capture-export/entries.csv'].slice(0, 3)]).toEqual([0xef, 0xbb, 0xbf])
+    expect([...files['capture-export/entries.csv']!.slice(0, 3)]).toEqual([0xef, 0xbb, 0xbf])
     const entriesCsv = new TextDecoder().decode(files['capture-export/entries.csv'])
     expect(entriesCsv).toContain(
       'entry_id,collection_id,sequence_number,sequence_label,title,display_title,quantity,unit,count_detail,notes,expiration_date,dimensions,review_status,photo_count,created_at,updated_at,deleted_at\r\n',
@@ -158,7 +158,7 @@ describe('device export', () => {
     ).toBe(true)
     expect(photosJson.map((row: { photo_id: string }) => row.photo_id)).toEqual(['P1', 'P2'])
     expect(Object.keys(files)).toContain('capture-export/photos/E1/P1.jpg')
-    expect([...files['capture-export/photos/E1/P1.jpg']]).toEqual([1, 2, 3])
+    expect([...files['capture-export/photos/E1/P1.jpg']!]).toEqual([1, 2, 3])
     expect(files['capture-export/trash/entries.csv']).toBeUndefined()
     const manifest = JSON.parse(new TextDecoder().decode(files['capture-export/manifest.json']))
     expect(manifest.counts).toMatchObject({
@@ -174,7 +174,7 @@ describe('device export', () => {
     for (const file of manifest.files) {
       const bytes = files[`capture-export/${file.path}`]
       expect(
-        [...new Uint8Array(await crypto.subtle.digest('SHA-256', bytes))]
+        [...new Uint8Array(await crypto.subtle.digest('SHA-256', bytes as BufferSource))]
           .map((x) => x.toString(16).padStart(2, '0'))
           .join(''),
       ).toBe(file.sha256)
@@ -199,7 +199,7 @@ describe('device export', () => {
       const blob = createZip([member], options)
       const bytes = new Uint8Array(await blob.arrayBuffer())
       expect(new DataView(bytes.buffer).getUint32(bytes.length - 22, true)).toBe(0x06054b50)
-      expect([...unzipSync(bytes).a]).toEqual([7])
+      expect([...unzipSync(bytes).a!]).toEqual([7])
     }
   })
 })

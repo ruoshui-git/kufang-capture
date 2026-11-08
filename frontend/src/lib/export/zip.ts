@@ -55,7 +55,7 @@ export function createZip(members: ZipMember[], options: ZipOptions = {}): Blob 
       ...name,
       ...extra,
     ])
-    parts.push(localHeader, member.data)
+    parts.push(localHeader as BlobPart, member.data as BlobPart)
     const centralExtra = zip64
       ? new Uint8Array([1, 0, 24, 0, ...u64(member.size), ...u64(member.size), ...u64(offset)])
       : new Uint8Array()
@@ -85,7 +85,7 @@ export function createZip(members: ZipMember[], options: ZipOptions = {}): Blob 
   }
   const centralOffset = offset
   for (const record of central) {
-    parts.push(record)
+    parts.push(record as BlobPart)
     offset += record.byteLength
   }
   const centralSize = offset - centralOffset
