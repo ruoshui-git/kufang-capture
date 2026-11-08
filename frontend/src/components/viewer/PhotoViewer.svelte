@@ -7,8 +7,8 @@
     entryId,
     startPhotoId = null,
   }: { open?: boolean; entryId: Id; startPhotoId?: Id | null } = $props()
-
-
 </script>
 
-{#if open}<div role="dialog" aria-label="Photo viewer" data-entry={entryId} data-start={startPhotoId}>Viewer arrives in the next build.</div>{/if}
+{#if open}<div role="dialog" aria-label="Photo viewer" data-entry={entryId} data-start={startPhotoId}>
+    Viewer arrives in the next build.
+  </div>{/if}
