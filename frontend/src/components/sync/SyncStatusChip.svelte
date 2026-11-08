@@ -16,12 +16,12 @@
     let unsubscribe: (() => void) | undefined
     void import('$lib/sync').then(({ syncEngine }) => {
       const sub = syncEngine.status.subscribe((value) => (syncStatus = value))
-      unsubscribe = typeof sub === 'function' ? sub : () => sub.unsubscribe()
+      unsubscribe = typeof sub === 'function' ? sub : sub?.unsubscribe ? () => sub.unsubscribe() : undefined
     })
     return () => unsubscribe?.()
   })
   const chipState = $derived.by(() => {
-    if (mode === 'local_only') return { text: 'Local Only', kind: 'local' }
+    if (mode === 'local_only') return { text: 'Local Only', kind: 'neutral' }
     const item = syncStatus?.per_collection[collectionId]
     if (item?.conflicts) return { text: `Conflict (${item.conflicts})`, kind: 'error' }
     if (item?.errors || syncStatus?.phase === 'error')
@@ -51,14 +51,14 @@
     display: inline-flex;
     align-items: center;
     border: 1px solid var(--color-line);
-    border-radius: 999px;
-    padding: 4px 9px;
-    font-size: 13px;
+    border-radius: var(--radius-pill);
+    padding: var(--space-2) var(--space-3);
+    font-size: var(--text-sm);
     line-height: 1.3;
   }
-  .local {
-    color: var(--color-local);
-    border-color: color-mix(in srgb, var(--color-local) 35%, var(--color-line));
+  .neutral {
+    color: var(--color-muted);
+    background: var(--color-sunken);
   }
   .ok {
     color: var(--color-ok);
@@ -71,5 +71,14 @@
   }
   .syncing {
     color: var(--color-ballpoint);
+  }
+  .ok {
+    background: var(--color-ok-soft);
+  }
+  .warn {
+    background: var(--color-warn-soft);
+  }
+  .error {
+    background: var(--color-danger-soft);
   }
 </style>

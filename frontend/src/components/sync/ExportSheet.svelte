@@ -31,7 +31,7 @@
         onexported?.(result.filename)
       }
     } catch (cause) {
-      error = cause instanceof Error ? cause.message : 'Could not export this data.'
+      error = 'Could not export this data. Check available storage and try again.'
       message = ''
     } finally {
       busy = false
@@ -57,8 +57,8 @@
   .toggle {
     display: flex;
     align-items: center;
-    gap: 10px;
-    margin: 16px 0;
+    gap: var(--space-3);
+    margin: var(--space-5) 0;
   }
   .toggle input {
     width: 20px;

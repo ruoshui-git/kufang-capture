@@ -160,7 +160,7 @@
       dirty.delete(field)
       dirty = new Set(dirty)
     } catch (cause) {
-      failure = cause instanceof Error ? cause.message : 'Could not save this change.'
+      failure = 'Could not save this change on this device. Try again.'
     } finally {
       savingCount -= 1
     }
@@ -175,7 +175,7 @@
       const incoming = await selection
       if (incoming.length) await repo.addPhotos(entryId, incoming)
     } catch (cause) {
-      showToast({ message: cause instanceof Error ? cause.message : 'Could not add photos' })
+      showToast({ message: 'Could not add photos. Check available storage and try again.' })
     }
   }
   function openCamera() {
@@ -198,7 +198,7 @@
 
 <svelte:head
   ><title
-    >{entry ? `${formatSequence(entry.sequence_number)} · Entry detail` : 'Entry detail'} · Kufang Capture</title
+    >{entry ? `${formatSequence(entry.sequence_number)} — Entry detail` : 'Entry detail'} — Kufang Capture</title
   ></svelte:head
 >
 {#if !entry}
@@ -349,21 +349,21 @@
   .detail-page {
     max-width: 900px;
     margin: 0 auto;
-    padding: 20px 16px calc(36px + env(safe-area-inset-bottom));
+    padding: var(--space-5) var(--space-5) calc(var(--space-7) + env(safe-area-inset-bottom));
   }
   .detail-page.panel {
     max-width: none;
-    padding: 20px 24px;
+    padding: var(--space-5) var(--space-6);
   }
   .detail-header {
     display: grid;
-    gap: 14px;
-    margin-bottom: 20px;
+    gap: var(--space-4);
+    margin-bottom: var(--space-5);
   }
   .back-link {
     justify-self: start;
     min-height: 44px;
-    padding: 6px 0;
+    padding: var(--space-2) 0;
     color: var(--color-ballpoint);
     border: 0;
     background: transparent;
@@ -372,7 +372,7 @@
   .detail-title-row {
     display: flex;
     align-items: center;
-    gap: 14px;
+    gap: var(--space-4);
   }
   .title-input {
     min-width: 0;
@@ -381,39 +381,39 @@
     border-bottom: 1px solid var(--color-line);
     background: transparent;
     color: var(--color-ink);
-    font-size: 26px;
-    padding: 8px 4px;
+    font-size: var(--text-2xl);
+    padding: var(--space-3) var(--space-2);
   }
   .review-select {
     display: flex;
     align-items: center;
-    gap: 10px;
+    gap: var(--space-3);
     color: var(--color-muted);
   }
   .review-select select {
-    min-height: 42px;
-    padding: 6px 10px;
+    min-height: var(--size-touch);
+    padding: var(--space-2) var(--space-3);
     border: 1px solid var(--color-line);
-    border-radius: 6px;
+    border-radius: var(--radius-md);
     background: var(--color-card);
     color: var(--color-ink);
   }
   .save-state {
-    margin: -6px 0 0;
+    margin: -var(--space-2) 0 0;
     color: var(--color-muted);
-    font-size: 14px;
+    font-size: var(--text-sm);
   }
   .photo-actions {
     display: flex;
     flex-wrap: wrap;
-    gap: 8px;
-    margin: 18px 0;
+    gap: var(--space-3);
+    margin: var(--space-5) 0;
   }
   .field-grid {
     display: grid;
     grid-template-columns: minmax(100px, 0.7fr) minmax(120px, 1fr);
-    gap: 16px;
-    margin: 24px 0;
+    gap: var(--space-5);
+    margin: var(--space-6) 0;
   }
   .full-field {
     grid-column: 1 / -1;
@@ -422,12 +422,12 @@
   .field textarea {
     width: 100%;
     min-height: 46px;
-    padding: 10px 12px;
+    padding: var(--space-3) var(--space-4);
     border: 1px solid var(--color-line);
-    border-radius: 6px;
+    border-radius: var(--radius-md);
     background: var(--color-card);
     color: var(--color-ink);
-    font-size: 16px;
+    font-size: var(--text-lg);
   }
   .field textarea {
     resize: vertical;
@@ -449,7 +449,7 @@
     cursor: pointer;
   }
   .extra-fields {
-    margin-top: 18px;
+    margin-top: var(--space-5);
   }
   .extra-fields small {
     color: var(--color-muted);
@@ -459,38 +459,30 @@
     display: flex;
     flex-wrap: wrap;
     justify-content: space-between;
-    gap: 8px;
-    margin-top: 28px;
+    gap: var(--space-3);
+    margin-top: var(--space-6);
   }
   .deleted-notice {
     display: flex;
     align-items: center;
     justify-content: space-between;
-    gap: 12px;
-    padding: 14px;
+    gap: var(--space-4);
+    padding: var(--space-4);
     border: 1px solid var(--color-warn);
-    border-radius: 8px;
+    border-radius: var(--radius-md);
     background: var(--color-card);
   }
   .detail-empty {
     max-width: 900px;
     margin: auto;
-    padding: 24px;
+    padding: var(--space-6);
   }
   @media (min-width: 900px) {
     .detail-page:not(.panel) {
-      padding-top: 32px;
+      padding-top: var(--space-7);
     }
     .panel .field-grid {
       grid-template-columns: 1fr 1fr;
-    }
-  }
-  @media (prefers-reduced-motion: reduce) {
-    *,
-    *::before,
-    *::after {
-      scroll-behavior: auto !important;
-      transition-duration: 0.01ms !important;
     }
   }
 </style>

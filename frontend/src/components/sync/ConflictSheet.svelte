@@ -1,20 +1,26 @@
 <script lang="ts">
   import { onMount } from 'svelte'
-  import { syncEngine } from '$lib/sync'
   import type { SyncConflict } from '$lib/sync/api'
   import Sheet from '../ui/Sheet.svelte'
   import Button from '../ui/Button.svelte'
   let { open = $bindable(false) }: { open?: boolean } = $props()
   let conflicts = $state<SyncConflict[]>([])
+  let engine: typeof import('$lib/sync').syncEngine | null = null
   let busy = $state(false)
   onMount(() => {
-    const sub = syncEngine.conflicts.subscribe((rows) => (conflicts = rows))
-    return typeof sub === 'function' ? sub : () => sub.unsubscribe()
+    let stop: (() => void) | undefined
+    void import('$lib/sync').then(({ syncEngine }) => {
+      engine = syncEngine
+      const sub = syncEngine.conflicts.subscribe((rows) => (conflicts = rows))
+      stop = typeof sub === 'function' ? sub : sub?.unsubscribe ? () => sub.unsubscribe() : undefined
+    })
+    return () => stop?.()
   })
   async function resolve(id: string, choice: 'mine' | 'server') {
     busy = true
     try {
-      await syncEngine.resolveConflict(id, choice)
+      const resolvedEngine = engine ?? (await import('$lib/sync')).syncEngine
+      await resolvedEngine.resolveConflict(id, choice)
     } finally {
       busy = false
     }
@@ -26,7 +32,7 @@
     {#if conflicts.length === 0}<p>No conflicts need a decision.</p>{/if}
     {#each conflicts as conflict (conflict.id)}
       <section class="conflict">
-        <h3>{conflict.entity} · {conflict.entity_id}</h3>
+        <h3>{conflict.entity} — {conflict.entity_id}</h3>
         {#each conflict.fields as field (field)}
           <div class="field">
             <strong>{field}</strong>
@@ -46,30 +52,30 @@
 
 <style>
   .conflict {
-    padding: 14px 0;
+    padding: var(--space-4) 0;
     border-top: 1px solid var(--color-line);
   }
   h3 {
-    margin: 0 0 10px;
+    margin: 0 0 var(--space-3);
     text-transform: capitalize;
   }
   .field {
     display: grid;
     grid-template-columns: 1fr 1fr;
-    gap: 8px;
-    padding: 8px 0;
+    gap: var(--space-3);
+    padding: var(--space-3) 0;
   }
   .field > strong {
     grid-column: 1/-1;
   }
   .field div {
     display: grid;
-    gap: 4px;
+    gap: var(--space-2);
     min-width: 0;
   }
   .field span {
     color: var(--color-muted);
-    font-size: 13px;
+    font-size: var(--text-sm);
   }
   code {
     overflow-wrap: anywhere;
@@ -78,7 +84,7 @@
   .actions {
     display: flex;
     justify-content: flex-end;
-    gap: 8px;
-    margin-top: 10px;
+    gap: var(--space-3);
+    margin-top: var(--space-3);
   }
 </style>

@@ -1,5 +1,4 @@
 <script lang="ts">
-  import { authClient } from '$lib/sync'
   import { navigate } from '../../app/router.svelte'
   import Button from '../../components/ui/Button.svelte'
   let password = $state('')
@@ -13,17 +12,20 @@
     busy = true
     error = ''
     try {
+      const { authClient } = await import('$lib/sync')
       await authClient.login(password)
       navigate(returnTo.startsWith('/') && !returnTo.startsWith('//') ? returnTo : '/')
     } catch (cause) {
-      error = cause instanceof Error ? cause.message : 'Could not sign in.'
+      // The auth client already words each failure for people (wrong password, too many attempts
+      // with the wait time, server unreachable); show it as is.
+      error = cause instanceof Error && cause.message ? cause.message : 'Could not sign in. Try again.'
     } finally {
       busy = false
     }
   }
 </script>
 
-<svelte:head><title>Sign in · Kufang Capture</title></svelte:head>
+<svelte:head><title>Sign in — Kufang Capture</title></svelte:head>
 <section class="page auth-page">
   <h1>Sign in</h1>
   <p>
@@ -44,25 +46,25 @@
   .auth-page {
     max-width: 520px;
     margin: 0 auto;
-    padding: 24px 16px;
+    padding: var(--space-6) var(--space-5);
   }
   .auth-page form {
     display: grid;
-    gap: 14px;
-    margin: 24px 0;
+    gap: var(--space-4);
+    margin: var(--space-6) 0;
   }
   .auth-page label {
     display: grid;
-    gap: 6px;
+    gap: var(--space-2);
   }
   .auth-page input {
     min-height: 48px;
-    padding: 10px;
+    padding: var(--space-3);
     border: 1px solid var(--color-line);
-    border-radius: 6px;
+    border-radius: var(--radius-md);
     background: var(--color-card);
     color: var(--color-ink);
-    font-size: 16px;
+    font-size: var(--text-lg);
   }
   .auth-page p {
     line-height: 1.5;

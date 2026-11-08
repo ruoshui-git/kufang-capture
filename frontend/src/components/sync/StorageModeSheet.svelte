@@ -46,7 +46,7 @@
       open = false
       onchanged?.()
     } catch (cause) {
-      error = cause instanceof Error ? cause.message : 'Could not change storage mode.'
+      error = 'Could not switch to Sync to Server. Check your connection and try again.'
     } finally {
       busy = false
     }
@@ -59,7 +59,7 @@
       open = false
       onchanged?.()
     } catch (cause) {
-      error = cause instanceof Error ? cause.message : 'Could not change storage mode.'
+      error = 'Could not switch to Local Only. Try again.'
     } finally {
       busy = false
     }
@@ -75,7 +75,7 @@
       open = false
       onchanged?.()
     } catch (cause) {
-      error = cause instanceof Error ? cause.message : 'Could not remove server copy.'
+      error = 'Could not remove the server copy. Check your connection and try again.'
     } finally {
       busy = false
     }
@@ -119,9 +119,9 @@
 <style>
   .consent {
     display: flex;
-    gap: 10px;
+    gap: var(--space-3);
     align-items: flex-start;
-    margin: 16px 0;
+    margin: var(--space-5) 0;
   }
   .consent input {
     width: 20px;
@@ -131,16 +131,16 @@
   input:not([type='checkbox']) {
     width: 100%;
     min-height: 44px;
-    margin: 8px 0;
-    padding: 8px;
+    margin: var(--space-3) 0;
+    padding: var(--space-3);
     border: 1px solid var(--color-line);
-    border-radius: 6px;
+    border-radius: var(--radius-md);
     background: var(--color-card);
     color: var(--color-ink);
   }
   hr {
     border: 0;
     border-top: 1px solid var(--color-line);
-    margin: 18px 0;
+    margin: var(--space-5) 0;
   }
 </style>

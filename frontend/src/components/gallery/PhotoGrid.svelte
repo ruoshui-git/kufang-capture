@@ -109,13 +109,13 @@
   .photo-grid {
     display: grid;
     grid-template-columns: repeat(2, minmax(0, 1fr));
-    gap: 12px;
+    gap: var(--space-4);
   }
   .photo-card {
     min-width: 0;
-    padding: 8px;
+    padding: var(--space-3);
     border: 1px solid var(--color-line);
-    border-radius: 8px;
+    border-radius: var(--radius-md);
     background: var(--color-card);
   }
   .photo-open {
@@ -126,7 +126,7 @@
     padding: 0;
     overflow: hidden;
     border: 0;
-    border-radius: 5px;
+    border-radius: var(--radius-sm);
     background: var(--color-floor);
     cursor: zoom-in;
   }
@@ -140,29 +140,29 @@
     place-items: center;
     height: 100%;
     color: var(--color-muted);
-    font-size: 13px;
+    font-size: var(--text-sm);
   }
   .cover-badge {
     position: absolute;
-    left: 7px;
-    top: 7px;
-    padding: 3px 8px;
-    border-radius: 999px;
+    left: var(--space-3);
+    top: var(--space-3);
+    padding: var(--space-1) var(--space-3);
+    border-radius: var(--radius-pill);
     background: var(--color-tag);
     color: var(--color-tag-ink);
-    font-size: 13px;
+    font-size: var(--text-sm);
   }
   .photo-controls {
     display: flex;
     align-items: center;
     justify-content: space-between;
-    gap: 4px;
+    gap: var(--space-2);
     min-height: 44px;
   }
   .photo-controls button,
   .move-controls button {
-    min-height: 40px;
-    padding: 6px 8px;
+    min-height: var(--size-touch);
+    padding: var(--space-2) var(--space-3);
     border: 0;
     background: transparent;
     color: var(--color-ballpoint);
@@ -170,39 +170,39 @@
   }
   .photo-controls span {
     color: var(--color-muted);
-    font-size: 13px;
+    font-size: var(--text-sm);
   }
   .move-controls {
     display: flex;
   }
   .move-controls button {
     min-width: 40px;
-    font-size: 20px;
+    font-size: var(--text-xl);
   }
   .move-controls button:disabled {
     opacity: 0.35;
   }
   .caption-field {
     display: grid;
-    gap: 4px;
-    margin: 4px 0 8px;
+    gap: var(--space-2);
+    margin: var(--space-2) 0 var(--space-3);
     color: var(--color-muted);
-    font-size: 13px;
+    font-size: var(--text-sm);
   }
   .caption-field input {
     width: 100%;
-    min-height: 42px;
-    padding: 7px 8px;
+    min-height: var(--size-touch);
+    padding: var(--space-3) var(--space-3);
     border: 1px solid var(--color-line);
-    border-radius: 5px;
+    border-radius: var(--radius-sm);
     background: var(--color-card);
     color: var(--color-ink);
-    font-size: 16px;
+    font-size: var(--text-lg);
   }
   @media (min-width: 640px) {
     .photo-grid {
       grid-template-columns: repeat(3, minmax(0, 1fr));
-      gap: 16px;
+      gap: var(--space-5);
     }
   }
   @media (min-width: 900px) {

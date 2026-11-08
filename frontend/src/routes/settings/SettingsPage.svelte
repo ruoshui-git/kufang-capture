@@ -6,7 +6,6 @@
   import type { StorageEstimate } from '$lib/repo'
   import Button from '../../components/ui/Button.svelte'
   import ExportSheet from '../../components/sync/ExportSheet.svelte'
-  import { authClient } from '$lib/sync'
   import type { CollectionSummary } from '$lib/types'
   import { navigate } from '../../app/router.svelte'
 
@@ -35,8 +34,8 @@
     const sub = repo
       .watchCollectionSummaries({ includeArchived: true })
       .subscribe((items) => (summaries = items))
-    void authClient
-      .session()
+    void import('$lib/sync')
+      .then(({ authClient }) => authClient.session())
       .then((session) => (signedIn = session.authenticated))
       .catch(() => (signedIn = false))
     return () => (typeof sub === 'function' ? sub() : sub.unsubscribe())
@@ -56,11 +55,12 @@
   }
   async function signOut() {
     try {
+      const { authClient } = await import('$lib/sync')
       await authClient.logout()
       signedIn = false
       accountMessage = 'Signed out.'
     } catch (cause) {
-      accountMessage = cause instanceof Error ? cause.message : 'Could not sign out.'
+      accountMessage = 'Could not sign out. Check your connection and try again.'
     }
   }
 
@@ -78,7 +78,7 @@
   }
 </script>
 
-<svelte:head><title>Settings · Kufang Capture</title></svelte:head>
+<svelte:head><title>Settings — Kufang Capture</title></svelte:head>
 <section class="page settings-page">
   <div class="page-heading"><h1>Settings</h1></div>
   <section class="settings-card" aria-labelledby="account-heading">
@@ -160,17 +160,17 @@
     max-width: 760px;
   }
   .settings-page > .page-heading {
-    margin-bottom: 16px;
+    margin-bottom: var(--space-5);
   }
   .settings-card {
-    padding: 18px;
-    margin-bottom: 12px;
+    padding: var(--space-5);
+    margin-bottom: var(--space-4);
     background: var(--color-card);
     border: 1px solid var(--color-line);
-    border-radius: 8px;
+    border-radius: var(--radius-md);
   }
   .settings-card h2 {
-    margin-bottom: 12px;
+    margin-bottom: var(--space-4);
   }
   .settings-card fieldset {
     padding: 0;
@@ -179,10 +179,10 @@
   }
   .choice {
     display: flex;
-    gap: 12px;
+    gap: var(--space-4);
     align-items: center;
     min-height: 64px;
-    padding: 10px 4px;
+    padding: var(--space-3) var(--space-2);
     border-top: 1px solid var(--color-line);
     cursor: pointer;
   }
@@ -193,18 +193,18 @@
   }
   .choice span {
     display: grid;
-    gap: 2px;
+    gap: var(--space-1);
   }
   .choice small {
     color: var(--color-muted);
   }
   dl {
-    margin: 0 0 14px;
+    margin: 0 0 var(--space-4);
   }
   dl div {
     display: flex;
     justify-content: space-between;
-    padding: 7px 0;
+    padding: var(--space-3) 0;
     border-bottom: 1px solid var(--color-line);
   }
   dt {
@@ -219,16 +219,16 @@
     margin-bottom: 0;
   }
   .app-info p {
-    margin: 0 0 8px;
+    margin: 0 0 var(--space-3);
     color: var(--color-muted);
   }
   .settings-actions {
     display: flex;
     flex-wrap: wrap;
-    gap: 8px;
+    gap: var(--space-3);
   }
   .export-reminder {
-    padding: 12px;
+    padding: var(--space-4);
     border-left: 3px solid var(--color-warn);
     background: color-mix(in srgb, var(--color-warn) 9%, var(--color-card));
   }

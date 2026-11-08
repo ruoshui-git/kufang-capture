@@ -211,7 +211,7 @@
     >
     {#if current}<footer class="viewer-meta">
         <strong>{current.caption || 'No caption'}</strong><span
-          >{sourceLabel(current)} · {current.width ?? '—'} × {current.height ?? '—'} · {sizeLabel(
+          >{sourceLabel(current)} — {current.width ?? '—'} × {current.height ?? '—'} — {sizeLabel(
             current.byte_size,
           )}</span
         >
@@ -222,13 +222,13 @@
 <style>
   .viewer {
     position: fixed;
-    z-index: 100;
+    z-index: var(--z-viewer);
     inset: 0;
     display: grid;
     grid-template-rows: auto 1fr auto;
-    background: #080b0e;
-    color: #f5f7f8;
-    padding: env(safe-area-inset-top) 16px env(safe-area-inset-bottom);
+    background: var(--color-viewer);
+    color: var(--color-viewer-text);
+    padding: env(safe-area-inset-top) var(--space-5) env(safe-area-inset-bottom);
   }
   .viewer-head {
     display: flex;
@@ -241,10 +241,10 @@
   .viewer-next {
     min-width: 44px;
     min-height: 44px;
-    border: 1px solid #56616a;
-    border-radius: 6px;
-    background: #172027;
-    color: white;
+    border: 1px solid var(--color-line-strong);
+    border-radius: var(--radius-md);
+    background: var(--color-card);
+    color: var(--color-ink);
     cursor: pointer;
   }
   .viewer-stage {
@@ -266,27 +266,27 @@
     position: absolute;
     top: 50%;
     transform: translateY(-50%);
-    font-size: 32px;
+    font-size: var(--text-3xl);
   }
   .viewer-prev {
-    left: 10px;
+    left: var(--space-3);
   }
   .viewer-next {
-    right: 10px;
+    right: var(--space-3);
   }
   button:disabled {
     opacity: 0.35;
   }
   .viewer-meta {
     display: grid;
-    gap: 4px;
-    padding: 10px 48px 8px;
+    gap: var(--space-2);
+    padding: var(--space-3) var(--space-8) var(--space-3);
     text-align: center;
-    color: #f5f7f8;
+    color: var(--color-viewer-text);
   }
   .viewer-meta span {
-    color: #aab3ba;
-    font-size: 13px;
+    color: var(--color-viewer-muted);
+    font-size: var(--text-sm);
   }
   @media (prefers-reduced-motion: reduce) {
     *,

@@ -108,7 +108,7 @@
       }
       sheetOpen = false
     } catch (cause) {
-      error = cause instanceof Error ? cause.message : 'Could not save this collection.'
+      error = 'Could not save this collection. Check the details and try again.'
     } finally {
       saving = false
     }
@@ -128,7 +128,7 @@
   }
 </script>
 
-<svelte:head><title>Collections · Kufang Capture</title></svelte:head>
+<svelte:head><title>Collections — Kufang Capture</title></svelte:head>
 <section class="page collections-page">
   <div class="page-heading">
     <div>
@@ -275,8 +275,8 @@
 <style>
   .status-trigger {
     position: absolute;
-    top: 15px;
-    right: 58px;
+    top: var(--space-5);
+    right: var(--space-8);
     padding: 0;
     border: 0;
     background: transparent;
@@ -284,7 +284,7 @@
   }
   @media (max-width: 430px) {
     .status-trigger {
-      right: 54px;
+      right: var(--space-8);
     }
   }
 </style>

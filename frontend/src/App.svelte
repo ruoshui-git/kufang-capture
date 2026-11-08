@@ -12,10 +12,9 @@
   import DiagnosticsPage from './routes/diagnostics/DiagnosticsPage.svelte'
   import LoginPage from './routes/login/LoginPage.svelte'
   import ServerPage from './routes/server/ServerPage.svelte'
-  import { syncEngine } from '$lib/sync'
   import { installKeyboardShortcuts } from './app/shortcuts'
   onMount(() => {
-    syncEngine.start()
+    void import('$lib/sync').then(({ syncEngine }) => syncEngine.start())
     const updateSW = registerSW({
       immediate: true,
       onNeedRefresh() {
@@ -30,7 +29,7 @@
         showToast({ message: 'Ready to work offline' })
       },
     })
-    return installKeyboardShortcuts(() => window.dispatchEvent(new CustomEvent('capture:new-entry')))
+    return installKeyboardShortcuts(() => window.dispatchEvent(new CustomEvent('capture: new-entry')))
   })
 </script>
 

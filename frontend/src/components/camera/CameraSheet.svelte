@@ -205,7 +205,7 @@
           URL.revokeObjectURL(url)
           urls = urls.filter((candidate) => candidate !== url)
         }
-        error = cause instanceof Error ? cause.message : 'Could not save this photo.'
+        error = 'Could not save this photo. Check available storage and try again.'
       } finally {
         queuedCount = Math.max(0, queuedCount - 1)
       }
@@ -225,12 +225,12 @@
             oncaptured?.(added)
           })
           .catch((cause) => {
-            error = cause instanceof Error ? cause.message : 'Could not save this photo.'
+            error = 'Could not save this photo. Check available storage and try again.'
           })
           .finally(() => queuedCount--)
       }
     } catch (cause) {
-      error = cause instanceof Error ? cause.message : 'Could not open the system camera.'
+      error = 'Could not open the system camera. Check camera permission and try again.'
     }
   }
 
@@ -251,7 +251,7 @@
       <button class="camera-text-button" onclick={close}>Done</button>
       <strong>Fast camera</strong>
       <span class="camera-count" aria-live="polite"
-        >{savedCount} saved{queuedCount ? ` · ${queuedCount} saving` : ''}</span
+        >{savedCount} saved{queuedCount ? ` — ${queuedCount} saving` : ''}</span
       >
     </header>
     <main class="camera-main">
@@ -338,11 +338,11 @@
   .camera-overlay {
     position: fixed;
     inset: 0;
-    z-index: 1000;
+    z-index: var(--z-viewer);
     display: flex;
     flex-direction: column;
-    background: #080b0d;
-    color: #fff;
+    background: var(--color-viewer);
+    color: var(--color-viewer-text);
     padding: env(safe-area-inset-top) 0 env(safe-area-inset-bottom);
   }
   .camera-head {
@@ -350,19 +350,19 @@
     display: flex;
     align-items: center;
     justify-content: space-between;
-    padding: 0 18px;
-    border-bottom: 1px solid #263039;
+    padding: 0 var(--space-5);
+    border-bottom: 1px solid var(--color-line);
   }
   .camera-count {
-    font-size: 14px;
-    color: #d6dce0;
+    font-size: var(--text-sm);
+    color: var(--color-viewer-text);
   }
   .camera-text-button,
   .system-camera {
     border: 0;
     background: transparent;
-    color: #fff;
-    padding: 10px 4px;
+    color: var(--color-viewer-text);
+    padding: var(--space-3) var(--space-2);
     min-height: 44px;
   }
   .camera-main {
@@ -370,15 +370,15 @@
     min-height: 0;
     display: flex;
     flex-direction: column;
-    gap: 12px;
-    padding: 12px 16px;
+    gap: var(--space-4);
+    padding: var(--space-4) var(--space-5);
   }
   .preview-wrap {
     position: relative;
     flex: 1;
     min-height: 160px;
     overflow: hidden;
-    background: #111;
+    background: var(--color-viewer);
     touch-action: none;
   }
   .preview-wrap video {
@@ -389,8 +389,8 @@
   .flash {
     position: absolute;
     inset: 0;
-    background: #fff;
-    animation: flash 0.11s ease-out;
+    background: var(--color-card);
+    animation: flash var(--duration-fast) var(--easing-standard);
   }
   .paused {
     position: absolute;
@@ -399,59 +399,60 @@
     flex-direction: column;
     align-items: center;
     justify-content: center;
-    gap: 10px;
-    background: #080b0dcc;
+    gap: var(--space-3);
+    background: var(--color-scrim);
   }
   .camera-error {
     position: absolute;
-    bottom: 12px;
-    left: 12px;
-    right: 12px;
-    padding: 12px;
-    background: #651c19;
-    border-radius: 8px;
+    bottom: var(--space-4);
+    left: var(--space-4);
+    right: var(--space-4);
+    padding: var(--space-4);
+    background: var(--color-danger);
+    color: var(--color-on-ink);
+    border-radius: var(--radius-md);
   }
   .camera-tools {
     display: flex;
     align-items: center;
     justify-content: center;
-    gap: 12px;
+    gap: var(--space-4);
     flex-wrap: wrap;
-    font-size: 14px;
+    font-size: var(--text-sm);
   }
   .camera-tools label {
     display: flex;
     align-items: center;
-    gap: 8px;
+    gap: var(--space-3);
   }
   .camera-tools select {
     max-width: 180px;
-    background: #20282d;
-    color: #fff;
-    border: 1px solid #58636a;
-    border-radius: 5px;
-    padding: 6px;
+    background: var(--color-card);
+    color: var(--color-ink);
+    border: 1px solid var(--color-line-strong);
+    border-radius: var(--radius-sm);
+    padding: var(--space-2);
   }
   .camera-tools input[type='range'] {
     width: 100px;
   }
   .digital-label {
-    color: #ffe39a;
+    color: var(--color-viewer-text);
   }
   .toggle-control {
-    min-height: 36px;
+    min-height: var(--size-touch);
   }
   .camera-strip {
     height: 56px;
     display: flex;
-    gap: 8px;
+    gap: var(--space-3);
     justify-content: center;
   }
   .camera-strip img {
     width: 56px;
     height: 56px;
     object-fit: cover;
-    border-radius: 5px;
+    border-radius: var(--radius-sm);
   }
   .system-camera {
     align-self: center;
@@ -467,7 +468,7 @@
     width: 76px;
     height: 76px;
     border-radius: 50%;
-    border: 4px solid #fff;
+    border: 4px solid var(--color-card);
     background: transparent;
     display: grid;
     place-items: center;
@@ -476,7 +477,7 @@
     width: 58px;
     height: 58px;
     border-radius: 50%;
-    background: #fff;
+    background: var(--color-card);
   }
   .shutter:disabled {
     opacity: 0.45;

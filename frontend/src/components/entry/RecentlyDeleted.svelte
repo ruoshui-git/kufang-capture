@@ -21,7 +21,7 @@
 <section class="trash" aria-label="Recently Deleted">
   <h2>Deleted entries</h2>
   {#each rows as row (row.entry.id)}<div class="trash-row">
-      <span>{formatSequence(row.entry.sequence_number)} · {row.entry.title || 'Untitled entry'}</span><button
+      <span>{formatSequence(row.entry.sequence_number)} — {row.entry.title || 'Untitled entry'}</span><button
         onclick={() => void repo.restoreEntry(row.entry.id)}>Restore</button
       >
     </div>{/each}
@@ -39,26 +39,26 @@
 <style>
   .trash {
     display: grid;
-    gap: 8px;
+    gap: var(--space-3);
   }
   .trash h2 {
-    margin: 18px 0 4px;
+    margin: var(--space-5) 0 var(--space-2);
   }
   .trash-row {
     display: flex;
     justify-content: space-between;
     align-items: center;
-    padding: 12px;
+    padding: var(--space-4);
     background: var(--color-card);
     border: 1px solid var(--color-line);
-    border-radius: 8px;
+    border-radius: var(--radius-md);
   }
   .trash-row button {
-    min-height: 40px;
+    min-height: var(--size-touch);
     border: 1px solid var(--color-line);
-    border-radius: 6px;
+    border-radius: var(--radius-md);
     background: transparent;
     color: var(--color-ballpoint);
-    padding: 6px 12px;
+    padding: var(--space-2) var(--space-4);
   }
 </style>

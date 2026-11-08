@@ -10,7 +10,7 @@ Use Codex for scoped implementation tasks through `scripts/codex-run`; see [docs
 scripts/codex-run NAME BRIEF [--resume|--fork SESSION] --config 'model_reasoning_effort="medium|high"'
 ```
 
-Do not use fast mode. Launch with Bash `run_in_background`; in the same turn arm a Monitor on `scripts/codex-watch NAME 20 45`. Parallel waves are fine when owned paths are disjoint. Codex leaves changes uncommitted; review, verify and commit as the orchestrator.
+Fast mode (`--config 'service_tier="fast"'`) is allowed while Codex has quota; if Codex hits its usage limit, fall back to Claude Haiku subagents for scoped tasks and return to Codex once available. Launch with Bash `run_in_background`; in the same turn arm a Monitor on `scripts/codex-watch NAME 20 45`. Parallel waves are fine when owned paths are disjoint. Codex leaves changes uncommitted; review, verify and commit as the orchestrator.
 
 ## Production access
 

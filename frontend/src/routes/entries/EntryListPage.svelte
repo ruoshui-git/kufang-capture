@@ -55,7 +55,7 @@
         limit = Math.max(limit, 40)
         if (!restoredScroll) {
           restoredScroll = true
-          requestAnimationFrame(() => restoreScroll(`entries:${collectionId}`))
+          requestAnimationFrame(() => restoreScroll(`entries: ${collectionId}`))
         }
       })
   }
@@ -70,7 +70,7 @@
   $effect(() => {
     const currentDetailEntryId = detailEntryId
     if (previousDetailEntryId && !currentDetailEntryId) {
-      requestAnimationFrame(() => restoreScroll(`entries:${collectionId}`))
+      requestAnimationFrame(() => restoreScroll(`entries: ${collectionId}`))
     }
     previousDetailEntryId = currentDetailEntryId
   })
@@ -104,16 +104,16 @@
     if (sentinel) observer.observe(sentinel)
     const onNew = () => void createEntry()
     const onHide = () => {
-      saveScroll(`entries:${collectionId}`)
+      saveScroll(`entries: ${collectionId}`)
     }
-    window.addEventListener('capture:new-entry', onNew)
+    window.addEventListener('capture: new-entry', onNew)
     window.addEventListener('pagehide', onHide)
     document.addEventListener('visibilitychange', onHide)
     return () => {
       if (typeof activeSubscription === 'function') activeSubscription()
       else activeSubscription?.unsubscribe()
       observer.disconnect()
-      window.removeEventListener('capture:new-entry', onNew)
+      window.removeEventListener('capture: new-entry', onNew)
       window.removeEventListener('pagehide', onHide)
       document.removeEventListener('visibilitychange', onHide)
     }
@@ -126,6 +126,7 @@
     searchTimer = setTimeout(() => (appliedSearch = search.trim()), 150)
   }
   async function createEntry() {
+    const focusOrigin = document.activeElement
     if (filter === 'deleted') filter = 'all'
     const entry = await repo.createEntry(collectionId)
     filter = 'all'
@@ -133,14 +134,15 @@
     search = ''
     limit = Math.max(limit, rows.length + 1)
     await tick()
-    void focusNewEntry(entry.id)
+    void focusNewEntry(entry.id, focusOrigin)
   }
 
-  async function focusNewEntry(entryId: string, attempts = 0) {
+  async function focusNewEntry(entryId: string, focusOrigin: Element | null, attempts = 0) {
     await tick()
+    if (document.activeElement !== focusOrigin) return
     const row = listElement?.querySelector(`[data-entry-id="${entryId}"]`)
     if (!row && attempts < 30) {
-      setTimeout(() => void focusNewEntry(entryId, attempts + 1), 20)
+      setTimeout(() => void focusNewEntry(entryId, focusOrigin, attempts + 1), 20)
       return
     }
     row?.scrollIntoView({ block: 'center', behavior: 'smooth' })
@@ -159,7 +161,7 @@
     return `#${String(value).padStart(4, '0')}`
   }
   function openDetails(entry: EntryRow['entry']) {
-    saveScroll(`entries:${collectionId}`)
+    saveScroll(`entries: ${collectionId}`)
     navigate(`/c/${collectionId}/e/${entry.id}`)
   }
   function openViewer(entryId: string, photoId: string) {
@@ -173,7 +175,7 @@
   const visibleRows = $derived(rows.slice(0, limit))
 </script>
 
-<svelte:head><title>{summary?.collection.name ?? 'Entries'} · Kufang Capture</title></svelte:head>
+<svelte:head><title>{summary?.collection.name ?? 'Entries'} — Kufang Capture</title></svelte:head>
 <div class="list-with-detail" class:has-detail={!!detailEntryId}>
   <section class="page entries-page">
     <div class="collection-heading">
@@ -205,7 +207,7 @@
       </div>
       {#if summary.quantity_by_unit.length > 0}
         <div class="quantity-chips" aria-label="Quantities by unit">
-          {#each summary.quantity_by_unit as quantity (quantity.unit)}<Chip
+          {#each summary.quantity_by_unit as quantity (quantity.unit)}<Chip variant="quantity"
               >{quantity.total} {quantity.unit || 'no unit'}</Chip
             >{/each}
         </div>
@@ -295,19 +297,19 @@
   .entries-page {
     min-width: 0;
     width: 100%;
-    padding: 24px 12px calc(100px + env(safe-area-inset-bottom));
+    padding: var(--space-6) var(--space-4) calc(var(--size-bottom-bar) + var(--space-4));
     container: entry-list / inline-size;
   }
   .collection-heading {
     display: flex;
     align-items: flex-start;
-    gap: 12px;
+    gap: var(--space-4);
   }
   .heading-title {
     display: flex;
     align-items: center;
     flex-wrap: wrap;
-    gap: 8px 12px;
+    gap: var(--space-3) var(--space-4);
     min-width: 0;
   }
   .heading-title h1 {
@@ -316,23 +318,23 @@
   .back {
     display: inline-block;
     flex-basis: 100%;
-    margin-bottom: 6px;
+    margin-bottom: var(--space-2);
     text-decoration: none;
   }
   .summary-chips {
     display: flex;
-    gap: 8px;
+    gap: var(--space-3);
     flex-wrap: wrap;
-    margin: 14px 0 6px;
+    margin: var(--space-4) 0 var(--space-2);
     min-width: 0;
   }
   .quantity-chips {
     display: flex;
     flex-wrap: wrap;
-    gap: 6px;
-    margin-bottom: 12px;
+    gap: var(--space-2);
+    margin-bottom: var(--space-4);
   }
-  .quantity-chips :global(.chip) {
+  .quantity-chips:global(.chip) {
     background: color-mix(in srgb, var(--color-tag) 28%, var(--color-card));
     border-color: color-mix(in srgb, var(--color-tag) 65%, var(--color-line));
     color: var(--color-ink);
@@ -347,24 +349,24 @@
   .toolbar {
     display: grid;
     grid-template-columns: minmax(0, 1fr);
-    gap: 8px;
-    margin: 14px 0;
+    gap: var(--space-3);
+    margin: var(--space-4) 0;
     min-width: 0;
   }
   .filter-row {
     display: flex;
     align-items: center;
-    gap: 6px;
+    gap: var(--space-2);
     min-width: 0;
   }
   .filters {
     display: flex;
-    gap: 4px;
-    overflow-x: auto;
+    flex-wrap: wrap;
+    gap: var(--space-2);
+    overflow: visible;
     flex: 1 1 auto;
     min-width: 0;
     scrollbar-width: none;
-    mask-image: linear-gradient(to right, #000 0%, #000 88%, transparent 100%);
   }
   .filters::-webkit-scrollbar {
     display: none;
@@ -373,10 +375,10 @@
     border: 1px solid var(--color-line);
     background: var(--color-card);
     color: var(--color-ink);
-    border-radius: 999px;
-    padding: 7px 12px;
+    border-radius: var(--radius-pill);
+    padding: var(--space-3) var(--space-4);
     white-space: nowrap;
-    min-height: 40px;
+    min-height: var(--size-touch);
   }
   .filters button.active {
     background: var(--color-ink);
@@ -387,22 +389,22 @@
     min-width: 0;
   }
   .search-row input {
-    min-height: 42px;
+    min-height: var(--size-touch);
     width: 100%;
     min-width: 0;
     border: 1px solid var(--color-line);
-    border-radius: 6px;
-    padding: 8px 10px;
+    border-radius: var(--radius-md);
+    padding: var(--space-3) var(--space-3);
     background: var(--color-card);
     color: var(--color-ink);
-    font-size: 16px;
+    font-size: var(--text-lg);
   }
   .new-entry-toolbar {
     display: none;
   }
   .entry-list {
     display: grid;
-    gap: 8px;
+    gap: var(--space-3);
   }
   .row-wrapper {
     min-width: 0;
@@ -412,50 +414,51 @@
   }
   .new-entry-bar {
     position: fixed;
-    z-index: 10;
+    z-index: var(--z-bottom-bar);
     bottom: 0;
     left: 0;
     right: 0;
-    padding: 10px 16px calc(10px + env(safe-area-inset-bottom));
+    padding: var(--space-3) var(--space-5) calc(var(--space-3) + env(safe-area-inset-bottom));
     background: var(--color-ink);
     display: flex;
     justify-content: center;
   }
-  .new-entry-bar :global(.button) {
+  .new-entry-bar:global(.button) {
     width: min(100%, 600px);
     background: transparent;
     color: var(--color-floor);
     border: 0;
-    font-size: 17px;
+    font-size: var(--text-lg);
   }
   .detail-panel {
     display: none;
   }
-  .summary-chips :global(.chip),
+  .summary-chips:global(.chip),
   .quantity-chips :global(.chip) {
     white-space: nowrap;
   }
   @media (min-width: 600px) {
     .entries-page {
-      padding-right: 16px;
-      padding-left: 16px;
+      padding-right: var(--space-5);
+      padding-left: var(--space-5);
     }
   }
   @media (min-width: 900px) {
     .list-with-detail.has-detail {
       display: grid;
-      grid-template-columns: minmax(0, 1fr) minmax(380px, 40vw);
+      grid-template-columns: minmax(0, 1fr) minmax(380px, var(--size-panel));
       align-items: start;
     }
     .entries-page {
+      container: entry-toolbar / inline-size;
       margin: 0;
-      padding-bottom: calc(32px + env(safe-area-inset-bottom));
+      padding-bottom: calc(var(--space-7) + env(safe-area-inset-bottom));
       max-width: none;
     }
     .toolbar {
       grid-template-columns: minmax(0, 1fr) minmax(160px, 240px) auto;
       align-items: center;
-      gap: 8px;
+      gap: var(--space-3);
     }
     .new-entry-toolbar {
       display: flex;
@@ -468,14 +471,24 @@
       min-height: calc(100dvh - 24px);
       background: var(--color-card);
     }
-    .detail-panel :global(.page) {
+    .detail-panel:global(.page) {
       width: 100%;
       min-width: 0;
-      padding: 20px;
+      padding: var(--space-5);
       max-width: none;
     }
     .new-entry-bar {
       display: none;
+    }
+  }
+  @media (min-width: 900px) {
+    @container entry-toolbar (max-width: 820px) {
+      .toolbar {
+        grid-template-columns: minmax(0, 1fr);
+      }
+      .new-entry-toolbar {
+        justify-content: flex-start;
+      }
     }
   }
 </style>

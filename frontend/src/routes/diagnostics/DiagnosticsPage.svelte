@@ -1,6 +1,6 @@
 <script lang="ts">
   import { repo } from '$lib/db'
-  import { openCamera, readCapabilities, stopCamera } from '$lib/camera/stream'
+  import { backCameraDevices, openCamera, readCapabilities, stopCamera } from '$lib/camera/stream'
   import { generateSampleData } from '$lib/dev/sampleData'
   import Button from '../../components/ui/Button.svelte'
 
@@ -14,6 +14,7 @@
   let sampleBusy = $state(false)
   let sampleMessage = $state('')
   let sampleError = $state('')
+  let summaryItems = $state<string[]>([])
 
   async function generateTestData() {
     sampleBusy = true
@@ -23,7 +24,7 @@
       const result = await generateSampleData()
       sampleMessage = `Created ${result.name} with 300 entries. Open it from Collections.`
     } catch (cause) {
-      sampleError = cause instanceof Error ? cause.message : 'Could not generate test data.'
+      sampleError = 'Could not generate test data. Check available storage and try again.'
     } finally {
       sampleBusy = false
     }
@@ -47,6 +48,7 @@
       let selected: Record<string, unknown> | null = null
       let photoCapabilities: unknown = 'ImageCapture unavailable'
       let actualResolution: { width: number; height: number } | null = null
+      let takePhotoAvailable = false
       if (typeof mediaDevices?.getUserMedia === 'function') {
         stream = await openCamera()
         const track = stream.getVideoTracks()[0]
@@ -73,6 +75,7 @@
           ).ImageCapture
           if (ctor) {
             const capture = new ctor(track)
+            takePhotoAvailable = typeof capture.takePhoto === 'function'
             photoCapabilities = capture.getPhotoCapabilities
               ? await capture.getPhotoCapabilities().catch((cause) => ({ error: String(cause) }))
               : 'ImageCapture available; getPhotoCapabilities unavailable'
@@ -116,6 +119,8 @@
       }
       const devices =
         typeof mediaDevices?.enumerateDevices === 'function' ? await mediaDevices.enumerateDevices() : []
+      const cameras = devices.filter((device) => device.kind === 'videoinput')
+      const backCameras = backCameraDevices(cameras)
       const captureInput = document.createElement('input')
       captureInput.type = 'file'
       captureInput.accept = 'image/*'
@@ -138,6 +143,7 @@
         actual_video_resolution: actualResolution,
         image_capture_available:
           typeof (globalThis as typeof globalThis & { ImageCapture?: unknown }).ImageCapture === 'function',
+        take_photo_available: takePhotoAvailable,
         photo_capabilities: photoCapabilities,
         test_frame: frame,
         file_input_capture_note:
@@ -145,9 +151,28 @@
         storage,
       }
       report = candidate
+      const capabilities = (selected as { capabilities?: Record<string, unknown> } | null)?.capabilities ?? {}
+      const zoom = capabilities.zoom as { min?: number; max?: number } | undefined
+      const hardwareZoom =
+        zoom && typeof zoom === 'object' && typeof zoom.min === 'number' && typeof zoom.max === 'number'
+          ? `${zoom.min}× to ${zoom.max}×`
+          : 'Not exposed — pinch uses digital crop'
+      const labels = cameras.map((device) => device.label || '(label not exposed)')
+      summaryItems = [
+        `Secure context: ${candidate.secure_context ? 'yes' : 'no'}`,
+        `Installed (standalone): ${candidate.standalone ? 'yes' : 'no'}`,
+        `Cameras found: ${cameras.length}${labels.length ? ` — ${labels.join(', ')}` : ''}`,
+        `Lens choice available: ${backCameras.length > 1 ? 'yes' : 'no'}`,
+        `Hardware zoom: ${hardwareZoom}`,
+        `Torch: ${capabilities.torch === true ? 'yes' : 'no'}`,
+        `Focus controls: ${Array.isArray(capabilities.focusMode) || typeof capabilities.focusDistance === 'object' || capabilities.pointsOfInterest === true ? 'yes' : 'no'}`,
+        `Live frame resolution: ${actualResolution ? `${actualResolution.width} × ${actualResolution.height}` : 'not reported'}`,
+        `ImageCapture.takePhoto available: ${takePhotoAvailable ? 'yes' : 'no'}`,
+        `Storage persisted: ${storage.persisted == null ? 'not reported' : storage.persisted ? 'yes' : 'no'}`,
+      ]
       reportText = `Kufang Capture camera diagnostics\n${new Date().toLocaleString()}\n\n${JSON.stringify(candidate, null, 2)}`
     } catch (cause) {
-      error = cause instanceof Error ? cause.message : 'Camera test failed.'
+      error = 'Camera test failed. Allow camera access and try again.'
     } finally {
       stopCamera(stream)
       busy = false
@@ -167,7 +192,7 @@
   }
 </script>
 
-<svelte:head><title>Diagnostics · Kufang Capture</title></svelte:head>
+<svelte:head><title>Diagnostics — Kufang Capture</title></svelte:head>
 <section class="page diagnostics-page">
   <div class="page-heading">
     <div>
@@ -189,6 +214,9 @@
         <strong>Test complete</strong><Button variant="quiet" onclick={copyReport}>Copy report</Button>
       </div>
       {#if copyMessage}<p role="status">{copyMessage}</p>{/if}
+      <ul class="diagnostic-summary">
+        {#each summaryItems as item}<li>{item}</li>{/each}
+      </ul>
       <label class="report-label"
         >Camera report <textarea bind:this={reportArea} readonly rows="18" value={reportText}
         ></textarea></label
@@ -211,14 +239,14 @@
     max-width: 860px;
   }
   .diagnostic-card {
-    margin-bottom: 16px;
-    padding: 20px;
+    margin-bottom: var(--space-5);
+    padding: var(--space-5);
     background: var(--color-card);
     border: 1px solid var(--color-line);
-    border-radius: 8px;
+    border-radius: var(--radius-md);
   }
   .diagnostic-card h2 {
-    margin-bottom: 8px;
+    margin-bottom: var(--space-3);
   }
   .diagnostic-card p {
     color: var(--color-muted);
@@ -230,22 +258,29 @@
     display: flex;
     align-items: center;
     justify-content: space-between;
-    margin-top: 20px;
+    margin-top: var(--space-5);
+  }
+  .diagnostic-summary {
+    margin: var(--space-4) 0;
+    padding-left: var(--space-6);
+  }
+  .diagnostic-summary li {
+    margin-block: var(--space-2);
   }
   .report-label {
     display: grid;
-    gap: 8px;
-    margin-top: 12px;
+    gap: var(--space-3);
+    margin-top: var(--space-4);
   }
   .report-label textarea {
     width: 100%;
     font:
-      13px ui-monospace,
+      var(--text-sm) ui-monospace,
       monospace;
     line-height: 1.45;
-    padding: 12px;
+    padding: var(--space-4);
     border: 1px solid var(--color-line);
-    border-radius: 6px;
+    border-radius: var(--radius-md);
     background: var(--color-floor);
     color: var(--color-ink);
     resize: vertical;

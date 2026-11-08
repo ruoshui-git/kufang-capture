@@ -30,7 +30,7 @@
       open = false
       showToast({ message: 'Collection cleared from this device' })
     } catch (cause) {
-      error = cause instanceof Error ? cause.message : 'Could not clear collection.'
+      error = 'Could not clear this collection. Check the export and confirmation, then try again.'
       await refresh()
     } finally {
       busy = false
@@ -44,7 +44,7 @@
         await refresh()
       }
     } catch (cause) {
-      error = cause instanceof Error ? cause.message : 'Export failed.'
+      error = 'The export failed. Check available storage and try again.'
     }
   }
 </script>
@@ -82,19 +82,19 @@
 <style>
   .confirm {
     display: grid;
-    gap: 6px;
-    margin: 18px 0;
+    gap: var(--space-2);
+    margin: var(--space-5) 0;
   }
   .confirm input {
     min-height: 44px;
-    padding: 8px;
+    padding: var(--space-3);
     border: 1px solid var(--color-line);
-    border-radius: 6px;
+    border-radius: var(--radius-md);
     background: var(--color-card);
     color: var(--color-ink);
   }
   ul {
-    padding-left: 22px;
+    padding-left: var(--space-6);
     color: var(--color-danger);
   }
 </style>

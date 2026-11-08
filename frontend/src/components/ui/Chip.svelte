@@ -1,5 +1,11 @@
 <script lang="ts">
-  let { children }: { children: import('svelte').Snippet } = $props()
+  let {
+    children,
+    variant = 'count',
+  }: {
+    children: import('svelte').Snippet
+    variant?: 'count' | 'quantity' | 'status-ok' | 'status-warn' | 'status-danger'
+  } = $props()
 </script>
 
-<span class="chip">{@render children()}</span>
+<span class="chip {variant}">{@render children()}</span>

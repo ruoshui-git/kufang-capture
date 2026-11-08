@@ -6,7 +6,7 @@
    - spec sections, with acceptance criteria and required validation
    - the screenshot location, `/tmp/codex-runs/NAME-shots/`
    - where shared-doc changes go: `/tmp/codex-runs/NAME-docs.md`
-2. **Launch.** Run `scripts/codex-run NAME BRIEF --config 'model_reasoning_effort="high"'` with Bash `run_in_background`. Do not enable fast mode. Parallel tasks in a wave need disjoint owned paths.
+2. **Launch.** Run `scripts/codex-run NAME BRIEF --config 'model_reasoning_effort="high"'` with Bash `run_in_background`. Fast mode (`--config 'service_tier="fast"'`) is allowed while Codex has quota; when Codex reports a usage limit, use Claude Haiku subagents for scoped tasks and switch back to Codex when it is available. Parallel tasks in a wave need disjoint owned paths.
 3. **Watch.** In the same turn, monitor `scripts/codex-watch NAME 20 45` and re-arm it until it reports `DONE`. If it reports `STALLED`, `NETWORK reconnecting` or `PROCESS GONE`, inspect the log before resuming.
 4. **Read the result.** Read `/tmp/codex-runs/NAME.last`, and the full log only to diagnose a failure.
 5. **Verify independently.** A Codex report is not verification.

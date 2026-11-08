@@ -1,6 +1,5 @@
 <script lang="ts">
   import { onMount } from 'svelte'
-  import { authClient, serverClient } from '$lib/sync'
   import type { ServerCollection } from '$lib/sync/api'
   import { navigate } from '../../app/router.svelte'
   import Button from '../../components/ui/Button.svelte'
@@ -8,6 +7,7 @@
   let includeTrash = $state(false)
   let loading = $state(true)
   let error = $state('')
+  let serverClient: typeof import('$lib/sync').serverClient | null = null
   onMount(() => {
     void load()
   })
@@ -15,20 +15,22 @@
     loading = true
     error = ''
     try {
-      const session = await authClient.session()
+      const sync = await import('$lib/sync')
+      serverClient = sync.serverClient
+      const session = await sync.authClient.session()
       if (!session.authenticated) {
         navigate(`/login?return=${encodeURIComponent('/server')}`)
         return
       }
       collections = await serverClient.listCollections()
     } catch (cause) {
-      error = cause instanceof Error ? cause.message : 'Could not load server collections.'
+      error = 'Could not load server collections. Check your connection and try again.'
     } finally {
       loading = false
     }
   }
   function url(scope: { collectionId: string } | 'all') {
-    return serverClient.exportUrl(scope, { includeTrash })
+    return serverClient?.exportUrl(scope, { includeTrash }) ?? '#'
   }
   function bytes(value: number) {
     if (value < 1024 * 1024) return `${Math.round(value / 1024)} KB`
@@ -36,7 +38,7 @@
   }
 </script>
 
-<svelte:head><title>Server exports · Kufang Capture</title></svelte:head>
+<svelte:head><title>Server exports — Kufang Capture</title></svelte:head>
 <section class="page server-page">
   <div class="page-heading">
     <h1>Server exports</h1>
@@ -78,8 +80,8 @@
   .toggle {
     display: flex;
     align-items: center;
-    gap: 10px;
-    margin: 16px 0;
+    gap: var(--space-3);
+    margin: var(--space-5) 0;
   }
   .toggle input {
     width: 20px;
@@ -87,22 +89,22 @@
   }
   .collection-list {
     display: grid;
-    gap: 10px;
-    margin-top: 20px;
+    gap: var(--space-3);
+    margin-top: var(--space-5);
   }
   .collection-list article {
     display: flex;
     align-items: center;
     justify-content: space-between;
-    gap: 16px;
-    padding: 16px;
+    gap: var(--space-5);
+    padding: var(--space-5);
     background: var(--color-card);
     border: 1px solid var(--color-line);
-    border-radius: 8px;
+    border-radius: var(--radius-md);
   }
   .collection-list h2 {
-    margin: 0 0 4px;
-    font-size: 20px;
+    margin: 0 0 var(--space-2);
+    font-size: var(--text-xl);
   }
   .collection-list p {
     margin: 0;
@@ -112,8 +114,8 @@
     display: inline-flex;
     align-items: center;
     min-height: 44px;
-    padding: 0 14px;
-    border-radius: 6px;
+    padding: 0 var(--space-4);
+    border-radius: var(--radius-md);
     background: var(--color-ink);
     color: var(--color-floor);
     text-decoration: none;

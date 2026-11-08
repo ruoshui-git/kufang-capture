@@ -8,14 +8,19 @@
     onopen,
     onmore,
   }: { photos: Photo[]; total: number; onopen: (id: string) => void; onmore: () => void } = $props()
-  let urls = $state<Record<string, string | null>>({})
+  let urls = $state<Record<string, { revision: number; url: string }>>({})
+  let requested = $state<Record<string, number>>({})
 
   $effect(() => {
     for (const photo of photos) {
-      // Keyed by revision: once the thumbnail is generated (revision bumps), fetch it instead of
-      // the full-size stand-in.
-      const key = `${photo.id}:${photo.revision}`
-      if (!(key in urls)) void thumbnailUrl(photo.id).then((url) => (urls[key] = url))
+      const loaded = urls[photo.id]
+      if ((!loaded || loaded.revision !== photo.revision) && requested[photo.id] !== photo.revision) {
+        requested[photo.id] = photo.revision
+        void thumbnailUrl(photo.id).then((url) => {
+          if (url && requested[photo.id] === photo.revision)
+            urls[photo.id] = { revision: photo.revision, url }
+        })
+      }
     }
   })
 </script>
@@ -26,11 +31,9 @@
   <div class="thumb-strip" aria-label="Recent photos">
     {#each photos as photo (photo.id)}
       <button class="thumb" aria-label="Open photo" onclick={() => onopen(photo.id)}>
-        {#if urls[`${photo.id}:${photo.revision}`]}<img
-            src={urls[`${photo.id}:${photo.revision}`] ?? ''}
-            alt=""
-            loading="lazy"
-          />{:else}<span aria-hidden="true">▧</span>{/if}
+        {#if urls[photo.id]}<img src={urls[photo.id]?.url ?? ''} alt="" loading="lazy" />{:else}<span
+            aria-hidden="true">▧</span
+          >{/if}
       </button>
     {/each}
     {#if total > photos.length}<button class="thumb more" aria-label="Open remaining photos" onclick={onmore}
@@ -42,17 +45,17 @@
 <style>
   .thumb-strip {
     display: flex;
-    gap: 2px;
+    gap: var(--space-1);
     align-items: center;
     min-width: 0;
   }
   .thumb,
   .no-photos {
-    flex: 0 0 56px;
-    width: 56px;
-    height: 56px;
+    flex: 0 0 var(--size-thumb);
+    width: var(--size-thumb);
+    height: var(--size-thumb);
     border: 1px solid var(--color-line);
-    border-radius: 6px;
+    border-radius: var(--radius-md);
     background: var(--color-floor);
     color: var(--color-muted);
     padding: 0;
@@ -73,12 +76,12 @@
   }
   .no-photos {
     border-style: dashed;
-    font-size: 12px;
+    font-size: var(--text-xs);
     text-align: center;
   }
   @container entry-list (min-width: 1130px) {
     .thumb-strip {
-      gap: 4px;
+      gap: var(--space-2);
     }
   }
 </style>
