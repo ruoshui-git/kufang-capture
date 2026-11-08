@@ -62,16 +62,28 @@ function makeClients(fetcher: FetchLike): { authClient: AuthClient; serverClient
     authClient: {
       session: async () => (await request('/api/auth/session')).json(),
       login: async (password) => {
+        // Login has its own error copy: a 401 here means a wrong password, not an ended session.
+        let response: Response
         try {
-          await request('/api/auth/login', {
+          response = await fetcher('/api/auth/login', {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            headers: requestHeaders('POST', { 'Content-Type': 'application/json' }),
+            credentials: 'same-origin',
             body: JSON.stringify({ password }),
           })
-          if (typeof window !== 'undefined') window.dispatchEvent(new Event('capture:authenticated'))
-        } catch (error) {
-          throw new Error(userError(error))
+        } catch {
+          throw new Error("Couldn't reach the server. Check your connection and try again.")
         }
+        if (response.status === 401) throw new Error('Password is incorrect.')
+        if (response.status === 429) {
+          const wait = Number(response.headers.get('Retry-After') ?? '60')
+          const minutes = Math.max(1, Math.ceil(wait / 60))
+          throw new Error(
+            `Too many attempts. Try again in ${minutes} ${minutes === 1 ? 'minute' : 'minutes'}.`,
+          )
+        }
+        if (!response.ok) throw new Error(`Sign-in failed (${response.status}). Try again.`)
+        if (typeof window !== 'undefined') window.dispatchEvent(new Event('capture:authenticated'))
       },
       logout: async () => {
         await request('/api/auth/logout', { method: 'POST' })
@@ -92,9 +104,14 @@ function makeClients(fetcher: FetchLike): { authClient: AuthClient; serverClient
   }
 }
 
-export const { authClient, serverClient } = makeClients(fetch)
+/** Exported for tests; the app uses the default clients below. */
+export const createClients = makeClients
+export const { authClient, serverClient } = makeClients((input, init) => fetch(input, init))
 
-export function createSyncEngine(options: SyncEngineOptions = {}): SyncEngine {
+/** The engine plus the backoff-respecting cycle that timers use (exposed for tests). */
+export type SyncEngineWithSchedule = SyncEngine & { runScheduledCycle(): Promise<void> }
+
+export function createSyncEngine(options: SyncEngineOptions = {}): SyncEngineWithSchedule {
   const db = getCaptureDb(options.repoDbName)
   const fetcher = options.fetch ?? fetch
   const clients = makeClients(fetcher)
@@ -642,8 +659,24 @@ export function createSyncEngine(options: SyncEngineOptions = {}): SyncEngine {
     return running
   }
 
+  // Backoff protects the server from hot loops, but when connectivity returns or the user taps
+  // Sync Now, everything waiting should be retried immediately (spec §5).
+  const clearBackoff = async () => {
+    await db.transaction('rw', db.outbox, db.photos, async () => {
+      await db.outbox
+        .filter((item) => !item.in_flight && !!item.next_attempt_at)
+        .modify({ next_attempt_at: null })
+      await db.photos
+        .filter((photo) => !!(photo as RetriablePhoto).upload_next_attempt_at)
+        .modify({ upload_next_attempt_at: null } as Partial<RetriablePhoto>)
+    })
+  }
+  const retryNow = async () => {
+    await clearBackoff()
+    await runCycle()
+  }
   const onOnline = () => {
-    void runCycle()
+    void retryNow()
   }
   const onVisibility = () => {
     if (document.visibilityState === 'visible') void runCycle()
@@ -742,7 +775,7 @@ export function createSyncEngine(options: SyncEngineOptions = {}): SyncEngine {
     })
     void runCycle()
   }
-  return { status, conflicts, start, stop, syncNow: runCycle, resolveConflict }
+  return { status, conflicts, start, stop, syncNow: retryNow, resolveConflict, runScheduledCycle: runCycle }
 }
 
 export const syncEngine = createSyncEngine()

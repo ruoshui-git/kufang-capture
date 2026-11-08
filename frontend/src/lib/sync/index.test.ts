@@ -108,3 +108,19 @@ describe('foreground sync privacy and consent', () => {
     await db.delete()
   })
 })
+
+describe('sign-in messages', () => {
+  it('distinguishes a wrong password, rate limiting and an unreachable server', async () => {
+    const { createClients } = await import('./index')
+    const wrong = createClients(async () => new Response(null, { status: 401 }))
+    await expect(wrong.authClient.login('nope')).rejects.toThrow('Password is incorrect.')
+    const limited = createClients(
+      async () => new Response(null, { status: 429, headers: { 'Retry-After': '300' } }),
+    )
+    await expect(limited.authClient.login('x')).rejects.toThrow('Try again in 5 minutes.')
+    const offline = createClients(async () => {
+      throw new TypeError('Failed to fetch')
+    })
+    await expect(offline.authClient.login('x')).rejects.toThrow("Couldn't reach the server")
+  })
+})

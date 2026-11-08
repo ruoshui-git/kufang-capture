@@ -485,7 +485,7 @@ describe('sync acceptance against an in-memory API server', () => {
     const fixture = await syncedEntry(server)
     const photo = await addPhoto(fixture.repo, fixture.entry.id)
     server.mismatchUpload = true
-    await fixture.engine.syncNow()
+    await fixture.engine.runScheduledCycle()
     const failed = (await fixture.db.photos.get(photo.id)) as Photo & {
       upload_attempts: number
       upload_next_attempt_at: string | null
@@ -495,13 +495,27 @@ describe('sync acceptance against an in-memory API server', () => {
     expect(failed.upload_next_attempt_at).not.toBeNull()
     expect(failed.upload_next_attempt_at! > clock().toISOString()).toBe(true)
     server.mismatchUpload = false
-    await fixture.engine.syncNow()
+    // A scheduled cycle respects the backoff: no second PUT yet.
+    await fixture.engine.runScheduledCycle()
     expect(
       server.requests.filter((request) => request.url.endsWith('/original') && request.method === 'PUT'),
     ).toHaveLength(1)
     fixedNow.value = new Date(failed.upload_next_attempt_at!)
+    await fixture.engine.runScheduledCycle()
+    expect((await fixture.db.photos.get(photo.id))?.upload_state).toBe('uploaded')
+  })
+
+  it('retries immediately when the user taps Sync Now, ignoring the backoff window', async () => {
+    const server = new MemoryServer()
+    const fixture = await syncedEntry(server)
+    const photo = await addPhoto(fixture.repo, fixture.entry.id)
+    server.mismatchUpload = true
+    await fixture.engine.runScheduledCycle()
+    expect((await fixture.db.photos.get(photo.id))?.upload_state).toBe('error')
+    server.mismatchUpload = false
     await fixture.engine.syncNow()
     expect((await fixture.db.photos.get(photo.id))?.upload_state).toBe('uploaded')
+    await fixture.db.delete()
     await fixture.db.delete()
   })
 

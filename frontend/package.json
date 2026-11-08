@@ -14,7 +14,7 @@
     "format:check": "prettier --check .",
     "test:e2e": "playwright test --project=iphone-chromium --project=desktop-chromium",
     "generate-pwa-assets": "pwa-assets-generator --root public --config pwa-assets.config.ts",
-    "test:e2e:webkit": "docker run --rm --ipc=host --network host -v \"$PWD/..:/repo\" -w /repo/frontend -e E2E_BASE_URL=${E2E_BASE_URL:-http://127.0.0.1:8123} mcr.microsoft.com/playwright:v1.65.0-noble npx playwright test --project=iphone-webkit"
+    "test:e2e:webkit": "docker run --rm --ipc=host --network host --user \"$(id -u):$(id -g)\" -e HOME=/tmp -v \"$PWD/..:/repo\" -w /repo/frontend -e E2E_BASE_URL=${E2E_BASE_URL:-http://127.0.0.1:8123} mcr.microsoft.com/playwright:v1.65.0-noble npx playwright test --project=iphone-webkit"
   },
   "devDependencies": {
     "@playwright/test": "^1.65.0",
