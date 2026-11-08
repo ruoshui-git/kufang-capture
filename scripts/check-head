@@ -1,0 +1,19 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+# Validate a commit (default HEAD) in a clean export, exactly as CI will, so
+# uncommitted work from parallel agents cannot hide or cause failures.
+#   scripts/check-head [REV] [--quick]   (--quick skips the production build)
+repo=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
+rev=HEAD quick=0
+for arg in "$@"; do [[ $arg == --quick ]] && quick=1 || rev=$arg; done
+ctx=$(mktemp -d)
+trap 'rm -rf "$ctx"' EXIT
+git -C "$repo" archive "$rev" | tar -x -C "$ctx"
+ln -s "$repo/frontend/node_modules" "$ctx/frontend/node_modules"
+(cd "$ctx/frontend" && pnpm check >/dev/null && pnpm format:check >/dev/null && pnpm test 2>&1 | grep -E 'Tests ' &&
+	{ ((quick)) || "$repo/scripts/heavy" pnpm build >/dev/null; })
+(cd "$ctx/backend" && uv run --quiet pytest -q 2>&1 | tail -1 && uv run --quiet ruff check . >/dev/null &&
+	uv run --quiet ruff format --check . >/dev/null)
+python3 -I -m unittest discover -s "$ctx/tools/tests" 2>&1 | tail -1
+bash "$ctx/deploy/tests/deploy_test.sh" >/dev/null
+echo "check-head: $(git -C "$repo" rev-parse --short "$rev") OK"
