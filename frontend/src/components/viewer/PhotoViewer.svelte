@@ -7,8 +7,8 @@
     entryId,
     startPhotoId = null,
   }: { open?: boolean; entryId: Id; startPhotoId?: Id | null } = $props()
-  void entryId
-  void startPhotoId
+
+
 </script>
 
-{#if open}<div role="dialog" aria-label="Photo viewer">Viewer arrives in the next build.</div>{/if}
+{#if open}<div role="dialog" aria-label="Photo viewer" data-entry={entryId} data-start={startPhotoId}>Viewer arrives in the next build.</div>{/if}

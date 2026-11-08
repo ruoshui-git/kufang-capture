@@ -7,8 +7,8 @@
     entryId,
     oncaptured,
   }: { open?: boolean; entryId: Id; oncaptured?: (photos: Photo[]) => void } = $props()
-  void entryId
-  void oncaptured
+
+
 </script>
 
-{#if open}<div role="dialog" aria-label="Camera">Camera arrives in the next build.</div>{/if}
+{#if open}<div role="dialog" aria-label="Camera" data-entry={entryId} data-cb={!!oncaptured}>Camera arrives in the next build.</div>{/if}
