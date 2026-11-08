@@ -14,6 +14,9 @@
   import Menu from '../../components/ui/Menu.svelte'
   import DetailPage from '../detail/DetailPage.svelte'
   import PhotoViewer from '../../components/viewer/PhotoViewer.svelte'
+  import SyncStatusChip from '../../components/sync/SyncStatusChip.svelte'
+  import SyncNowButton from '../../components/sync/SyncNowButton.svelte'
+  import ExportSheet from '../../components/sync/ExportSheet.svelte'
 
   let { collectionId, detailEntryId }: { collectionId: string; detailEntryId?: string } = $props()
   let summary = $state<CollectionSummary | undefined>()
@@ -31,6 +34,15 @@
   let previousDetailEntryId: string | undefined
   let sentinel = $state<HTMLDivElement>()
   let listElement = $state<HTMLDivElement>()
+  let exportOpen = $state(false)
+  let conflictOpen = $state(false)
+  let ConflictSheetView: typeof import('../../components/sync/ConflictSheet.svelte').default | null =
+    $state(null)
+
+  async function openConflicts() {
+    ConflictSheetView = (await import('../../components/sync/ConflictSheet.svelte')).default
+    conflictOpen = true
+  }
 
   let activeSubscription: ReturnType<Watchable<EntryRow[]>['subscribe']> | undefined
   function subscribeRows() {
@@ -170,7 +182,14 @@
             >‹ Collections</a
           >{/if}
         <h1>{summary?.collection.name ?? 'Collection'}</h1>
-        {#if summary}<Badge mode={summary.collection.storage_mode} />{/if}
+        {#if summary}<button class="status-trigger" type="button" onclick={() => void openConflicts()}
+            ><SyncStatusChip
+              collectionId={summary.collection.id}
+              mode={summary.collection.storage_mode}
+              pendingCount={summary.pending_sync_count}
+              pendingBytes={summary.pending_upload_bytes}
+            /></button
+          >{/if}
       </div>
     </div>
     {#if summary}
@@ -216,7 +235,7 @@
               void repo.setSetting(SETTING_KEYS.entrySort, sort)
             }}>Oldest first</button
           >
-          <button role="menuitem" disabled title="Coming soon">Export ZIP · Coming soon</button>
+          <button role="menuitem" onclick={() => (exportOpen = true)}>Export ZIP</button>
         </Menu>
       </div>
       <div class="search-row">
@@ -228,6 +247,7 @@
         />
       </div>
       <div class="new-entry-toolbar">
+        {#if summary?.collection.storage_mode === 'synced'}<SyncNowButton />{/if}
         <Button variant="ink" onclick={() => void createEntry()}>＋ New Entry</Button>
       </div>
     </div>
@@ -260,6 +280,12 @@
     entryId={viewerEntryId}
     startPhotoId={viewerPhotoId}
   />{/if}
+{#if summary}<ExportSheet
+    bind:open={exportOpen}
+    scope={[summary.collection.id]}
+    title={`Export ${summary.collection.name}`}
+  />{/if}
+{#if conflictOpen && ConflictSheetView}<ConflictSheetView bind:open={conflictOpen} />{/if}
 
 <style>
   .list-with-detail {

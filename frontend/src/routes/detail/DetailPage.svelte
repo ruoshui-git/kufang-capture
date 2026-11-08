@@ -234,8 +234,9 @@
         ></label
       >
       <p class="save-state" aria-live="polite">
-        {#if savingCount}Saving…{:else if failure}{failure}{:else if entry.sync_state === 'pending'}Pending
-          sync{:else if entry.sync_state === 'synced'}Backed up{:else}Saved on this device{/if}
+        {#if savingCount}Saving…{:else if failure}{failure}{:else if entry.sync_state === 'conflict'}Conflict{:else if entry.sync_state === 'error'}Sync
+          error{:else if entry.sync_state === 'pending'}Pending sync{:else if entry.sync_state === 'synced'}Backed
+          up{:else}Saved on this device{/if}
       </p>
     </header>
 

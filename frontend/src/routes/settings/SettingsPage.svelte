@@ -5,16 +5,41 @@
   import type { CaptureMode } from '$lib/camera'
   import type { StorageEstimate } from '$lib/repo'
   import Button from '../../components/ui/Button.svelte'
+  import ExportSheet from '../../components/sync/ExportSheet.svelte'
+  import { authClient } from '$lib/sync'
+  import type { CollectionSummary } from '$lib/types'
+  import { navigate } from '../../app/router.svelte'
 
   let captureMode = $state<CaptureMode>('native')
   let storage = $state<StorageEstimate | null>(null)
   let storageMessage = $state('')
+  let signedIn = $state<boolean | null>(null)
+  let summaries = $state<CollectionSummary[]>([])
+  let exportOpen = $state(false)
+  let accountMessage = $state('')
+
+  const localDataNeedsExport = $derived(
+    summaries.some(
+      (item) =>
+        item.collection.storage_mode === 'local_only' &&
+        (!item.collection.last_exported_at ||
+          Date.now() - Date.parse(item.collection.last_exported_at) > 7 * 86400000),
+    ),
+  )
 
   onMount(() => {
     void (async () => {
       captureMode = await repo.getSetting<CaptureMode>(SETTING_KEYS.captureMode, 'native')
       storage = await repo.estimateStorage()
     })()
+    const sub = repo
+      .watchCollectionSummaries({ includeArchived: true })
+      .subscribe((items) => (summaries = items))
+    void authClient
+      .session()
+      .then((session) => (signedIn = session.authenticated))
+      .catch(() => (signedIn = false))
+    return () => (typeof sub === 'function' ? sub() : sub.unsubscribe())
   })
 
   async function chooseMode(mode: CaptureMode) {
@@ -28,6 +53,15 @@
       ? 'The browser will keep this storage until you clear site data.'
       : 'The browser did not grant persistent storage.'
     storage = await repo.estimateStorage()
+  }
+  async function signOut() {
+    try {
+      await authClient.logout()
+      signedIn = false
+      accountMessage = 'Signed out.'
+    } catch (cause) {
+      accountMessage = cause instanceof Error ? cause.message : 'Could not sign out.'
+    }
   }
 
   function formatBytes(value: number | null | undefined) {
@@ -47,6 +81,28 @@
 <svelte:head><title>Settings · Kufang Capture</title></svelte:head>
 <section class="page settings-page">
   <div class="page-heading"><h1>Settings</h1></div>
+  <section class="settings-card" aria-labelledby="account-heading">
+    <h2 id="account-heading">Account &amp; sync</h2>
+    {#if signedIn === null}<p>Checking sign-in…</p>{:else if signedIn}<p>
+        Signed in. Synced collections upload in the background.
+      </p>
+      <div class="settings-actions">
+        <Button variant="quiet" onclick={() => navigate('/server')}>Server exports</Button><Button
+          variant="quiet"
+          onclick={() => void signOut()}>Sign out</Button
+        >
+      </div>{:else}<p>Not signed in. Local Only collections work without an account.</p>
+      <Button onclick={() => navigate(`/login?return=${encodeURIComponent('/settings')}`)}>Sign in</Button
+      >{/if}
+    {#if accountMessage}<p role="status">{accountMessage}</p>{/if}
+  </section>
+  <section class="settings-card" aria-labelledby="export-heading">
+    <h2 id="export-heading">Device export</h2>
+    {#if localDataNeedsExport}<p class="export-reminder">
+        Local Only data lives only on this iPhone. Export a ZIP to Files regularly.
+      </p>{:else}<p>Export a ZIP of this device's collections. This works offline.</p>{/if}
+    <Button variant="quiet" onclick={() => (exportOpen = true)}>Export all data</Button>
+  </section>
   <section class="settings-card" aria-labelledby="capture-heading">
     <h2 id="capture-heading">Capture mode</h2>
     <fieldset>
@@ -97,6 +153,7 @@
     <a href="/diagnostics">Open Diagnostics</a>
   </section>
 </section>
+<ExportSheet bind:open={exportOpen} scope="all" title="Export all data" />
 
 <style>
   .settings-page {
@@ -164,5 +221,15 @@
   .app-info p {
     margin: 0 0 8px;
     color: var(--color-muted);
+  }
+  .settings-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+  .export-reminder {
+    padding: 12px;
+    border-left: 3px solid var(--color-warn);
+    background: color-mix(in srgb, var(--color-warn) 9%, var(--color-card));
   }
 </style>

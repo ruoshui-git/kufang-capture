@@ -106,6 +106,17 @@
       .sort((a, b) => b.captured_at.localeCompare(a.captured_at) || b.id.localeCompare(a.id))[3]
     if (next) onviewer(row.entry.id, next.id)
   }
+  const syncLabel = $derived(
+    row.entry.sync_state === 'conflict'
+      ? 'Conflict'
+      : row.entry.sync_state === 'error'
+        ? 'Sync error'
+        : row.entry.sync_state === 'synced'
+          ? 'Backed up'
+          : row.pending_sync || row.entry.sync_state === 'pending'
+            ? 'Pending sync'
+            : 'Saved on this device',
+  )
 </script>
 
 <article class="entry-row">
@@ -259,7 +270,7 @@
   </div>
   <div class="row-status">
     <StatusLine tone={row.pending_sync ? 'warn' : 'muted'}
-      >{row.pending_sync ? 'Pending sync' : status}</StatusLine
+      >{status === 'Saving…' || status === 'Could not add photos' ? status : syncLabel}</StatusLine
     ><span>{row.photo_count} {row.photo_count === 1 ? 'photo' : 'photos'}</span>
   </div>
   <CameraSheet bind:open={cameraOpen} entryId={row.entry.id} />

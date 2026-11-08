@@ -10,8 +10,12 @@
   import DetailPage from './routes/detail/DetailPage.svelte'
   import SettingsPage from './routes/settings/SettingsPage.svelte'
   import DiagnosticsPage from './routes/diagnostics/DiagnosticsPage.svelte'
+  import LoginPage from './routes/login/LoginPage.svelte'
+  import ServerPage from './routes/server/ServerPage.svelte'
+  import { syncEngine } from '$lib/sync'
   import { installKeyboardShortcuts } from './app/shortcuts'
   onMount(() => {
+    syncEngine.start()
     const updateSW = registerSW({
       immediate: true,
       onNeedRefresh() {
@@ -42,6 +46,8 @@
       {/if}
     {:else if router.route.name === 'settings'}<SettingsPage />
     {:else if router.route.name === 'diagnostics'}<DiagnosticsPage />
+    {:else if router.route.name === 'login'}<LoginPage />
+    {:else if router.route.name === 'server'}<ServerPage />
     {:else}<section class="page">
         <h1>Page not found</h1>
         <p>The address does not match a Kufang Capture page.</p>

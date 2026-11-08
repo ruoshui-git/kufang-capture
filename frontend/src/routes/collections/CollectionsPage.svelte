@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onMount } from 'svelte'
+  import SettingsIcon from '@lucide/svelte/icons/settings'
   import { repo } from '$lib/db'
   import { SETTING_KEYS, type CollectionSummary, type StorageMode } from '$lib/types'
   import { navigate } from '../../app/router.svelte'
@@ -12,7 +13,10 @@
   import TextField from '../../components/ui/TextField.svelte'
   import type { Unsubscriber } from 'svelte/store'
   import { relativeTime } from './relativeTime'
-  import { exportFromDevice } from '$lib/export/device'
+  import SyncStatusChip from '../../components/sync/SyncStatusChip.svelte'
+  import StorageModeSheet from '../../components/sync/StorageModeSheet.svelte'
+  import ClearCollectionSheet from '../../components/sync/ClearCollectionSheet.svelte'
+  import ExportSheet from '../../components/sync/ExportSheet.svelte'
 
   let summaries = $state<CollectionSummary[]>([])
   let includeArchived = $state(false)
@@ -23,20 +27,17 @@
   let storageMode = $state<StorageMode>('local_only')
   let saving = $state(false)
   let error = $state('')
-  let exporting = $state<string | null>(null)
+  let selected = $state<CollectionSummary | null>(null)
+  let storageOpen = $state(false)
+  let clearOpen = $state(false)
+  let exportOpen = $state(false)
+  let conflictOpen = $state(false)
+  let ConflictSheetView: typeof import('../../components/sync/ConflictSheet.svelte').default | null =
+    $state(null)
 
-  async function exportCollection(item: CollectionSummary) {
-    if (exporting) return
-    exporting = item.collection.id
-    showToast({ message: `Preparing ZIP for ${item.collection.name}…` })
-    try {
-      const result = await exportFromDevice([item.collection.id])
-      if (result.delivery !== 'cancelled') showToast({ message: `Exported ${result.filename}` })
-    } catch (err) {
-      showToast({ message: err instanceof Error ? err.message : 'Export failed.', duration: 12000 })
-    } finally {
-      exporting = null
-    }
+  async function openConflicts() {
+    ConflictSheetView = (await import('../../components/sync/ConflictSheet.svelte')).default
+    conflictOpen = true
   }
 
   onMount(() => {
@@ -93,6 +94,12 @@
           storage_mode: storageMode,
         })
         await repo.setSetting(SETTING_KEYS.lastStorageMode, storageMode)
+        if (storageMode === 'synced')
+          showToast({
+            message: 'Created locally. Sign in to start syncing.',
+            actionLabel: 'Sign in',
+            action: () => navigate(`/login?return=${encodeURIComponent(`/c/${created.id}`)}`),
+          })
         void repo.requestPersistentStorage()
         sheetOpen = false
         navigate(`/c/${created.id}`)
@@ -106,8 +113,17 @@
     }
   }
   async function toggleArchive(item: CollectionSummary) {
-    if (item.collection.status === 'archived') await repo.unarchiveCollection(item.collection.id)
-    else await repo.archiveCollection(item.collection.id)
+    if (item.collection.status === 'archived') {
+      await repo.unarchiveCollection(item.collection.id)
+      showToast({ message: 'Collection restored' })
+    } else {
+      await repo.archiveCollection(item.collection.id)
+      showToast({
+        message: 'Collection archived',
+        actionLabel: 'Undo',
+        action: () => void repo.unarchiveCollection(item.collection.id),
+      })
+    }
   }
 </script>
 
@@ -123,14 +139,19 @@
         <span class="summary-chip">{totalEntries} {totalEntries === 1 ? 'entry' : 'entries'}</span>
       </div>
     </div>
-    <button
-      class="button ink new-collection-action"
-      type="button"
-      aria-label="New collection"
-      onclick={openNew}
-    >
-      <span aria-hidden="true">+ New</span>
-    </button>
+    <div class="page-heading-actions">
+      <a class="button quiet icon-link" href="/settings" aria-label="Settings" title="Settings"
+        ><SettingsIcon size={20} aria-hidden="true" /></a
+      >
+      <button
+        class="button ink new-collection-action"
+        type="button"
+        aria-label="New collection"
+        onclick={openNew}
+      >
+        <span aria-hidden="true">+ New</span>
+      </button>
+    </div>
   </div>
   <label class="toggle-row"><input type="checkbox" bind:checked={includeArchived} /> Show archived</label>
   {#if summaries.length === 0}
@@ -145,7 +166,6 @@
           <a class="collection-open" href="/c/{item.collection.id}" aria-label="Open {item.collection.name}">
             <span class="collection-title-row">
               <span class="collection-title">{item.collection.name}</span>
-              <Badge mode={item.collection.storage_mode} />
             </span>
             <span class="collection-meta">
               <span class="stat-chip">{item.entry_count} {item.entry_count === 1 ? 'entry' : 'entries'}</span>
@@ -156,17 +176,44 @@
             </span>
             <span class="collection-updated">Updated {relativeTime(item.last_activity_at)}</span>
           </a>
+          <button
+            class="status-trigger"
+            type="button"
+            aria-label="Show sync conflicts"
+            onclick={() => void openConflicts()}
+            ><SyncStatusChip
+              collectionId={item.collection.id}
+              mode={item.collection.storage_mode}
+              pendingCount={item.pending_sync_count}
+              pendingBytes={item.pending_upload_bytes}
+            /></button
+          >
           <div class="collection-card-menu">
             <Menu label={`Actions for ${item.collection.name}`}>
               <button role="menuitem" onclick={() => openEdit(item)}>Rename / Edit</button>
               <button role="menuitem" onclick={() => toggleArchive(item)}>
                 {item.collection.status === 'archived' ? 'Unarchive' : 'Archive'}
               </button>
-              <button role="menuitem" disabled={!!exporting} onclick={() => exportCollection(item)}
-                >Export ZIP</button
+              <button
+                role="menuitem"
+                onclick={() => {
+                  selected = item
+                  exportOpen = true
+                }}>Export ZIP</button
               >
-              <button role="menuitem" disabled title="Coming soon"
-                >Clear from this device… · Coming soon</button
+              <button
+                role="menuitem"
+                onclick={() => {
+                  selected = item
+                  storageOpen = true
+                }}>Change storage mode…</button
+              >
+              <button
+                role="menuitem"
+                onclick={() => {
+                  selected = item
+                  clearOpen = true
+                }}>Clear from this device…</button
               >
             </Menu>
           </div>
@@ -213,3 +260,30 @@
     </form>
   {/snippet}
 </Sheet>
+{#if selected}
+  <StorageModeSheet bind:open={storageOpen} item={selected} />
+  <ClearCollectionSheet bind:open={clearOpen} item={selected} />
+  <ExportSheet
+    bind:open={exportOpen}
+    scope={[selected.collection.id]}
+    title={`Export ${selected.collection.name}`}
+  />
+{/if}
+{#if conflictOpen && ConflictSheetView}<ConflictSheetView bind:open={conflictOpen} />{/if}
+
+<style>
+  .status-trigger {
+    position: absolute;
+    top: 15px;
+    right: 58px;
+    padding: 0;
+    border: 0;
+    background: transparent;
+    cursor: pointer;
+  }
+  @media (max-width: 430px) {
+    .status-trigger {
+      right: 54px;
+    }
+  }
+</style>
