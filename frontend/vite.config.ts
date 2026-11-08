@@ -8,6 +8,7 @@ import { VitePWA } from 'vite-plugin-pwa'
 // https://capture.kufang.org. In development, /api is proxied to uvicorn.
 export default defineConfig({
   resolve: {
+    conditions: process.env.VITEST ? ['browser'] : undefined,
     alias: { $lib: fileURLToPath(new URL('./src/lib', import.meta.url)) },
   },
   plugins: [
@@ -49,6 +50,8 @@ export default defineConfig({
   preview: { host: '127.0.0.1', port: 4173, proxy: { '/api': 'http://127.0.0.1:8000' } },
   test: {
     environment: 'jsdom',
+    // Use Svelte's client runtime (not the SSR entry) for component tests.
+    server: { deps: { inline: [/svelte/] } },
     setupFiles: ['./src/test/setup.ts'],
     include: ['src/**/*.test.ts'],
     restoreMocks: true,

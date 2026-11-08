@@ -1,0 +1,10 @@
+{
+  "domain": "kufang.org",
+  "records": [
+    {
+      "type": "A",
+      "name": "capture",
+      "address": "40.160.103.88"
+    }
+  ]
+}

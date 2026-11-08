@@ -1,0 +1,1 @@
+"""Kufang Capture backend."""

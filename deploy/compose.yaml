@@ -1,0 +1,49 @@
+name: kufang-capture
+
+services:
+  capture:
+    image: ${IMAGE:?Set IMAGE in image.env}
+    env_file:
+      - .env
+    restart: unless-stopped
+    mem_limit: 384m
+    cpus: 1.0
+    pids_limit: 256
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    volumes:
+      - data:/data
+    networks:
+      - default
+      - edge
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "3"
+    labels:
+      traefik.enable: "true"
+      traefik.docker.network: kufang-edge
+      traefik.http.routers.kufang-capture.rule: Host(`capture.kufang.org`)
+      traefik.http.routers.kufang-capture.entrypoints: websecure
+      traefik.http.routers.kufang-capture.tls.certresolver: le
+      traefik.http.routers.kufang-capture.middlewares: kufang-capture-security
+      traefik.http.services.kufang-capture.loadbalancer.server.port: "8000"
+      traefik.http.middlewares.kufang-capture-security.headers.stsSeconds: "31536000"
+      traefik.http.middlewares.kufang-capture-security.headers.stsIncludeSubdomains: "true"
+      traefik.http.middlewares.kufang-capture-security.headers.contentTypeNosniff: "true"
+      traefik.http.middlewares.kufang-capture-security.headers.frameDeny: "true"
+
+volumes:
+  data:
+    name: kufang-capture-data
+
+networks:
+  edge:
+    name: kufang-edge
+    external: true

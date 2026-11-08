@@ -12,7 +12,8 @@
     "test:watch": "vitest",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
-    "test:e2e": "playwright test"
+    "test:e2e": "playwright test",
+    "generate-pwa-assets": "pwa-assets-generator --root public --config pwa-assets.config.ts"
   },
   "devDependencies": {
     "@playwright/test": "^1.65.0",
@@ -22,6 +23,7 @@
     "@testing-library/svelte": "^5.4.2",
     "@tsconfig/svelte": "^5.0.8",
     "@types/node": "^24.19.2",
+    "@vite-pwa/assets-generator": "^2.0.0",
     "fake-indexeddb": "^6.2.7",
     "fflate": "^0.8.3",
     "jsdom": "^31.0.0",
@@ -36,7 +38,10 @@
     "vitest": "^5.1.0"
   },
   "dependencies": {
+    "@fontsource/barlow-condensed": "^5.3.0",
+    "@lucide/svelte": "^1.70.0",
     "dexie": "^4.4.7",
-    "ulid": "^3.0.2"
+    "ulid": "^3.0.2",
+    "workbox-window": "^7.4.1"
   }
 }

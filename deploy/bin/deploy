@@ -1,0 +1,134 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+APP_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$APP_DIR"
+
+usage() {
+  printf 'Usage: deploy deploy IMAGE_REF | deploy status | deploy rollback\n' >&2
+  exit 2
+}
+
+if [[ -n "${SSH_ORIGINAL_COMMAND:-}" ]]; then
+  # Forced-command input is data, never shell code.
+  read -r -a args <<< "$SSH_ORIGINAL_COMMAND"
+else
+  args=("$@")
+fi
+[[ -f compose.yaml ]] || { printf 'compose.yaml is missing\n' >&2; exit 1; }
+grep -Eq '^[[:space:]]*name:[[:space:]]*kufang-capture[[:space:]]*$' compose.yaml || {
+  printf 'Refusing: compose.yaml project name must be kufang-capture\n' >&2
+  exit 1
+}
+[[ -f .env ]] || { printf '.env is missing\n' >&2; exit 1; }
+mkdir -p state
+exec 9>state/deploy.lock
+flock 9
+
+compose() {
+  docker compose -p kufang-capture -f compose.yaml --env-file .env --env-file image.env "$@"
+}
+read_image() {
+  if [[ -f image.env ]]; then
+    sed -n 's/^IMAGE=//p' image.env | tail -n 1
+  fi
+}
+write_image() {
+  local ref="$1" temp
+  temp="$(mktemp state/image.env.XXXXXX)"
+  printf 'IMAGE=%s\n' "$ref" > "$temp"
+  chmod 0640 "$temp"
+  mv "$temp" image.env
+}
+log_event() {
+  printf '%s %s\n' "$(date -u +%Y%m%dT%H%M%SZ)" "$*" >> state/history
+}
+inspect_state() {
+  docker inspect --format '{{.State.Status}} {{if .State.Health}}{{.State.Health.Status}}{{else}}no-healthcheck{{end}}' kufang-capture-capture-1 2>/dev/null || true
+}
+
+action="${args[0]:-}"
+case "$action" in
+  status)
+    [[ ${#args[@]} -eq 1 ]] || usage
+    printf 'Current: %s\nPrevious: %s\n' "$(read_image)" "$(cat state/previous 2>/dev/null || true)"
+    printf 'Container: %s\n' "$(inspect_state)"
+    printf 'Recent history:\n'
+    if [[ -f state/history ]]; then tail -n 10 state/history; fi
+    exit 0
+    ;;
+  rollback)
+    [[ ${#args[@]} -eq 1 ]] || usage
+    previous="$(cat state/previous 2>/dev/null || true)"
+    [[ -n "$previous" ]] || { printf 'No previous image recorded\n' >&2; exit 1; }
+    args=(deploy "$previous")
+    action=deploy
+    ;;
+  deploy) [[ ${#args[@]} -eq 2 ]] || usage ;;
+  *) usage ;;
+esac
+
+image_ref="${args[1]}"
+if [[ ! "$image_ref" =~ ^ghcr\.io/ruoshui-git/kufang-capture@sha256:[0-9a-f]{64}$ &&
+      ! "$image_ref" =~ ^kufang-capture:git-[0-9a-f]{7,40}$ ]]; then
+  printf 'Invalid image reference\n' >&2
+  exit 2
+fi
+
+current="$(read_image)"
+if [[ -n "$current" ]]; then
+  printf '%s\n' "$current" > state/previous
+fi
+if [[ "$image_ref" == ghcr.io/* ]]; then
+  if ! docker image inspect "$image_ref" >/dev/null 2>&1; then
+    docker pull "$image_ref"
+  fi
+fi
+
+# Create a verified rollback snapshot using the currently deployed image.
+if [[ -n "$current" ]] && docker volume inspect kufang-capture-data >/dev/null 2>&1; then
+  if compose run --rm --no-deps -T --label traefik.enable=false capture python -c \
+    "from pathlib import Path; raise SystemExit(0 if Path('/data/capture.sqlite3').is_file() else 1)"; then
+    stamp="$(date -u +%Y%m%dT%H%M%SZ)"
+    compose run --rm --no-deps -T --label traefik.enable=false capture python -m kufang_capture.snapshot "/data/snapshots/${stamp}-pre-deploy.sqlite3"
+    compose run --rm --no-deps -T --label traefik.enable=false capture python -c \
+      "from pathlib import Path; p=Path('/data/snapshots'); files=sorted(p.glob('*-pre-deploy.sqlite3'), key=lambda f:f.name, reverse=True); [f.unlink() for f in files[3:]]"
+  fi
+fi
+
+write_image "$image_ref"
+if ! compose up -d --wait --wait-timeout 120; then
+  deploy_failed=1
+else
+  deploy_failed=0
+  deadline=$((SECONDS + ${HEALTH_WAIT_SECONDS:-60}))
+  while (( SECONDS < deadline )); do
+    if [[ "${FIRST_DEPLOY:-0}" == 1 ]]; then
+      if curl -kfsS --resolve capture.kufang.org:443:127.0.0.1 https://capture.kufang.org/api/health >/dev/null; then break; fi
+    elif curl -fsS --resolve capture.kufang.org:443:127.0.0.1 https://capture.kufang.org/api/health >/dev/null; then
+      break
+    fi
+    sleep 2
+  done
+  if (( SECONDS >= deadline )); then deploy_failed=1; fi
+  if [[ "$(inspect_state)" != "running healthy" ]]; then deploy_failed=1; fi
+fi
+
+if (( deploy_failed )); then
+  if [[ -n "$current" ]]; then
+    write_image "$current"
+    compose up -d --wait --wait-timeout 120 || true
+  fi
+  log_event "deploy $image_ref failed"
+  if [[ -n "$current" ]]; then
+    printf 'Deploy failed. Previous image restored. A database snapshot, if created, remains at /data/snapshots. Restore it manually only if needed.\n' >&2
+  else
+    printf 'Deploy failed; no previous image exists for application rollback.\n' >&2
+  fi
+  exit 1
+fi
+
+if [[ -n "$current" ]]; then printf '%s\n' "$current" > state/previous; fi
+printf '%s\n' "$image_ref" > state/current
+log_event "deploy $image_ref ok"
+printf 'Deployed %s\n' "$image_ref"

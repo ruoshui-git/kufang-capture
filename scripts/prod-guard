@@ -1,0 +1,20 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+# Prove a kufang-capture deploy left ERPNext (kufang-production) and the shared
+# Traefik edge (kufang-edge) untouched: same container IDs, start times and
+# restart counts, and kufang.org still answers its ping.
+#   scripts/prod-guard snapshot FILE   # before a deploy
+#   scripts/prod-guard check FILE      # after a deploy; exits 1 on any change
+host=${PROD_HOST:-kufang-prod}
+state() {
+	ssh -o BatchMode=yes "$host" 'sudo docker ps -aq --filter name=^kufang-production- --filter name=^kufang-edge- |
+		xargs sudo docker inspect --format "{{.Name}} {{.Id}} {{.State.StartedAt}} {{.RestartCount}} {{.State.Status}}"' | sort
+}
+ping_ok() { curl -fsS --max-time 20 https://kufang.org/api/method/ping | grep -q pong; }
+case ${1:-} in
+	snapshot) state >"${2:?FILE}"; ping_ok; echo "prod-guard: $(wc -l <"$2") containers recorded, kufang.org ping ok" ;;
+	check)
+		diff <(cat "${2:?FILE}") <(state) && ping_ok && echo "prod-guard: ERPNext and edge unchanged, kufang.org ping ok" || {
+			echo "prod-guard: CHANGE DETECTED in ERPNext/edge containers or ping failed" >&2; exit 1; } ;;
+	*) echo "usage: prod-guard snapshot|check FILE" >&2; exit 2 ;;
+esac
