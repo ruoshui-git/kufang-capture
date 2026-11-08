@@ -1,0 +1,44 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+# Watch a codex-run task. Prints one line when it finishes, a heartbeat every
+# INTERVAL minutes, and a warning when the log stops growing for STALL minutes
+# or shows network reconnects. Each line is meant to be a monitor event, so
+# output stays sparse. Exits when the run has finished.
+
+name=${1:?Usage: codex-watch NAME [INTERVAL_MIN=20] [STALL_MIN=45]}
+interval=$((${2:-20} * 60))
+stall=$((${3:-45} * 60))
+runs="${CODEX_RUNS_DIR:-/tmp/codex-runs}"
+log="$runs/$name.log"
+started=$(date +%s)
+last_beat=$started
+last_size=-1
+last_growth=$started
+
+while :; do
+	if [[ -f "$runs/$name.exit" ]]; then
+		echo "codex-watch: $name DONE exit=$(cat "$runs/$name.exit") report=$runs/$name.last"
+		exit 0
+	fi
+	now=$(date +%s)
+	size=$(stat -c %s "$log" 2>/dev/null || echo 0)
+	if [[ $size -ne $last_size ]]; then
+		last_size=$size
+		last_growth=$now
+	fi
+	if ((now - last_beat >= interval)); then
+		last_beat=$now
+		reconnects=$(tail -n 40 "$log" 2>/dev/null | grep -c 'Reconnecting' || true)
+		state="running"
+		((now - last_growth >= stall)) && state="STALLED $(((now - last_growth) / 60))m without output"
+		((reconnects > 0)) && state="$state; NETWORK reconnecting"
+		alive="process alive"
+		if [[ ! -f "$runs/$name.pid" ]] || ! kill -0 "$(cat "$runs/$name.pid")" 2>/dev/null; then
+			alive="PROCESS GONE without exit record"
+		fi
+		echo "codex-watch: $name $state, $alive, $(((now - started) / 60))m elapsed, log ${size}B"
+		[[ $alive == PROCESS* ]] && exit 1
+	fi
+	sleep 15
+done

@@ -1,0 +1,82 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+# Run one Codex implementation task non-interactively for kufang-capture:
+# writes inside this repository, network for package registries, and no
+# approval prompts. Output goes to $CODEX_RUNS_DIR/NAME.{log,last,exit,session,pid};
+# NAME.last holds only the agent's final report.
+
+usage() {
+	cat >&2 <<'USAGE'
+Usage: codex-run NAME PROMPT_FILE [--resume SESSION_ID | --fork SESSION_ID] [--model MODEL]
+                [--config KEY=VALUE]...
+
+  NAME          Short run name, e.g. w1-data (reused names are overwritten).
+  PROMPT_FILE   Task brief; use - to read it from stdin.
+  --resume ID   Continue an earlier Codex session (same thread).
+  --fork ID     Continue from an earlier session in a new thread.
+  --model M     Default: $CODEX_MODEL or gpt-6-luna.
+  --config K=V  Extra Codex config, repeatable, e.g. model_reasoning_effort="high".
+USAGE
+	exit 2
+}
+
+[[ $# -ge 2 ]] || usage
+name=$1
+prompt=$2
+shift 2
+mode=()
+extra=()
+model="${CODEX_MODEL:-gpt-6-luna}"
+while [[ $# -gt 0 ]]; do
+	case $1 in
+		--resume) mode=(resume "${2:?--resume requires a session id}"); shift 2 ;;
+		--fork) mode=(fork "${2:?--fork requires a session id}"); shift 2 ;;
+		--model) model=${2:?--model requires a value}; shift 2 ;;
+		--config) extra+=(-c "${2:?--config requires KEY=VALUE}"); shift 2 ;;
+		*) usage ;;
+	esac
+done
+
+repo=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
+runs="${CODEX_RUNS_DIR:-/tmp/codex-runs}"
+mkdir -p "$runs" "$repo/.locks" "$HOME/.cache" "$HOME/.local/share/pnpm"
+log="$runs/$name.log"
+
+if [[ -f "$runs/$name.pid" ]] && kill -0 "$(cat "$runs/$name.pid")" 2>/dev/null; then
+	echo "codex-run: $name is already running (pid $(cat "$runs/$name.pid"))" >&2
+	exit 1
+fi
+command -v codex >/dev/null || { echo "codex-run: codex CLI not found" >&2; exit 1; }
+
+roots=("$repo" /tmp "$HOME/.cache" "$HOME/.local/share/pnpm")
+printf -v roots_toml '"%s",' "${roots[@]}"
+
+# Native Linux node/pnpm/uv live in ~/.local/bin; keep them ahead of any
+# Windows interop copies under /mnt/c.
+export PATH="$HOME/.local/bin:$PATH"
+
+rm -f "$runs/$name".{last,exit,session}
+echo $$ >"$runs/$name.pid"
+set +e
+(
+	cd "$repo"
+	if [[ $prompt == - ]]; then cat; else cat -- "$prompt"; fi |
+		codex exec "${mode[@]}" \
+			-c "model=\"$model\"" \
+			-c 'sandbox_mode="workspace-write"' \
+			-c 'approval_policy="never"' \
+			-c 'sandbox_workspace_write.network_access=true' \
+			-c "sandbox_workspace_write.writable_roots=[${roots_toml%,}]" \
+			"${extra[@]}" \
+			-o "$runs/$name.last" \
+			-
+) >"$log" 2>&1
+status=$?
+set -e
+grep -m1 -oP 'session id: \K\S+' "$log" >"$runs/$name.session" || true
+echo "$status" >"$runs/$name.exit"
+rm -f "$runs/$name.pid"
+echo "codex-run: $name exited $status; session $(cat "$runs/$name.session" 2>/dev/null || echo unknown)"
+echo "codex-run: final report $runs/$name.last; full log $log"
+exit "$status"

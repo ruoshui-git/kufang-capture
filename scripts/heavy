@@ -1,0 +1,20 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+# Run one memory-heavy command at a time (builds, Playwright, image builds).
+# Parallel agents in this repository share this lock and queue instead of
+# competing for the WSL VM's memory.
+
+if [[ $# -eq 0 ]]; then
+	echo "Usage: heavy COMMAND [ARGS...]" >&2
+	exit 2
+fi
+repo=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
+mkdir -p "$repo/.locks"
+lock="${CAPTURE_HEAVY_LOCK:-$repo/.locks/heavy.lock}"
+exec 9>"$lock"
+if ! flock -n 9; then
+	echo "heavy: waiting for another heavy command to finish ($lock)" >&2
+	flock 9
+fi
+"$@"
