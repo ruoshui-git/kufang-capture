@@ -29,48 +29,65 @@ Set `CAPTURE_PASSWORD_HASH` to the resulting Argon2 hash. Set `CAPTURE_SESSION_S
 high-entropy secret (for example, `openssl rand -hex 32`) and keep it only on the VPS. Keep
 `CAPTURE_PUBLIC_ORIGIN=https://capture.kufang.org`. Do not copy `.env` into the public repository.
 
-Install a CI SSH key restricted to the deployment command, for example:
+Install the CI SSH key restricted to the deployment command (already done for production):
 
 ```text
-command="/srv/kufang-capture/bin/deploy",restrict ssh-ed25519 AAAA... ci-deploy
+command="/srv/kufang-capture/bin/deploy",restrict ssh-ed25519 AAAA... github-actions-kufang-capture
 ```
 
-The forced command accepts only `deploy IMAGE_REF`, `status`, or `rollback`. It parses the incoming
-command as words and validates the image reference; it never evaluates shell input.
+The forced command accepts only `load` (image tarball on stdin), `deploy IMAGE_REF`, `status` and
+`rollback`. It parses the incoming command as words and validates every image reference; it never
+evaluates shell input. `load` accepts exactly one image tagged `kufang-capture:git-<sha>` and removes
+anything else it was sent.
 
-## DNS and first deploy
+## DNS
 
-Review the single-record manifest with the `temple_inventory` `spaceship-dns` helper before applying:
+Review the single-record manifest with the `temple_inventory` `spaceship-dns` helper before applying
+(`SPACESHIP_CREDENTIALS` points at the operator's credentials file; never print or copy it):
 
 ```sh
 spaceship-dns plan deploy/dns/capture.kufang.org.json
-spaceship-dns apply deploy/dns/capture.kufang.org.json
+spaceship-dns apply deploy/dns/capture.kufang.org.json --yes
 ```
 
-The manifest changes only `capture.kufang.org`'s A record. Build an image away from the VPS, then
-transfer and load it using an operator SSH account that can run `docker load`:
+The manifest manages only the `capture` A record; mail and other records are untouched.
+
+## Deploying
+
+**Normal path (CI).** Every push to `main` runs `.github/workflows/ci.yml`: frontend checks and
+tests, backend tests, deploy-script tests and a gitleaks scan; then the `deploy` job (GitHub
+environment `production`, branch `main` only) builds the image on the runner, streams it to the VPS
+with `docker save | gzip | ssh … load`, runs `deploy kufang-capture:git-<sha12>`, and checks that
+`https://capture.kufang.org/api/health` reports the new version. No registry is involved, so GHCR
+package visibility does not matter.
+
+**Manual path (operator workstation).** Build from a clean export of a commit, ship, deploy:
 
 ```sh
-docker save kufang-capture:git-<7-to-40-char-commit> | ssh kufang-prod docker load
-ssh kufang-prod deploy kufang-capture:git-<commit-sha>
+scripts/build-image                    # prints kufang-capture:git-<sha12>
+docker save kufang-capture:git-<sha12> | gzip -1 | \
+  ssh kufang-prod 'sudo -u kufang-capture /srv/kufang-capture/bin/deploy load'
+ssh kufang-prod 'sudo -u kufang-capture /srv/kufang-capture/bin/deploy deploy kufang-capture:git-<sha12>'
 ```
 
-For the initial deployment only, if Traefik has not issued the certificate yet, the operator may set
-`FIRST_DEPLOY=1` for the deploy command. This permits `curl -k` for the local health probe; subsequent
-deploys require normal certificate verification. The container health check and HTTPS health probe
-must both succeed before the script records the new image as current.
+For the very first deployment only, if Traefik has not issued the certificate yet, prefix the deploy
+with `env FIRST_DEPLOY=1` (permits `curl -k` for the local probe). The container health check and the
+HTTPS probe must both pass before the new image is recorded as current; otherwise the previous image
+is restored.
 
-CI deploys immutable GHCR references by digest, for example
-`ghcr.io/ruoshui-git/kufang-capture@sha256:<64-lowercase-hex-digest>`. The deploy key's forced
-command accepts only that exact repository and digest form, or a locally loaded
-`kufang-capture:git-<commit>` tag.
+**ERPNext guard.** Around any manual or infrastructure change, run
+`scripts/prod-guard snapshot FILE` before and `scripts/prod-guard check FILE` after: it proves every
+`kufang-production-*` and `kufang-edge-*` container kept its ID, start time and restart count and that
+`https://kufang.org/api/method/ping` answers.
 
 ## Status, rollback, and snapshots
 
 ```sh
-ssh kufang-prod status
-ssh kufang-prod rollback
+ssh kufang-prod 'sudo -u kufang-capture /srv/kufang-capture/bin/deploy status'
+ssh kufang-prod 'sudo -u kufang-capture /srv/kufang-capture/bin/deploy rollback'
 ```
+
+Deploys keep the current and previous app images and prune older `kufang-capture:git-*` images.
 
 Each deploy is serialized by `state/deploy.lock`. If a database exists, the currently deployed image
 uses SQLite's online backup API to create `/data/snapshots/<UTC>-pre-deploy.sqlite3`; the newest
@@ -78,20 +95,24 @@ three snapshots are retained. A failed health check restores the prior image con
 restores a database automatically. Review the failure and application compatibility before restoring
 data.
 
-To restore a snapshot manually, first stop only this project's app, preserve a copy of the live DB,
-then copy the chosen verified snapshot into the named volume using a one-off container from the
-currently deployed image. For example, from `/srv/kufang-capture`:
+To restore a snapshot manually, stop only this app, keep a copy of the live database **and its
+WAL/SHM files**, remove the WAL/SHM files (a stale write-ahead log must never be replayed onto a
+restored database), copy the snapshot in, and start again. Run as `kufang-capture` in
+`/srv/kufang-capture`:
 
 ```sh
-docker compose -p kufang-capture -f compose.yaml --env-file .env --env-file image.env stop capture
-docker compose -p kufang-capture -f compose.yaml --env-file .env --env-file image.env run --rm --no-deps -T \
-  --entrypoint python capture -c "import shutil; shutil.copy2('/data/capture.sqlite3', '/data/capture.sqlite3.before-restore')"
-docker compose -p kufang-capture -f compose.yaml --env-file .env --env-file image.env run --rm --no-deps -T \
-  --entrypoint python capture -c "import shutil; shutil.copy2('/data/snapshots/<snapshot-name>', '/data/capture.sqlite3')"
-docker compose -p kufang-capture -f compose.yaml --env-file .env --env-file image.env up -d --wait
+c="docker compose -p kufang-capture -f compose.yaml --env-file .env --env-file image.env"
+$c stop capture
+$c run --rm --no-deps -T --label traefik.enable=false --entrypoint python capture -c "
+import pathlib, shutil
+d = pathlib.Path('/data'); keep = d / 'before-restore'; keep.mkdir(exist_ok=True)
+for n in ('capture.sqlite3', 'capture.sqlite3-wal', 'capture.sqlite3-shm'):
+    if (d / n).exists(): shutil.copy2(d / n, keep / n); (d / n).unlink()
+shutil.copy2(d / 'snapshots' / '<snapshot-name>', d / 'capture.sqlite3')"
+$c up -d --wait
 ```
 
-Replace `<snapshot-name>` with the exact file name, then check `ssh kufang-prod status` and
+Replace `<snapshot-name>` with the exact file name, then check `deploy status` and
 `https://capture.kufang.org/api/health`. This is an operator-triggered deploy rollback aid, not a
 backup service; there are no scheduled or off-host backups.
 
