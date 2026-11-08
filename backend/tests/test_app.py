@@ -17,12 +17,13 @@ def test_health_migrates_database_and_sets_security_headers(tmp_path):
     assert response.headers["permissions-policy"] == "camera=(self), microphone=(), geolocation=()"
 
 
-def test_unknown_api_is_json_404(tmp_path):
+def test_unknown_api_is_json_and_requires_a_session(tmp_path):
     app = create_app(Settings(data_dir=tmp_path / "data", static_dir=tmp_path / "static"))
     with TestClient(app) as client:
         response = client.get("/api/not-a-route")
-    assert response.status_code == 404
-    assert response.json() == {"detail": "Not found"}
+    # Deny by default: unauthenticated callers learn nothing about which API routes exist.
+    assert response.status_code == 401
+    assert response.json()["detail"] == "auth_required"
     assert response.headers["content-type"].startswith("application/json")
 
 

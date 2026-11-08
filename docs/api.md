@@ -90,3 +90,14 @@ The response is `201` (or `200` if it was already stored with the same hash), wi
 ## Exports (server, streamed)
 
 `GET /api/exports/all.zip?include_trash=0|1` and `GET /api/exports/collections/{id}.zip?include_trash=0|1` stream the archive. The layout is exactly as in [export-format.md](export-format.md), with `source: "server"`. They use STORE mode, built from the stored crc32 and size values, with no temp file. A photo whose original was never uploaded is listed in `manifest.json` under `missing_originals` (the photo id and path) and is not included. The response carries `Content-Disposition: attachment; filename="…"`.
+
+## Clarifications (from the v1 server implementation)
+
+- **Batch response.** The response is `{ "results": [...], "cursor": N }`. A `field_conflict` result also carries `conflicting_fields`, and records expose `revision` and `field_revisions`.
+- **Idempotency.** It covers every outcome, including deterministic `conflict` and `rejected` results. A client that changes a rejected or conflicting operation must send it under a **new** mutation id.
+- **Changes cursor.** While `has_more` is true, `cursor` is the last sequence returned on that page. On the final page, it is the latest sequence. Advance to it; no page is skipped.
+- **Photo storage key.** After upload, photo records expose `server_storage_key` and `stored_at`. The server's internal storage path is never exposed.
+- **`photo_bytes` in server exports.** It counts the metadata `byte_size` of every active photo, including those listed in `missing_originals`.
+- **Trash export.** `trash/entries.csv` also lists active entries that own deleted photos, so every `trash/photos.csv` row has a valid entry reference.
+- **Client IP.** Login backoff uses the **rightmost** `X-Forwarded-For` hop, which is the peer that Traefik observed. The app is reachable only through Traefik.
+- **Unknown routes.** Every `/api` path except `/api/health` and `/api/auth/*` requires a session, including unknown paths. Unauthenticated callers get `401` and learn nothing about which routes exist.

@@ -138,6 +138,11 @@ def verify(path: Path, originals: Path | None = None) -> list[str]:
             return problems + [f"cannot read manifest.json ({exc})"]
 
         trash = bool(manifest.get("include_trash"))
+        missing_original_paths = {
+            item.get("path")
+            for item in manifest.get("missing_originals", [])
+            if isinstance(item, dict) and isinstance(item.get("path"), str)
+        }
         core = [
             "capture-export/manifest.json",
             "capture-export/collections.csv",
@@ -183,6 +188,10 @@ def verify(path: Path, originals: Path | None = None) -> list[str]:
                 problems.append(f"duplicate photo path {photo_path}")
             seen_photo_paths.add(photo_path)
             archive_path = f"capture-export/{photo_path}"
+            if photo_path in missing_original_paths:
+                if archive_path in actual:
+                    problems.append(f"missing original {photo_path}: unexpected archive member is present")
+                continue
             try:
                 data = archive.read(archive_path)
                 if len(data) != parse_int(
@@ -238,10 +247,18 @@ def verify(path: Path, originals: Path | None = None) -> list[str]:
             ):
                 problems.append(f"collection {cid}: active photo_count mismatch")
         expected_files = set(core + [f"capture-export/{x}" for x in base])
-        expected_files.update(f"capture-export/{row.get('path', '')}" for row in photos)
+        expected_files.update(
+            f"capture-export/{row.get('path', '')}"
+            for row in photos
+            if row.get("path") not in missing_original_paths
+        )
         if trash:
             expected_files.update(f"capture-export/trash/{x}" for x in base)
-            expected_files.update(f"capture-export/{row.get('path', '')}" for row in trash_photos)
+            expected_files.update(
+                f"capture-export/{row.get('path', '')}"
+                for row in trash_photos
+                if row.get("path") not in missing_original_paths
+            )
         if actual != expected_files:
             for unexpected in sorted(actual - expected_files):
                 problems.append(f"unexpected archive member {unexpected}")

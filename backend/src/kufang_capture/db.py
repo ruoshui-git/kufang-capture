@@ -7,9 +7,17 @@ from pathlib import Path
 _writer_lock = threading.Lock()
 
 
+class ClosingConnection(sqlite3.Connection):
+    def __exit__(self, exc_type, exc_value, traceback):
+        try:
+            return super().__exit__(exc_type, exc_value, traceback)
+        finally:
+            self.close()
+
+
 def connect(data_dir: Path) -> sqlite3.Connection:
     data_dir.mkdir(parents=True, exist_ok=True)
-    connection = sqlite3.connect(data_dir / "capture.sqlite3", timeout=5)
+    connection = sqlite3.connect(data_dir / "capture.sqlite3", timeout=5, factory=ClosingConnection)
     connection.row_factory = sqlite3.Row
     connection.execute("PRAGMA journal_mode=WAL")
     connection.execute("PRAGMA foreign_keys=ON")
