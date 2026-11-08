@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+# Build the production image from a clean export of a commit (default HEAD),
+# never from the working tree, so in-progress agent edits cannot leak in.
+#   scripts/build-image [REV]   -> prints kufang-capture:git-<sha12>
+repo=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
+rev=${1:-HEAD}
+sha=$(git -C "$repo" rev-parse --short=12 "$rev")
+ctx=$(mktemp -d)
+trap 'rm -rf "$ctx"' EXIT
+git -C "$repo" archive "$rev" | tar -x -C "$ctx"
+"$repo/scripts/heavy" docker build -q -f "$ctx/deploy/Containerfile" --build-arg APP_VERSION="$sha" \
+	-t "kufang-capture:git-$sha" "$ctx" >/dev/null
+echo "kufang-capture:git-$sha"
