@@ -82,11 +82,13 @@ Each JSON file is an array of objects with the same keys as its CSV, using real 
   "quantity_by_unit": [
     { "collection_id": "01J...", "unit": "boxes", "total": "12", "entry_count": 4 }
   ],
-  "files": [{ "path": "entries.csv", "byte_size": 1234, "sha256": "..." }]
+  "files": [{ "path": "entries.csv", "byte_size": 1234, "sha256": "..." }],
+  "missing_originals": []
 }
 ```
 
 - `source` is `device` or `server`. `scope` is `all` or `selected`.
+- `missing_originals` is always `[]` for device exports. For server exports it lists `{photo_id, path}` for any photo whose original has not been uploaded yet. Those photos still appear in `photos.csv`, but their files are absent.
 - `files` lists every archive member except `manifest.json`, CSV/JSON and photos alike, with its SHA-256.
 - `quantity_by_unit` sums active entries per collection and per normalized unit (trimmed, case-folded; the displayed unit is the most recent spelling). Units are never combined with each other.
 

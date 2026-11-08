@@ -1,0 +1,106 @@
+name: CI and deploy
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  frontend:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 26
+      - run: npm install --global pnpm@12
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm check
+      - run: pnpm format:check
+      - run: pnpm test
+      - run: pnpm build
+
+  backend:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+      - run: uv sync --frozen
+      - run: uv run ruff check .
+      - run: uv run ruff format --check .
+      - run: uv run pytest -q
+
+  tools-and-deploy-scripts:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: python3 -I -m unittest discover -s tools/tests
+      - run: bash -n deploy/bin/deploy deploy/bin/install-host.sh scripts/prod-guard
+      - run: bash deploy/tests/deploy_test.sh
+
+  secrets-scan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  deploy:
+    # Production deploy: build the image on the runner, stream it to the VPS
+    # through the forced-command key (no registry pull needed), then deploy.
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: [frontend, backend, tools-and-deploy-scripts, secrets-scan]
+    runs-on: ubuntu-latest
+    environment: production
+    concurrency:
+      group: production-deploy
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build image
+        run: |
+          ref="kufang-capture:git-${GITHUB_SHA::12}"
+          docker build -f deploy/Containerfile --build-arg APP_VERSION="${GITHUB_SHA::12}" -t "$ref" .
+          echo "IMAGE_REF=$ref" >> "$GITHUB_ENV"
+      - name: Configure SSH
+        env:
+          SSH_KEY: ${{ secrets.PRODUCTION_SSH_KEY }}
+          KNOWN_HOSTS: ${{ secrets.PRODUCTION_SSH_KNOWN_HOSTS }}
+        run: |
+          install -d -m 700 ~/.ssh
+          printf '%s\n' "$SSH_KEY" > ~/.ssh/id_ed25519
+          printf '%s\n' "$KNOWN_HOSTS" > ~/.ssh/known_hosts
+          chmod 600 ~/.ssh/id_ed25519
+      - name: Ship and deploy
+        env:
+          TARGET: ${{ secrets.PRODUCTION_SSH_USER }}@${{ secrets.PRODUCTION_SSH_HOST }}
+        run: |
+          ssh_opts=(-o BatchMode=yes -o ServerAliveInterval=30)
+          docker save "$IMAGE_REF" | gzip -1 | ssh "${ssh_opts[@]}" "$TARGET" load
+          ssh "${ssh_opts[@]}" "$TARGET" deploy "$IMAGE_REF"
+          ssh "${ssh_opts[@]}" "$TARGET" status
+      - name: Public health check
+        run: |
+          for i in $(seq 1 20); do
+            if curl -fsS https://capture.kufang.org/api/health | grep -q "${GITHUB_SHA::12}"; then exit 0; fi
+            sleep 3
+          done
+          echo "capture.kufang.org does not report version ${GITHUB_SHA::12}" >&2
+          exit 1

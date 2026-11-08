@@ -37,6 +37,7 @@ if [[ "$1" == volume && "$2" == inspect ]]; then
 fi
 if [[ "$1" == image && "$2" == inspect ]]; then exit 0; fi
 if [[ "$1" == pull ]]; then exit 0; fi
+if [[ "$1" == load ]]; then cat >/dev/null; printf 'Loaded image: %s\n' "${LOAD_REF:-kufang-capture:git-abcdef0}"; exit 0; fi
 if [[ "$1" == compose ]]; then
   for arg in "$@"; do
     if [[ "$arg" == up && "${DOCKER_UP_FAIL:-0}" == 1 ]]; then exit 1; fi
@@ -88,3 +89,15 @@ if command -v docker >/dev/null 2>&1 && docker compose version >/dev/null 2>&1; 
 fi
 
 printf 'deploy tests passed\n'
+
+# load: accepts exactly one kufang-capture:git-<sha> tag from stdin, refuses anything else
+if ! printf 'tar' | gzip | LOAD_REF=kufang-capture:git-abcdef0 SSH_ORIGINAL_COMMAND=load "$HOST/bin/deploy" >/dev/null; then
+  printf 'valid image load was refused\n' >&2
+  exit 1
+fi
+if printf 'tar' | LOAD_REF=evil/image:latest SSH_ORIGINAL_COMMAND=load "$HOST/bin/deploy" 2>/dev/null; then
+  printf 'foreign image tag was accepted by load\n' >&2
+  exit 1
+fi
+grep -q 'image rm evil/image:latest' "$TEST_LOG" || { printf 'refused image was not removed\n' >&2; exit 1; }
+printf 'load tests passed\n'

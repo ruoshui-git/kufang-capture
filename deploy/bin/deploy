@@ -5,7 +5,7 @@ APP_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$APP_DIR"
 
 usage() {
-  printf 'Usage: deploy deploy IMAGE_REF | deploy status | deploy rollback\n' >&2
+  printf 'Usage: deploy deploy IMAGE_REF | deploy load < image.tar | deploy status | deploy rollback\n' >&2
   exit 2
 }
 
@@ -63,6 +63,21 @@ case "$action" in
     [[ -n "$previous" ]] || { printf 'No previous image recorded\n' >&2; exit 1; }
     args=(deploy "$previous")
     action=deploy
+    ;;
+  load)
+    # Image tarball on stdin (CI: docker save | gzip | ssh ... load). Only a
+    # single kufang-capture:git-<sha> tag is accepted.
+    [[ ${#args[@]} -eq 1 ]] || usage
+    loaded="$(gzip -dcf | docker load)" || { printf 'docker load failed\n' >&2; exit 1; }
+    refs="$(sed -n 's/^Loaded image: //p' <<< "$loaded")"
+    if [[ "$(wc -l <<< "$refs")" -ne 1 || ! "$refs" =~ ^kufang-capture:git-[0-9a-f]{7,40}$ ]]; then
+      printf 'Refusing loaded image: expected one kufang-capture:git-<sha> tag\n' >&2
+      while read -r ref; do [[ -n "$ref" ]] && docker image rm "$ref" >/dev/null 2>&1 || true; done <<< "$refs"
+      exit 1
+    fi
+    log_event "load $refs ok"
+    printf 'Loaded %s\n' "$refs"
+    exit 0
     ;;
   deploy) [[ ${#args[@]} -eq 2 ]] || usage ;;
   *) usage ;;
@@ -131,4 +146,10 @@ fi
 if [[ -n "$current" ]]; then printf '%s\n' "$current" > state/previous; fi
 printf '%s\n' "$image_ref" > state/current
 log_event "deploy $image_ref ok"
+# Keep only the current and previous app images; volumes are never pruned.
+keep_prev="$(cat state/previous 2>/dev/null || true)"
+docker image ls --format '{{.Repository}}:{{.Tag}}' 'kufang-capture' 2>/dev/null | while read -r ref; do
+  [[ "$ref" == "$image_ref" || "$ref" == "$keep_prev" || ! "$ref" =~ ^kufang-capture:git- ]] && continue
+  docker image rm "$ref" >/dev/null 2>&1 || true
+done
 printf 'Deployed %s\n' "$image_ref"
