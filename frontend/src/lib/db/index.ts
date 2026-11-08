@@ -783,6 +783,10 @@ export function createRepo(options: RepoOptions = {}): Repo {
       }) as Watchable<Photo[]>,
     getSetting: async <T>(key: string, fallback: T): Promise<T> =>
       ((await db.settings.get(key))?.value as T) ?? fallback,
+    setStorageMode: async () => {
+      // Placeholder until the wave-3 sync engine lands.
+      throw new Error('Changing storage mode is not available yet.')
+    },
     readForExport: async (collectionIds) =>
       db.transaction('r', db.collections, db.entries, db.photos, async () => {
         const collections =

@@ -88,6 +88,12 @@ export interface Repo {
   unarchiveCollection(id: Id): Promise<void>
   /** Record a completed export that covered these collections. */
   markExported(collectionIds: Id[], at?: string): Promise<void>
+  /**
+   * Switch storage mode. local_only → synced requires consentToUploadExisting and enqueues the
+   * whole collection (entries, photos, trash) for upload. synced → local_only stops future
+   * uploads and drops pending outbox items; it never touches the server copy.
+   */
+  setStorageMode(id: Id, mode: StorageMode, opts: { consentToUploadExisting: boolean }): Promise<void>
   /** Whether a guarded, irreversible clear is currently safe. */
   checkClearCollection(id: Id): Promise<ClearCheck>
   /**
