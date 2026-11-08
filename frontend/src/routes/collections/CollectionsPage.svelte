@@ -11,6 +11,7 @@
   import Sheet from '../../components/ui/Sheet.svelte'
   import TextField from '../../components/ui/TextField.svelte'
   import type { Unsubscriber } from 'svelte/store'
+  import { relativeTime } from './relativeTime'
 
   let summaries = $state<CollectionSummary[]>([])
   let includeArchived = $state(false)
@@ -40,14 +41,7 @@
   })
 
   const totalEntries = $derived(summaries.reduce((sum, item) => sum + item.entry_count, 0))
-  function relativeTime(value: string) {
-    const seconds = Math.round((Date.now() - new Date(value).getTime()) / 1000)
-    if (!Number.isFinite(seconds) || seconds < 60) return 'Just now'
-    if (seconds < 3600) return `${Math.floor(seconds / 60)} min ago`
-    if (seconds < 86400) return `${Math.floor(seconds / 3600)} hr ago`
-    if (seconds < 604800) return `${Math.floor(seconds / 86400)} days ago`
-    return new Date(value).toLocaleDateString()
-  }
+
   async function openNew() {
     editing = null
     name = ''
@@ -106,13 +100,21 @@
   <div class="page-heading">
     <div>
       <h1>Collections</h1>
-      <p class="summary-copy">
-        {summaries.length}
-        {summaries.length === 1 ? 'collection' : 'collections'} · {totalEntries}
-        {totalEntries === 1 ? 'entry' : 'entries'}
-      </p>
+      <div class="summary-copy" aria-label="Collection summary">
+        <span class="summary-chip"
+          >{summaries.length} {summaries.length === 1 ? 'collection' : 'collections'}</span
+        >
+        <span class="summary-chip">{totalEntries} {totalEntries === 1 ? 'entry' : 'entries'}</span>
+      </div>
     </div>
-    <Button variant="primary" onclick={openNew}>New collection</Button>
+    <button
+      class="button ink new-collection-action"
+      type="button"
+      aria-label="New collection"
+      onclick={openNew}
+    >
+      <span aria-hidden="true">+ New</span>
+    </button>
   </div>
   <label class="toggle-row"><input type="checkbox" bind:checked={includeArchived} /> Show archived</label>
   {#if summaries.length === 0}
@@ -125,26 +127,30 @@
       {#each summaries as item (item.collection.id)}
         <article class="collection-card">
           <a class="collection-open" href="/c/{item.collection.id}" aria-label="Open {item.collection.name}">
-            <span class="collection-title">{item.collection.name}</span>
-            <span class="collection-meta"
-              ><span>{item.entry_count} {item.entry_count === 1 ? 'entry' : 'entries'}</span><span
-                >{item.photo_count} {item.photo_count === 1 ? 'photo' : 'photos'}</span
-              ><span>{item.incomplete_count} incomplete</span></span
-            >
+            <span class="collection-title-row">
+              <span class="collection-title">{item.collection.name}</span>
+              <Badge mode={item.collection.storage_mode} />
+            </span>
+            <span class="collection-meta">
+              <span class="stat-chip">{item.entry_count} {item.entry_count === 1 ? 'entry' : 'entries'}</span>
+              <span class="stat-chip">{item.photo_count} {item.photo_count === 1 ? 'photo' : 'photos'}</span>
+              <span class="stat-chip" class:incomplete={item.incomplete_count > 0}>
+                {item.incomplete_count} incomplete
+              </span>
+            </span>
             <span class="collection-updated">Updated {relativeTime(item.last_activity_at)}</span>
           </a>
-          <div class="collection-card-side">
-            <Badge mode={item.collection.storage_mode} /><Menu label={`Actions for ${item.collection.name}`}
-              ><button role="menuitem" onclick={() => openEdit(item)}>Rename / Edit</button><button
-                role="menuitem"
-                onclick={() => toggleArchive(item)}
-                >{item.collection.status === 'archived' ? 'Unarchive' : 'Archive'}</button
-              ><button role="menuitem" disabled title="Coming soon">Export ZIP · Coming soon</button><button
-                role="menuitem"
-                disabled
-                title="Coming soon">Clear from this device… · Coming soon</button
-              ></Menu
-            >
+          <div class="collection-card-menu">
+            <Menu label={`Actions for ${item.collection.name}`}>
+              <button role="menuitem" onclick={() => openEdit(item)}>Rename / Edit</button>
+              <button role="menuitem" onclick={() => toggleArchive(item)}>
+                {item.collection.status === 'archived' ? 'Unarchive' : 'Archive'}
+              </button>
+              <button role="menuitem" disabled title="Coming soon">Export ZIP · Coming soon</button>
+              <button role="menuitem" disabled title="Coming soon"
+                >Clear from this device… · Coming soon</button
+              >
+            </Menu>
           </div>
         </article>
       {/each}
@@ -176,6 +182,9 @@
         </fieldset>
       {/if}
       {#if error}<p class="form-error" role="alert">{error}</p>{/if}
+      {#if !editing && !name.trim()}
+        <p class="form-hint">Enter a name to continue.</p>
+      {/if}
       <div class="form-actions">
         <Button variant="quiet" onclick={() => (sheetOpen = false)}>Cancel</Button><Button
           type="submit"

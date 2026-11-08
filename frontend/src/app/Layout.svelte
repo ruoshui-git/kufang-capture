@@ -22,7 +22,9 @@
       <a class="rail-title" href="/">Collections</a>
       {#each collections as item (item.collection.id)}
         <a class="rail-row" href="/c/{item.collection.id}"
-          ><span>{item.collection.name}</span><span>{item.entry_count}</span></a
+          ><span class="rail-row-copy"
+            ><span>{item.collection.name}</span><Badge mode={item.collection.storage_mode} /></span
+          ><span>{item.entry_count}</span></a
         >
       {/each}
       <a class="rail-new" href="/?new=1">+ New collection</a>

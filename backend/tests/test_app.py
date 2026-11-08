@@ -62,3 +62,14 @@ def test_static_path_traversal_is_rejected(tmp_path):
 
     assert response.status_code == 404
     assert response.text != "private"
+
+
+def test_head_requests_are_supported_for_spa_and_health(tmp_path):
+    static = tmp_path / "static"
+    static.mkdir()
+    (static / "index.html").write_text("<main>SPA</main>")
+    app = create_app(Settings(data_dir=tmp_path / "data", static_dir=static))
+    with TestClient(app) as client:
+        assert client.head("/").status_code == 200
+        assert client.head("/c/some-collection").status_code == 200
+        assert client.head("/api/health").status_code == 200

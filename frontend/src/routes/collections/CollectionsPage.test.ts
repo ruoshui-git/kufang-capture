@@ -55,14 +55,21 @@ beforeEach(() => {
 describe('Collections page', () => {
   it('shows collection and entry totals without any global quantity', () => {
     render(CollectionsPage)
-    expect(screen.getByText('1 collection · 2 entries')).toBeInTheDocument()
-    expect(screen.getByText('3 photos')).toBeInTheDocument()
-    expect(screen.getByText('1 incomplete')).toBeInTheDocument()
+    expect(screen.getByText('1 collection')).toBeInTheDocument()
+    expect(screen.getAllByText('2 entries')).toHaveLength(2)
+    expect(screen.getAllByText('2 entries').some((element) => element.classList.contains('stat-chip'))).toBe(
+      true,
+    )
+    expect(screen.getByText('3 photos')).toHaveClass('stat-chip')
+    expect(screen.getByText('1 incomplete')).toHaveClass('incomplete')
+    expect(screen.getByRole('button', { name: 'New collection' })).toHaveTextContent('+ New')
     expect(screen.queryByText(/17/)).not.toBeInTheDocument()
   })
   it('creates a collection with the selected storage mode and navigates to it', async () => {
     render(CollectionsPage)
     await fireEvent.click(screen.getByRole('button', { name: 'New collection' }))
+    expect(screen.getByText('Enter a name to continue.')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Create collection' })).toBeDisabled()
     await fireEvent.input(screen.getByLabelText('Name'), { target: { value: 'New room' } })
     await fireEvent.click(screen.getByLabelText(/Sync to Server/))
     await fireEvent.click(screen.getByRole('button', { name: 'Create collection' }))

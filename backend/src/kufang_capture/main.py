@@ -38,7 +38,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             response.headers[name] = value
         return response
 
-    @app.get("/api/health")
+    @app.api_route("/api/health", methods=["GET", "HEAD"])
     def health() -> JSONResponse:
         try:
             with connect(config.data_dir) as connection:
@@ -89,11 +89,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             return response
         return JSONResponse({"detail": "Not found"}, status_code=404)
 
-    @app.get("/", include_in_schema=False)
+    @app.api_route("/", methods=["GET", "HEAD"], include_in_schema=False)
     def static_index():
         return static_response("index.html")
 
-    @app.get("/{path:path}", include_in_schema=False)
+    @app.api_route("/{path:path}", methods=["GET", "HEAD"], include_in_schema=False)
     def static_path(path: str):
         if path.startswith("api/"):
             return JSONResponse({"detail": "Not found"}, status_code=404)
