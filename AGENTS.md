@@ -43,7 +43,10 @@ Shared Codex/Claude guide. The product and architecture source of truth is [docs
 - Prefer small, concrete modules over abstractions without behavior. Reuse `formatSequence`/`entryDisplayTitle` from `types.ts`.
 - Add focused tests for every behavior and invariant you change. Do not weaken assertions to make tests pass.
 - Contracts (`types.ts`, `repo.ts`, `docs/api.md`, `docs/export-format.md`) change only through the orchestrator. Propose the change in your report.
-- Before user-facing changes, read [docs/design.md](docs/design.md).
+- Before user-facing changes, read [docs/design.md](docs/design.md) (intent, layouts, copy) and
+  [docs/design-system.md](docs/design-system.md) (tokens and component rules). Style only with the CSS
+  variables in `frontend/src/styles/tokens.css` and the shared component classes: no raw colours, no
+  off-scale spacing, type sizes or radii. `pnpm lint:design` enforces this in CI.
 
 ## Development (native WSL2; no Docker for routine work)
 
@@ -67,6 +70,7 @@ Use `scripts/heavy` to serialize heavy commands (builds, Playwright, image build
 | Vitest | `frontend/`: `pnpm test` |
 | Types | `frontend/`: `pnpm check` |
 | Format | `frontend/`: `pnpm format:check` |
+| Design tokens | `frontend/`: `pnpm lint:design` |
 | Build | `frontend/`: `../scripts/heavy pnpm build` |
 | Backend tests | `backend/`: `uv run pytest -q` |
 | Ruff | `backend/`: `uv run ruff check . && uv run ruff format --check .` |

@@ -6,31 +6,14 @@
 
 **The one memorable thing.** Each entry wears a **manila inventory tag**: a small die-cut label with a punched hole that carries the stencil-style sequence number `#0042`. The tag is the entry's identity everywhere: list rows, Detail, the viewer header, the Undo toast and Recently Deleted. Everything else stays quiet, disciplined and native-feeling.
 
-## Palette (cool concrete + ballpoint ink + manila)
+## Palette and type
 
-| Token | Light | Dark | Use |
-|---|---|---|---|
-| `--color-floor` | `#ECEFF1` | `#0E1418` | App background, like a concrete floor |
-| `--color-card` | `#FFFFFF` | `#172027` | Row/card surfaces |
-| `--color-line` | `#D5DBDF` | `#2A353D` | 1px dividers and input borders |
-| `--color-ink` | `#16212B` | `#E8EDF0` | Text, New Entry bar |
-| `--color-muted` | `#5E6B75` | `#93A1AB` | Secondary text |
-| `--color-ballpoint` | `#2346B0` | `#7C9BFF` | Primary actions: Add Photo, links, focus ring |
-| `--color-tag` | `#EBCB7A` | `#C9A957` | The manila tag fill (only the tag and its echoes) |
-| `--color-tag-ink` | `#3A2E10` | `#2A2009` | Text on the tag |
-| `--color-ok` | `#1F7A47` | `#5CC48A` | Backed up |
-| `--color-warn` | `#A15F00` | `#E0A23A` | Incomplete, pending |
-| `--color-danger` | `#B3261E` | `#FF8A80` | Sync error, delete |
-| `--color-local` | `#5A4BC4` | `#A99CFF` | Local Only badge |
-
-Avoid cream/terracotta, pure-black-with-neon, gradient washes and soft grey drop shadows. Elevation comes from 1px lines and the card-on-floor contrast.
-
-## Type
-
-- **Barlow Condensed, SemiBold 600** (self-hosted with `@fontsource/barlow-condensed`, precached so it works offline) is used for sequence numbers on tags, screen titles and summary figures. Its highway-sign, industrial-label voice suits a storeroom. Use it with `tabular-nums` wherever numbers align.
-- **System UI** (`-apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", system-ui, sans-serif`) is used for everything else, inputs especially. It feels native, renders crisply, and the iOS keyboard and dictation behave normally with it.
-- Type scale: 13 / 15 / 17 (body and inputs, never below 16px in inputs, or iOS zooms) / 20 / 26 / 34. Line height is 1.4 for body text and 1.1 for condensed display.
-- Use sentence case everywhere. No all-caps eyebrow labels, no labels above every block, and no `A · B · C` meta strings: show separate chips or short lines instead.
+The exact colours, type scale, spacing, radii, elevation and motion are tokens in
+[design-system.md](design-system.md) (implemented in `frontend/src/styles/tokens.css`). In short:
+cool concrete floor, white cards, blue-black ink, ballpoint blue for primary actions, manila for
+the tag and quantity chips, status colours for sync state; Barlow Condensed SemiBold for tag numbers
+and titles, the system UI font for everything else. Avoid cream/terracotta, neon-on-black,
+gradient washes and soft drop shadows; elevation comes from 1px lines and card-on-floor contrast.
 
 ## Layout
 
