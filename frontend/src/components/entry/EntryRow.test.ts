@@ -83,4 +83,39 @@ describe('entry row inline editing', () => {
       repo.updateEntry = updateEntry
     }
   })
+
+  it('edits expiration date and dimensions from the row after one tap on More', async () => {
+    const collection = await repo.createCollection({
+      name: `Shelf ${Date.now()}`,
+      storage_mode: 'local_only',
+    })
+    const entry = await repo.createEntry(collection.id)
+    const query = { search: '', filter: 'all' as const, sort: 'newest' as const }
+    const [row] = await first(repo.watchEntryRows(collection.id, query))
+    render(EntryRow, {
+      props: { row: row!, units: [], ondetails: () => {}, onviewer: () => {}, ondelete: () => {} },
+    })
+    const toggle = screen.getByRole('button', { name: 'More details' })
+    expect(toggle).toHaveAttribute('aria-expanded', 'false')
+    expect(screen.queryByLabelText('Dimensions')).not.toBeInTheDocument()
+    await fireEvent.click(toggle)
+    expect(toggle).toHaveAttribute('aria-expanded', 'true')
+
+    const expiration = screen.getByLabelText('Expiration date') as HTMLInputElement
+    await fireEvent.input(expiration, { target: { value: '2027-03-01' } })
+    expiration.blur()
+    const dimensions = screen.getByLabelText('Dimensions') as HTMLInputElement
+    await fireEvent.input(dimensions, { target: { value: '30 × 20 × 15 cm' } })
+    dimensions.blur()
+    await waitFor(async () => {
+      expect(await repo.getEntry(entry.id)).toMatchObject({
+        expiration_date: '2027-03-01',
+        dimensions: '30 × 20 × 15 cm',
+      })
+    })
+
+    await fireEvent.input(expiration, { target: { value: '' } })
+    expiration.blur()
+    await waitFor(async () => expect((await repo.getEntry(entry.id))?.expiration_date).toBeNull())
+  })
 })

@@ -149,7 +149,7 @@ These live as classes in `app.css` or as components in `src/components/ui`. Reus
 | phone | default | Single column, fixed bottom New Entry bar |
 | wide phone / tablet | `min-width: 600px` | Larger gutters |
 | desktop | `min-width: 900px` | Collections rail, ledger rows, Detail as a side panel |
-| list container | `@container (min-width: 820px)` | One-line ledger row inside the list column |
+| list container | `@container entry-list (min-width: 1130px)` | One-line ledger row inside the list column. Narrower lists (including beside the Detail panel) use compact cards. |
 
 ## Rules for future edits
 

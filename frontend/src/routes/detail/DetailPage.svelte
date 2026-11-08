@@ -33,7 +33,6 @@
   let sort = $state<EntrySort>('newest')
   let adjacent = $state<{ prev: Id | null; next: Id | null }>({ prev: null, next: null })
   let captureMode = $state<CaptureMode>('native')
-  let expanded = $state(false)
   let failure = $state('')
   const timers = new Map<EditableKey, ReturnType<typeof setTimeout>>()
 
@@ -288,6 +287,24 @@
             onblur={() => void flushField('unit')}
           /></label
         >
+        <label class="field"
+          >Expiration date<input
+            type="date"
+            data-field="expiration_date"
+            value={draft.expiration_date ?? ''}
+            oninput={(event) => setField('expiration_date', event.currentTarget.value)}
+            onblur={() => void flushField('expiration_date')}
+          /><small class="field-note">Leave blank if unknown</small></label
+        >
+        <label class="field"
+          >Dimensions<input
+            data-field="dimensions"
+            placeholder="e.g. 30 × 20 × 15 cm"
+            value={draft.dimensions ?? ''}
+            oninput={(event) => setField('dimensions', event.currentTarget.value)}
+            onblur={() => void flushField('dimensions')}
+          /></label
+        >
         <label class="field full-field"
           >Count detail<textarea
             data-field="count_detail"
@@ -306,28 +323,6 @@
             onblur={() => void flushField('notes')}></textarea></label
         >
       </div>
-      <button class="more-toggle" aria-expanded={expanded} onclick={() => (expanded = !expanded)}
-        >More details {expanded ? '−' : '+'}</button
-      >
-      {#if expanded}<div class="field-grid extra-fields">
-          <label class="field"
-            >Expiration date<input
-              type="date"
-              data-field="expiration_date"
-              value={draft.expiration_date ?? ''}
-              oninput={(event) => setField('expiration_date', event.currentTarget.value)}
-              onblur={() => void flushField('expiration_date')}
-            /><small>Leave blank if unknown</small></label
-          ><label class="field"
-            >Dimensions<input
-              data-field="dimensions"
-              placeholder="e.g. 30 × 20 × 15 cm"
-              value={draft.dimensions ?? ''}
-              oninput={(event) => setField('dimensions', event.currentTarget.value)}
-              onblur={() => void flushField('dimensions')}
-            /></label
-          >
-        </div>{/if}
     {/if}
     <nav class="detail-navigation" aria-label="Entry navigation">
       <Button
@@ -411,9 +406,13 @@
   }
   .field-grid {
     display: grid;
-    grid-template-columns: minmax(100px, 0.7fr) minmax(120px, 1fr);
-    gap: var(--space-5);
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    gap: var(--space-5) var(--space-4);
     margin: var(--space-6) 0;
+  }
+  .field {
+    min-width: 0;
+    align-self: start;
   }
   .full-field {
     grid-column: 1 / -1;
@@ -432,26 +431,18 @@
   .field textarea {
     resize: vertical;
   }
+  /* iOS gives date inputs an intrinsic width that ignores the grid column unless the native look is dropped. */
+  .field input[type='date'] {
+    display: block;
+    min-width: 0;
+    -webkit-appearance: none;
+    appearance: none;
+  }
   .field-hint {
     color: var(--color-danger);
     font-weight: 400;
   }
-  .more-toggle {
-    width: 100%;
-    min-height: 48px;
-    text-align: left;
-    border: 0;
-    border-top: 1px solid var(--color-line);
-    border-bottom: 1px solid var(--color-line);
-    background: transparent;
-    color: var(--color-ballpoint);
-    font-weight: 600;
-    cursor: pointer;
-  }
-  .extra-fields {
-    margin-top: var(--space-5);
-  }
-  .extra-fields small {
+  .field-note {
     color: var(--color-muted);
     font-weight: 400;
   }

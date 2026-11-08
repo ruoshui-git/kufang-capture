@@ -450,7 +450,8 @@
       align-items: start;
     }
     .entries-page {
-      container: entry-toolbar / inline-size;
+      /* Both names: rows query entry-list, the toolbar queries entry-toolbar. */
+      container: entry-list entry-toolbar / inline-size;
       margin: 0;
       padding-bottom: calc(var(--space-7) + env(safe-area-inset-bottom));
       max-width: none;

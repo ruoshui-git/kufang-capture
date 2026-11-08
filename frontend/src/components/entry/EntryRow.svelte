@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onDestroy, onMount, untrack } from 'svelte'
-  import { Camera, Images } from '@lucide/svelte'
+  import { Camera, ChevronDown, Images } from '@lucide/svelte'
   import type { EntryRow as EntryRowModel, Entry, Photo } from '$lib/types'
   import { formatSequence } from '$lib/types'
   import { repo } from '$lib/db'
@@ -33,6 +33,9 @@
   let notes = $state(initialEntry.notes)
   let shortNote = $state(initialEntry.notes.split('\n')[0] ?? '')
   let countDetail = $state(initialEntry.count_detail)
+  let expirationDate = $state(initialEntry.expiration_date ?? '')
+  let dimensions = $state(initialEntry.dimensions)
+  let expanded = $state(false)
   let dirty = $state({
     title: false,
     quantity: false,
@@ -40,6 +43,8 @@
     shortNote: false,
     countDetail: false,
     notes: false,
+    expirationDate: false,
+    dimensions: false,
   })
   let acknowledged = $state<{
     title: string | undefined
@@ -47,7 +52,17 @@
     unit: string | undefined
     count_detail: string | undefined
     notes: string | undefined
-  }>({ title: undefined, quantity: undefined, unit: undefined, count_detail: undefined, notes: undefined })
+    expiration_date: string | null | undefined
+    dimensions: string | undefined
+  }>({
+    title: undefined,
+    quantity: undefined,
+    unit: undefined,
+    count_detail: undefined,
+    notes: undefined,
+    expiration_date: undefined,
+    dimensions: undefined,
+  })
   let quantityError = $state(false)
   let status = $state('Saved on this device')
   let syncPhase = $state('idle')
@@ -77,6 +92,12 @@
       if (shortNote !== nextShortNote) shortNote = nextShortNote
     }
     if (!dirty.countDetail && countDetail !== entry.count_detail) countDetail = entry.count_detail
+    if (dirty.expirationDate && acknowledged.expiration_date === entry.expiration_date)
+      dirty.expirationDate = false
+    if (!dirty.expirationDate && expirationDate !== (entry.expiration_date ?? ''))
+      expirationDate = entry.expiration_date ?? ''
+    if (dirty.dimensions && acknowledged.dimensions === entry.dimensions) dirty.dimensions = false
+    if (!dirty.dimensions && dimensions !== entry.dimensions) dimensions = entry.dimensions
   })
   onDestroy(() => void autosave.dispose())
   onMount(() => {
@@ -101,12 +122,17 @@
     }
   })
 
-  function save(field: 'title' | 'quantity' | 'unit' | 'count_detail' | 'notes', value: string | null) {
+  function save(
+    field: 'title' | 'quantity' | 'unit' | 'count_detail' | 'notes' | 'expiration_date' | 'dimensions',
+    value: string | null,
+  ) {
     if (field === 'title') dirty.title = true
     if (field === 'quantity') dirty.quantity = true
     if (field === 'unit') dirty.unit = true
     if (field === 'count_detail') dirty.countDetail = true
     if (field === 'notes') dirty.notes = true
+    if (field === 'expiration_date') dirty.expirationDate = true
+    if (field === 'dimensions') dirty.dimensions = true
     acknowledged[field] = undefined
     status = 'Saving…'
     autosave.schedule(field, value)
@@ -132,6 +158,10 @@
     if (dirty.countDetail && persisted.count_detail === countDetail)
       acknowledged.count_detail = persisted.count_detail
     if ((dirty.shortNote || dirty.notes) && persisted.notes === notes) acknowledged.notes = persisted.notes
+    if (dirty.expirationDate && persisted.expiration_date === (expirationDate || null))
+      acknowledged.expiration_date = persisted.expiration_date
+    if (dirty.dimensions && persisted.dimensions === dimensions)
+      acknowledged.dimensions = persisted.dimensions
   }
   async function capture(kind: 'camera' | 'library') {
     // Keep the picker invocation in the click call stack for iOS.
@@ -247,7 +277,6 @@
           }
         }}
       />
-      {#if quantityError}<small class="error">Enter a number such as 12 or 12.5.</small>{/if}
     </div>
     <input
       class="unit"
@@ -284,15 +313,62 @@
       }}
       onblur={() => void flushDrafts()}
     />
+    {#if quantityError}<small class="error" role="alert">Enter a number such as 12 or 12.5.</small>{/if}
     <datalist id="units-{row.entry.collection_id}"
       >{#each units as item}<option value={item}></option>{/each}</datalist
     >
   </div>
 
   <div class="row-foot">
-    <details class="more-details">
-      <summary>More details</summary>
+    <button
+      class="more-toggle"
+      aria-expanded={expanded}
+      aria-controls="extra-{row.entry.id}"
+      aria-label="More details"
+      onclick={() => (expanded = !expanded)}
+      >More<ChevronDown size={16} aria-hidden="true" class={expanded ? 'flipped' : ''} /></button
+    >
+    <div class="row-status" aria-live="polite">
+      <StatusLine
+        tone={syncLabel === 'Syncing'
+          ? 'syncing'
+          : row.entry.sync_state === 'conflict' || row.entry.sync_state === 'error'
+            ? 'danger'
+            : row.entry.sync_state === 'synced'
+              ? 'ok'
+              : row.pending_sync || row.entry.sync_state === 'pending'
+                ? 'warn'
+                : 'muted'}
+        >{status === 'Saving…' || status === 'Could not add photos' ? status : syncLabel}</StatusLine
+      ><span class="photo-count">{row.photo_count} {row.photo_count === 1 ? 'photo' : 'photos'}</span>
+    </div>
+    <button class="details-link" aria-label="Details" onclick={() => ondetails(row.entry)}>Details ›</button>
+  </div>
+  {#if expanded}
+    <div class="extra" id="extra-{row.entry.id}">
       <label
+        >Expiration date<input
+          type="date"
+          value={expirationDate}
+          oninput={(event) => {
+            expirationDate = event.currentTarget.value
+            save('expiration_date', expirationDate || null)
+          }}
+          onblur={() => void flushDrafts()}
+        /></label
+      >
+      <label
+        >Dimensions<input
+          placeholder="e.g. 30 × 20 × 15 cm"
+          value={dimensions}
+          oninput={(event) => {
+            dimensions = event.currentTarget.value
+            save('dimensions', dimensions)
+          }}
+          onblur={() => void flushDrafts()}
+        /></label
+      >
+      <label class="wide"
         >Count detail<textarea
           rows="2"
           value={countDetail}
@@ -302,7 +378,7 @@
           }}
           onblur={() => void flushDrafts()}></textarea></label
       >
-      <label
+      <label class="wide"
         >Notes<textarea
           rows="3"
           value={notes}
@@ -314,23 +390,8 @@
           }}
           onblur={() => void flushDrafts()}></textarea></label
       >
-    </details>
-    <button class="details-link" aria-label="Details" onclick={() => ondetails(row.entry)}>Details ›</button>
-  </div>
-  <div class="row-status" aria-live="polite">
-    <StatusLine
-      tone={syncLabel === 'Syncing'
-        ? 'syncing'
-        : row.entry.sync_state === 'conflict' || row.entry.sync_state === 'error'
-          ? 'danger'
-          : row.entry.sync_state === 'synced'
-            ? 'ok'
-            : row.pending_sync || row.entry.sync_state === 'pending'
-              ? 'warn'
-              : 'muted'}
-      >{status === 'Saving…' || status === 'Could not add photos' ? status : syncLabel}</StatusLine
-    ><span>{row.photo_count} {row.photo_count === 1 ? 'photo' : 'photos'}</span>
-  </div>
+    </div>
+  {/if}
   <CameraSheet bind:open={cameraOpen} entryId={row.entry.id} />
 </article>
 
@@ -347,10 +408,10 @@
       'head head'
       'thumbs actions'
       'fields fields'
-      'more details'
-      'status status';
+      'foot foot'
+      'extra extra';
     align-items: center;
-    gap: var(--space-3) var(--space-2);
+    gap: var(--space-2);
   }
   .row-head {
     grid-area: head;
@@ -445,17 +506,14 @@
     grid-area: fields;
     min-width: 0;
     display: grid;
-    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
-    gap: var(--space-3);
+    grid-template-columns: minmax(0, 0.8fr) minmax(0, 1fr) minmax(0, 2fr);
+    gap: var(--space-2);
   }
   .quantity-wrap {
     position: relative;
     min-width: 0;
   }
-  .unit {
-    grid-column: 2;
-  }
-  .short-note {
+  .fields .error {
     grid-column: 1 / -1;
   }
   datalist {
@@ -466,47 +524,81 @@
     font-size: var(--text-sm);
   }
   .row-foot {
-    display: contents;
-  }
-  .more-details {
-    grid-area: more;
-  }
-  .more-details summary,
-  .details-link {
-    cursor: pointer;
-    color: var(--color-ballpoint);
-  }
-  .more-details summary {
+    grid-area: foot;
+    min-width: 0;
     display: flex;
     align-items: center;
-    min-height: var(--size-touch);
+    gap: var(--space-2);
   }
-  .more-details label {
-    display: block;
-    margin-top: var(--space-3);
-    color: var(--color-muted);
-    font-size: var(--text-sm);
-  }
-  .more-details textarea {
-    display: block;
-    margin-top: var(--space-2);
-  }
+  .more-toggle,
   .details-link {
-    grid-area: details;
-    min-height: 44px;
+    min-height: var(--size-touch);
     border: 0;
     padding: 0 var(--space-2);
     background: none;
     color: var(--color-ballpoint);
     font: inherit;
     white-space: nowrap;
+    cursor: pointer;
+  }
+  .more-toggle {
+    grid-area: more;
+    display: inline-flex;
+    align-items: center;
+    gap: var(--space-1);
+    padding-left: 0;
+  }
+  .more-toggle :global(svg) {
+    transition: transform var(--duration-fast) var(--easing-standard);
+  }
+  .more-toggle :global(svg.flipped) {
+    transform: rotate(180deg);
+  }
+  .details-link {
+    grid-area: details;
+    padding-right: 0;
   }
   .row-status {
     grid-area: status;
+    flex: 1;
+    min-width: 0;
     display: flex;
-    justify-content: space-between;
+    justify-content: center;
+    gap: var(--space-2);
+    overflow: hidden;
+    white-space: nowrap;
     color: var(--color-muted);
     font-size: var(--text-sm);
+  }
+  .row-status :global(.status-line) {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .extra {
+    grid-area: extra;
+    min-width: 0;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    gap: var(--space-3) var(--space-2);
+    padding-top: var(--space-2);
+    border-top: 1px solid var(--color-line);
+  }
+  .extra label {
+    min-width: 0;
+    display: grid;
+    gap: var(--space-1);
+    color: var(--color-muted);
+    font-size: var(--text-sm);
+  }
+  .extra .wide {
+    grid-column: 1 / -1;
+  }
+  /* iOS gives date inputs an intrinsic width that ignores the grid column unless the native look is dropped. */
+  .extra input[type='date'] {
+    display: block;
+    -webkit-appearance: none;
+    appearance: none;
   }
 
   @media (max-width: 430px) {
@@ -518,7 +610,7 @@
 
   @container entry-list (min-width: 1130px) {
     .entry-row {
-      grid-template-columns: 76px minmax(160px, 1.2fr) 242px 140px 88px 110px minmax(180px, 2fr) 64px 44px;
+      grid-template-columns: 76px minmax(120px, 1.5fr) 236px auto 72px 96px minmax(120px, 2fr) auto 44px;
       grid-template-areas:
         'tag title thumbs actions quantity unit note details menu'
         'status status status status status status status status status';
@@ -537,7 +629,7 @@
     }
     .title {
       grid-area: title;
-      min-width: 160px;
+      min-width: 0;
     }
     :global(.thumb-strip),
     :global(.no-photos) {
@@ -566,72 +658,12 @@
     .menu-cell {
       grid-area: menu;
     }
-    .more-details {
+    .more-toggle,
+    .extra {
       display: none;
     }
     .row-status {
-      border-top: 1px solid var(--color-line);
-      padding-top: var(--space-2);
-    }
-  }
-
-  @container entry-list (min-width: 700px) and (max-width: 1129px) {
-    .entry-row {
-      grid-template-columns: 56px minmax(70px, 1fr) 114px 156px 56px 56px minmax(70px, 1fr) 72px 44px;
-      grid-template-areas:
-        'tag title thumbs actions quantity unit note details menu'
-        'status status status status status status status status status';
-      gap: var(--space-1);
-      padding: var(--space-2);
-      border-radius: 0;
-    }
-    .row-head,
-    .fields,
-    .row-foot {
-      display: contents;
-    }
-    .tag-link {
-      grid-area: tag;
-      justify-self: start;
-    }
-    .title {
-      grid-area: title;
-      min-width: 0;
-    }
-    :global(.thumb-strip),
-    :global(.no-photos) {
-      grid-area: thumbs;
-    }
-    .entry-row :global(.thumb:nth-child(n + 3)) {
-      display: none;
-    }
-    .photo-actions {
-      grid-area: actions;
-      flex-wrap: nowrap;
-      justify-content: flex-start;
-      gap: var(--space-2);
-    }
-    .quantity-wrap {
-      grid-area: quantity;
-    }
-    .unit {
-      grid-area: unit;
-    }
-    .short-note {
-      grid-area: note;
-      grid-column: auto;
-    }
-    .details-link {
-      grid-area: details;
-      min-height: var(--size-touch);
-    }
-    .menu-cell {
-      grid-area: menu;
-    }
-    .more-details {
-      display: none;
-    }
-    .row-status {
+      justify-content: space-between;
       border-top: 1px solid var(--color-line);
       padding-top: var(--space-2);
     }

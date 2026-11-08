@@ -26,9 +26,8 @@ gradient washes and soft drop shadows; elevation comes from 1px lines and card-o
 ├─────────────────────────────────────────┤
 │ (o#0015)  [Title… placeholder]       ⋯ │   tag + inline title + overflow
 │ [▣][▣][▣] +2      [ Add Photo ][ ⊞ ]  │   3 newest thumbs; camera; library
-│ [ qty ][ unit  ]  [ short note……… ]   │
-│ More details                Details ›  │   expander; deliberate nav control
-│ Saved on this device         7 photos  │   quiet state line
+│ [qty][ unit ][ short note………………… ]   │   one line of inline fields
+│ More ⌄   ● Saved · 7 photos    Details › │   expander, state, nav
 ├─────────────────────────────────────────┤
 │ …                                       │
 ╞═════════════════════════════════════════╡
@@ -36,7 +35,7 @@ gradient washes and soft drop shadows; elevation comes from 1px lines and card-o
 └─────────────────────────────────────────┘
 ```
 
-Rows are full-bleed cards separated by 8px of floor colour. Content is left aligned, and the tag hangs at the left edge, as if tied to the row.
+Rows are full-bleed cards separated by 8px of floor colour. **More** expands Expiration date, Dimensions, Count detail and Notes inside the row, so these fields are one tap away. Detail shows every field without an expander. Overflow menus (`⋯`) close on a tap outside, on Escape, and after an item is chosen. Content is left aligned, and the tag hangs at the left edge, as if tied to the row.
 
 ### Desktop and tablet (≥ 900px wide)
 
