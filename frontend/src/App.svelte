@@ -34,10 +34,12 @@
   {#snippet children()}
     {#if router.route.name === 'collections'}<CollectionsPage />
     {:else if router.route.name === 'entries'}<EntryListPage collectionId={router.route.collectionId} />
-    {:else if router.route.name === 'detail'}<DetailPage
-        collectionId={router.route.collectionId}
-        entryId={router.route.entryId}
-      />
+    {:else if router.route.name === 'detail'}
+      {#if router.isDesktop}
+        <EntryListPage collectionId={router.route.collectionId} detailEntryId={router.route.entryId} />
+      {:else}
+        <DetailPage collectionId={router.route.collectionId} entryId={router.route.entryId} />
+      {/if}
     {:else if router.route.name === 'settings'}<SettingsPage />
     {:else if router.route.name === 'diagnostics'}<DiagnosticsPage />
     {:else}<section class="page">
