@@ -1,6 +1,6 @@
 import { liveQuery } from 'dexie'
 import { createId } from '../ids'
-import { getCaptureDb } from '../db'
+import { getCaptureDb, readPhotoBlob } from '../db'
 import { SETTING_KEYS, type Collection, type Entry, type Id, type OutboxItem, type Photo } from '../types'
 import type { Watchable } from '../repo'
 import type { AuthClient, ServerClient, SyncConflict, SyncEngine, SyncStatus } from './api'
@@ -405,7 +405,7 @@ export function createSyncEngine(options: SyncEngineOptions = {}): SyncEngine {
         }
         if (!response.ok && response.status !== 404)
           throw new Error(`Photo check failed (${response.status}).`)
-        const blob = await db.photoBlobs.get(photo.id)
+        const blob = await readPhotoBlob(photo.id, options.repoDbName)
         if (!blob) continue
         await db.photos.update(photo.id, { upload_state: 'uploading' })
         const put = await fetcher(`/api/photos/${encodeURIComponent(photo.id)}/original`, {

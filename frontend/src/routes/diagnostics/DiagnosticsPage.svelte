@@ -1,6 +1,7 @@
 <script lang="ts">
   import { repo } from '$lib/db'
   import { openCamera, readCapabilities, stopCamera } from '$lib/camera/stream'
+  import { generateSampleData } from '$lib/dev/sampleData'
   import Button from '../../components/ui/Button.svelte'
 
   type Report = Record<string, unknown>
@@ -10,6 +11,23 @@
   let reportText = $state('')
   let copyMessage = $state('')
   let reportArea = $state<HTMLTextAreaElement>()
+  let sampleBusy = $state(false)
+  let sampleMessage = $state('')
+  let sampleError = $state('')
+
+  async function generateTestData() {
+    sampleBusy = true
+    sampleMessage = ''
+    sampleError = ''
+    try {
+      const result = await generateSampleData()
+      sampleMessage = `Created ${result.name} with 300 entries. Open it from Collections.`
+    } catch (cause) {
+      sampleError = cause instanceof Error ? cause.message : 'Could not generate test data.'
+    } finally {
+      sampleBusy = false
+    }
+  }
 
   function shortHash(value: string) {
     let hash = 2166136261
@@ -177,6 +195,15 @@
       >
     {/if}
   </div>
+  <div class="diagnostic-card">
+    <h2>Test data</h2>
+    <p>Generate a clearly labelled Local Only collection with 300 entries and small sample photos.</p>
+    <Button variant="quiet" disabled={sampleBusy} onclick={generateTestData}
+      >{sampleBusy ? 'Generating…' : 'Generate 300 sample entries'}</Button
+    >
+    {#if sampleMessage}<p role="status">{sampleMessage}</p>{/if}
+    {#if sampleError}<p class="error" role="alert">{sampleError}</p>{/if}
+  </div>
 </section>
 
 <style>
@@ -184,6 +211,7 @@
     max-width: 860px;
   }
   .diagnostic-card {
+    margin-bottom: 16px;
     padding: 20px;
     background: var(--color-card);
     border: 1px solid var(--color-line);

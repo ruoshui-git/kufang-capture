@@ -30,15 +30,18 @@ import {
   configurePhotoBlobLoader,
   crc32,
   defaultImageProcessor,
+  invalidateThumbnail,
+  readBlob,
   sha256,
   type ImageProcessor,
-  invalidateThumbnail,
 } from '../photos'
 
 interface RepoOptions {
   databaseName?: string
   imageProcessor?: ImageProcessor
   now?: () => Date
+  /** 'bytes' forces the no-Blob storage path (tests; browsers are detected automatically). */
+  binaryStorage?: 'auto' | 'bytes'
 }
 
 interface PhotoWithUploadRetry extends Photo {
@@ -52,11 +55,17 @@ interface PhotoWithUploadRetry extends Photo {
  * collection/deleted and collection/capture; blobs by photo id; outbox by id,
  * collection/entity, and retry time; settings by key. Future versions add migrations.
  */
+// Stored shape; see StoredPhotoBlob below (Blob or bytes, decoded on read).
+type StoredPhotoBlobRow = {
+  photo_id: Id
+  original: Blob | { kind: 'bytes'; bytes: ArrayBuffer; type: string }
+  thumbnail: Blob | { kind: 'bytes'; bytes: ArrayBuffer; type: string } | null
+}
 class CaptureDb extends Dexie {
   collections!: Table<Collection, Id>
   entries!: Table<Entry, Id>
   photos!: Table<PhotoWithUploadRetry, Id>
-  photoBlobs!: Table<PhotoBlob, Id>
+  photoBlobs!: Table<StoredPhotoBlobRow, Id>
   outbox!: Table<OutboxItem, Id>
   settings!: Table<Setting, string>
   conflicts!: Table<import('../sync/api').SyncConflict, Id>
@@ -96,16 +105,66 @@ export function getCaptureDb(name = 'kufang-capture'): CaptureDb {
 }
 
 /** Returns whether this device still has the original bytes for a photo. */
+/**
+ * Some browsers cannot store Blobs in IndexedDB (Safari Private Browsing, WebKit ephemeral
+ * contexts). Photos are then stored as raw bytes plus their type: the same bytes, so originals stay
+ * exact. Callers always receive Blobs via decodePhotoBlob/readPhotoBlob.
+ */
+type StoredBytes = { kind: 'bytes'; bytes: ArrayBuffer; type: string }
+type StoredBinary = Blob | StoredBytes
+type StoredPhotoBlob = { photo_id: Id; original: StoredBinary; thumbnail: StoredBinary | null }
+const blobSupport = new WeakMap<Dexie, Promise<boolean>>()
+// Probed once per database with a slice of a real photo (same Blob implementation as the data).
+function blobStorageSupported(db: CaptureDb, sample: Blob): Promise<boolean> {
+  let probe = blobSupport.get(db)
+  if (!probe) {
+    probe = (async () => {
+      try {
+        await db.settings.put({ key: '__blob_probe', value: sample.slice(0, 1) })
+        await db.settings.delete('__blob_probe')
+        return true
+      } catch {
+        return false
+      }
+    })()
+    blobSupport.set(db, probe)
+  }
+  return probe
+}
+async function encodeBinary(db: CaptureDb, blob: Blob): Promise<StoredBinary> {
+  if (await blobStorageSupported(db, blob)) return blob
+  return { kind: 'bytes', bytes: await readBlob(blob), type: blob.type }
+}
+function decodeBinary(value: StoredBinary): Blob {
+  // Tagged, not duck-typed: Blob itself has a bytes() method in current browsers and Node.
+  const tagged = value as Partial<StoredBytes>
+  return tagged.kind === 'bytes' ? new Blob([tagged.bytes!], { type: tagged.type ?? '' }) : (value as Blob)
+}
+function decodePhotoBlob(row: StoredPhotoBlob | undefined): PhotoBlob | undefined {
+  if (!row) return undefined
+  return {
+    photo_id: row.photo_id,
+    original: decodeBinary(row.original),
+    thumbnail: row.thumbnail ? decodeBinary(row.thumbnail) : null,
+  }
+}
+/** Read a photo's stored bytes as Blobs, whatever storage form the browser required. */
+export async function readPhotoBlob(id: Id, databaseName = 'kufang-capture'): Promise<PhotoBlob | undefined> {
+  const db = getCaptureDb(databaseName)
+  return decodePhotoBlob((await db.photoBlobs.get(id)) as StoredPhotoBlob | undefined)
+}
+
 export async function hasLocalBlob(id: Id, databaseName = 'kufang-capture'): Promise<boolean> {
   return (await getCaptureDb(databaseName).photoBlobs.get(id)) !== undefined
 }
 
 export function createRepo(options: RepoOptions = {}): Repo {
   const db = getCaptureDb(options.databaseName)
+  if (options.binaryStorage === 'bytes') blobSupport.set(db, Promise.resolve(false))
   const imageProcessor = options.imageProcessor ?? defaultImageProcessor
   const now = options.now ?? (() => new Date())
   const stamp = () => now().toISOString()
-  configurePhotoBlobLoader((id) => db.photoBlobs.get(id))
+  configurePhotoBlobLoader(async (id) => decodePhotoBlob(await db.photoBlobs.get(id)))
 
   const enqueue = async (
     collection: Collection,
@@ -590,6 +649,7 @@ export function createRepo(options: RepoOptions = {}): Repo {
         incoming.map(async (photo) => ({
           digest: await sha256(photo.blob),
           checksum: await crc32(photo.blob),
+          stored: await encodeBinary(db, photo.blob),
         })),
       )
       const created = await db.transaction(
@@ -606,7 +666,7 @@ export function createRepo(options: RepoOptions = {}): Repo {
           const made: Photo[] = []
           for (const [index, photo] of incoming.entries()) {
             const capturedAt = photo.captured_at ?? at
-            const { digest, checksum } = prepared[index]!
+            const { digest, checksum, stored } = prepared[index]!
             const mime = photo.blob.type || mimeFromFilename(photo.filename)
             const filename = photo.filename || generatedFilename(capturedAt, mime)
             const item: Photo = {
@@ -635,7 +695,7 @@ export function createRepo(options: RepoOptions = {}): Repo {
               sync_state: collection.storage_mode === 'local_only' ? 'local_only' : 'pending',
             }
             await db.photos.add(item)
-            await db.photoBlobs.add({ photo_id: item.id, original: photo.blob, thumbnail: null })
+            await db.photoBlobs.add({ photo_id: item.id, original: stored, thumbnail: null })
             await enqueue(collection, 'photo', item, 'upsert', { ...item })
             made.push(item)
           }
@@ -654,6 +714,7 @@ export function createRepo(options: RepoOptions = {}): Repo {
       for (const item of created) {
         try {
           const processed = await imageProcessor(incoming[created.indexOf(item)]!.blob)
+          const storedThumbnail = await encodeBinary(db, processed.thumbnail)
           await db.transaction('rw', db.photos, db.photoBlobs, db.collections, db.outbox, async () => {
             const current = await db.photos.get(item.id)
             const currentCollection = await db.collections.get(collection.id)
@@ -671,7 +732,7 @@ export function createRepo(options: RepoOptions = {}): Repo {
                   : ('pending' as const),
             }
             await db.photos.put(saved)
-            await db.photoBlobs.put({ ...blob, thumbnail: processed.thumbnail })
+            await db.photoBlobs.put({ ...blob, thumbnail: storedThumbnail })
             await enqueue(currentCollection, 'photo', saved, 'upsert', {
               width: saved.width,
               height: saved.height,
@@ -801,7 +862,7 @@ export function createRepo(options: RepoOptions = {}): Repo {
         await enqueue(collection, 'photo', saved, 'restore', { deleted_at: null })
         await validateCover(photo.entry_id, collection)
       }),
-    getPhotoBlob: (id) => db.photoBlobs.get(id),
+    getPhotoBlob: async (id) => decodePhotoBlob(await db.photoBlobs.get(id)),
     watchDeletedPhotos: (collectionId) =>
       liveQuery(async () => {
         const [photos, entries] = await Promise.all([

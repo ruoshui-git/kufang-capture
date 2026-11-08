@@ -40,21 +40,22 @@
     conflictOpen = true
   }
 
-  onMount(() => {
-    let subscription: Unsubscriber | { unsubscribe(): void } | undefined
-    const observe = () => {
-      if (typeof subscription === 'function') subscription()
-      else subscription?.unsubscribe()
-      subscription = repo
-        .watchCollectionSummaries({ includeArchived })
-        .subscribe((items) => (summaries = items))
-    }
-    observe()
-    if (new URLSearchParams(window.location.search).get('new') === '1') void openNew()
+  let subscription: Unsubscriber | { unsubscribe(): void } | undefined
+  $effect(() => {
+    if (typeof subscription === 'function') subscription()
+    else subscription?.unsubscribe()
+    subscription = repo
+      .watchCollectionSummaries({ includeArchived })
+      .subscribe((items) => (summaries = items))
     return () => {
       if (typeof subscription === 'function') subscription()
       else subscription?.unsubscribe()
+      subscription = undefined
     }
+  })
+
+  onMount(() => {
+    if (new URLSearchParams(window.location.search).get('new') === '1') void openNew()
   })
 
   const totalEntries = $derived(summaries.reduce((sum, item) => sum + item.entry_count, 0))
