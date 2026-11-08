@@ -115,27 +115,35 @@ export function readBlob(blob: Blob): Promise<ArrayBuffer> {
 class ObjectUrlCache {
   private readonly urls = new Map<string, string>()
   constructor(private readonly limit: number) {}
-  async get(key: string, load: () => Promise<Blob | undefined>): Promise<string | null> {
+  async get(key: string, load: () => Promise<Blob | string | undefined>): Promise<string | null> {
     const present = this.urls.get(key)
     if (present) {
       this.urls.delete(key)
       this.urls.set(key, present)
       return present
     }
-    const blob = await load()
-    if (!blob) return null
-    const url = URL.createObjectURL(blob)
+    const loaded = await load()
+    if (!loaded) return null
+    // A string is a same-origin server URL (photo synced from another device); only Blobs
+    // become object URLs that need revoking.
+    const url = typeof loaded === 'string' ? loaded : URL.createObjectURL(loaded)
     this.urls.set(key, url)
     while (this.urls.size > this.limit) {
       const oldest = this.urls.keys().next().value as string | undefined
       if (oldest === undefined) break
-      URL.revokeObjectURL(this.urls.get(oldest)!)
+      const stale = this.urls.get(oldest)!
+      if (stale.startsWith('blob:')) URL.revokeObjectURL(stale)
       this.urls.delete(oldest)
     }
     return url
   }
+  delete(key: string): void {
+    const url = this.urls.get(key)
+    if (url?.startsWith('blob:')) URL.revokeObjectURL(url)
+    this.urls.delete(key)
+  }
   clear(): void {
-    for (const url of this.urls.values()) URL.revokeObjectURL(url)
+    for (const url of this.urls.values()) if (url.startsWith('blob:')) URL.revokeObjectURL(url)
     this.urls.clear()
   }
 }
@@ -146,11 +154,28 @@ const originals = new ObjectUrlCache(10)
 export function configurePhotoBlobLoader(loader: typeof blobLoader): void {
   blobLoader = loader
 }
+/**
+ * Display URL for a photo preview: the local thumbnail, else the local original (thumbnail
+ * generation failed or is still running), else the authenticated server thumbnail for photos
+ * that exist only on the server (synced from another device).
+ */
 export function thumbnailUrl(photoId: string): Promise<string | null> {
-  return thumbnails.get(photoId, async () => (await blobLoader(photoId))?.thumbnail ?? undefined)
+  return thumbnails.get(photoId, async () => {
+    const local = await blobLoader(photoId)
+    if (local) return local.thumbnail ?? local.original
+    return `/api/photos/${encodeURIComponent(photoId)}/thumbnail`
+  })
 }
 export function originalUrl(photoId: string): Promise<string | null> {
-  return originals.get(photoId, async () => (await blobLoader(photoId))?.original ?? undefined)
+  return originals.get(photoId, async () => {
+    const local = await blobLoader(photoId)
+    if (local) return local.original
+    return `/api/photos/${encodeURIComponent(photoId)}/original`
+  })
+}
+/** Forget a cached preview so the next request picks up a newly generated thumbnail. */
+export function invalidateThumbnail(photoId: string): void {
+  thumbnails.delete(photoId)
 }
 export function clearPhotoUrlCaches(): void {
   thumbnails.clear()

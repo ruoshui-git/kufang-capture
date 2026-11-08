@@ -28,6 +28,7 @@
   let viewerEntryId = $state('')
   let viewerPhotoId = $state<string | null>(null)
   let restoredScroll = false
+  let previousDetailEntryId: string | undefined
   let sentinel = $state<HTMLDivElement>()
   let listElement = $state<HTMLDivElement>()
 
@@ -42,7 +43,7 @@
         limit = Math.max(limit, 40)
         if (!restoredScroll) {
           restoredScroll = true
-          requestAnimationFrame(() => restoreScroll(`collection:${collectionId}`))
+          requestAnimationFrame(() => restoreScroll(`entries:${collectionId}`))
         }
       })
   }
@@ -52,6 +53,14 @@
     sort
     collectionId
     subscribeRows()
+  })
+
+  $effect(() => {
+    const currentDetailEntryId = detailEntryId
+    if (previousDetailEntryId && !currentDetailEntryId) {
+      requestAnimationFrame(() => restoreScroll(`entries:${collectionId}`))
+    }
+    previousDetailEntryId = currentDetailEntryId
   })
 
   $effect(() => {
@@ -83,15 +92,11 @@
     if (sentinel) observer.observe(sentinel)
     const onNew = () => void createEntry()
     const onHide = () => {
-      saveScroll(`collection:${collectionId}`)
-    }
-    const onKey = (event: KeyboardEvent) => {
-      if (event.key === 'Escape' && detailEntryId) navigate(`/c/${collectionId}`)
+      saveScroll(`entries:${collectionId}`)
     }
     window.addEventListener('capture:new-entry', onNew)
     window.addEventListener('pagehide', onHide)
     document.addEventListener('visibilitychange', onHide)
-    window.addEventListener('keydown', onKey)
     return () => {
       if (typeof activeSubscription === 'function') activeSubscription()
       else activeSubscription?.unsubscribe()
@@ -99,8 +104,6 @@
       window.removeEventListener('capture:new-entry', onNew)
       window.removeEventListener('pagehide', onHide)
       document.removeEventListener('visibilitychange', onHide)
-      window.removeEventListener('keydown', onKey)
-      saveScroll(`collection:${collectionId}`)
     }
   })
 
@@ -144,7 +147,7 @@
     return `#${String(value).padStart(4, '0')}`
   }
   function openDetails(entry: EntryRow['entry']) {
-    saveScroll(`collection:${collectionId}`)
+    saveScroll(`entries:${collectionId}`)
     navigate(`/c/${collectionId}/e/${entry.id}`)
   }
   function openViewer(entryId: string, photoId: string) {
@@ -167,47 +170,62 @@
             >‹ Collections</a
           >{/if}
         <h1>{summary?.collection.name ?? 'Collection'}</h1>
+        {#if summary}<Badge mode={summary.collection.storage_mode} />{/if}
       </div>
-      {#if summary}<Badge mode={summary.collection.storage_mode} />{/if}
     </div>
     {#if summary}
       <div class="summary-chips">
-        <Chip>{summary.entry_count} {summary.entry_count === 1 ? 'Entry' : 'Entries'}</Chip>
-        <Chip>{summary.photo_count} {summary.photo_count === 1 ? 'Photo' : 'Photos'}</Chip>
-        <Chip>{summary.needs_review_count} Needs review</Chip>
-        <button class="summary-filter" onclick={() => (filter = 'incomplete')}
-          ><Chip>{summary.incomplete_count} Incomplete</Chip></button
-        >
-        {#each summary.quantity_by_unit as quantity (quantity.unit)}<Chip
-            >{quantity.total} {quantity.unit || 'no unit'}</Chip
-          >{/each}
+        <Chip>{summary.entry_count} {summary.entry_count === 1 ? 'entry' : 'entries'}</Chip>
+        <Chip>{summary.photo_count} {summary.photo_count === 1 ? 'photo' : 'photos'}</Chip>
+        {#if summary.incomplete_count > 0}
+          <button class="summary-filter" onclick={() => (filter = 'incomplete')}
+            ><Chip>{summary.incomplete_count} incomplete</Chip></button
+          >
+        {/if}
+        {#if summary.needs_review_count > 0}<Chip>{summary.needs_review_count} needs review</Chip>{/if}
       </div>
+      {#if summary.quantity_by_unit.length > 0}
+        <div class="quantity-chips" aria-label="Quantities by unit">
+          {#each summary.quantity_by_unit as quantity (quantity.unit)}<Chip
+              >{quantity.total} {quantity.unit || 'no unit'}</Chip
+            >{/each}
+        </div>
+      {/if}
     {/if}
     <div class="toolbar">
-      <div class="filters" role="group" aria-label="Entry filters">
-        {#each [['all', 'All'], ['incomplete', 'Incomplete'], ['pending_sync', 'Pending sync'], ['deleted', 'Recently Deleted']] as item}
-          <button class:active={filter === item[0]} onclick={() => (filter = item[0] as EntryFilter)}
-            >{item[1]}</button
+      <div class="filter-row">
+        <div class="filters" role="group" aria-label="Entry filters">
+          {#each [['all', 'All'], ['incomplete', 'Incomplete'], ['pending_sync', 'Pending sync'], ['deleted', 'Recently Deleted']] as item}
+            <button class:active={filter === item[0]} onclick={() => (filter = item[0] as EntryFilter)}
+              >{item[1]}</button
+            >
+          {/each}
+        </div>
+        <Menu label="Collection actions">
+          <button
+            role="menuitem"
+            onclick={() => {
+              sort = 'newest'
+              void repo.setSetting(SETTING_KEYS.entrySort, sort)
+            }}>Newest first</button
           >
-        {/each}
+          <button
+            role="menuitem"
+            onclick={() => {
+              sort = 'oldest'
+              void repo.setSetting(SETTING_KEYS.entrySort, sort)
+            }}>Oldest first</button
+          >
+          <button role="menuitem" disabled title="Coming soon">Export ZIP · Coming soon</button>
+        </Menu>
       </div>
-      <div class="search-sort">
+      <div class="search-row">
         <input
           aria-label="Search entries"
           placeholder="Search entries"
           value={search}
           oninput={(event) => searchChanged(event.currentTarget.value)}
         />
-        <button
-          class="sort"
-          onclick={() => {
-            sort = sort === 'newest' ? 'oldest' : 'newest'
-            void repo.setSetting(SETTING_KEYS.entrySort, sort)
-          }}>{sort === 'newest' ? 'Newest first' : 'Oldest first'}</button
-        >
-        <Menu label="Collection actions"
-          ><button role="menuitem" disabled title="Coming soon">Export ZIP · Coming soon</button></Menu
-        >
       </div>
       <div class="new-entry-toolbar">
         <Button variant="ink" onclick={() => void createEntry()}>＋ New Entry</Button>
@@ -231,7 +249,7 @@
     {/if}
   </section>
   {#if detailEntryId && matchMedia('(min-width: 900px)').matches}
-    <aside class="detail-panel"><DetailPage {collectionId} entryId={detailEntryId} /></aside>
+    <aside class="detail-panel"><DetailPage {collectionId} entryId={detailEntryId} variant="panel" /></aside>
   {/if}
 </div>
 {#if !matchMedia('(min-width: 900px)').matches}<div class="new-entry-bar">
@@ -246,21 +264,32 @@
 <style>
   .list-with-detail {
     display: block;
+    min-width: 0;
   }
   .entries-page {
-    padding-bottom: 100px;
+    min-width: 0;
+    width: 100%;
+    padding: 24px 12px calc(100px + env(safe-area-inset-bottom));
+    container: entry-list / inline-size;
   }
   .collection-heading {
     display: flex;
-    align-items: center;
-    justify-content: space-between;
+    align-items: flex-start;
     gap: 12px;
+  }
+  .heading-title {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 8px 12px;
+    min-width: 0;
   }
   .heading-title h1 {
     overflow-wrap: anywhere;
   }
   .back {
     display: inline-block;
+    flex-basis: 100%;
     margin-bottom: 6px;
     text-decoration: none;
   }
@@ -268,7 +297,19 @@
     display: flex;
     gap: 8px;
     flex-wrap: wrap;
-    margin: 14px 0;
+    margin: 14px 0 6px;
+    min-width: 0;
+  }
+  .quantity-chips {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    margin-bottom: 12px;
+  }
+  .quantity-chips :global(.chip) {
+    background: color-mix(in srgb, var(--color-tag) 28%, var(--color-card));
+    border-color: color-mix(in srgb, var(--color-tag) 65%, var(--color-line));
+    color: var(--color-ink);
   }
   .summary-filter {
     background: none;
@@ -278,20 +319,31 @@
     cursor: pointer;
   }
   .toolbar {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    gap: 8px;
+    margin: 14px 0;
+    min-width: 0;
+  }
+  .filter-row {
     display: flex;
     align-items: center;
-    gap: 12px;
-    justify-content: space-between;
-    margin: 14px 0;
-    flex-wrap: wrap;
+    gap: 6px;
+    min-width: 0;
   }
   .filters {
     display: flex;
     gap: 4px;
     overflow-x: auto;
+    flex: 1 1 auto;
+    min-width: 0;
+    scrollbar-width: none;
+    mask-image: linear-gradient(to right, #000 0%, #000 88%, transparent 100%);
   }
-  .filters button,
-  .sort {
+  .filters::-webkit-scrollbar {
+    display: none;
+  }
+  .filters button {
     border: 1px solid var(--color-line);
     background: var(--color-card);
     color: var(--color-ink);
@@ -304,23 +356,23 @@
     background: var(--color-ink);
     color: var(--color-floor);
   }
-  .search-sort {
-    display: flex;
-    gap: 8px;
-    align-items: center;
-    flex: 1;
+  .search-row {
+    width: 100%;
+    min-width: 0;
   }
-  .search-sort input {
+  .search-row input {
     min-height: 42px;
-    max-width: 230px;
-    min-width: 120px;
-    flex: 1;
+    width: 100%;
+    min-width: 0;
     border: 1px solid var(--color-line);
     border-radius: 6px;
     padding: 8px 10px;
     background: var(--color-card);
     color: var(--color-ink);
     font-size: 16px;
+  }
+  .new-entry-toolbar {
+    display: none;
   }
   .entry-list {
     display: grid;
@@ -353,39 +405,46 @@
   .detail-panel {
     display: none;
   }
-  :global(.new-entry-toolbar) {
-    display: none;
+  .summary-chips :global(.chip),
+  .quantity-chips :global(.chip) {
+    white-space: nowrap;
+  }
+  @media (min-width: 600px) {
+    .entries-page {
+      padding-right: 16px;
+      padding-left: 16px;
+    }
   }
   @media (min-width: 900px) {
-    :global(.new-entry-toolbar) {
-      display: inline-flex;
-    }
     .list-with-detail.has-detail {
       display: grid;
       grid-template-columns: minmax(0, 1fr) minmax(380px, 40vw);
       align-items: start;
     }
     .entries-page {
-      padding-bottom: 32px;
+      margin: 0;
+      padding-bottom: calc(32px + env(safe-area-inset-bottom));
       max-width: none;
     }
-    .entry-list {
-      gap: 0;
-      border-top: 1px solid var(--color-line);
-    }
     .toolbar {
-      justify-content: flex-end;
+      grid-template-columns: minmax(0, 1fr) minmax(160px, 240px) auto;
+      align-items: center;
+      gap: 8px;
     }
-    .filters {
-      margin-right: auto;
+    .new-entry-toolbar {
+      display: flex;
     }
     .detail-panel {
       display: block;
+      min-width: 0;
+      overflow-x: clip;
       border-left: 1px solid var(--color-line);
       min-height: calc(100dvh - 24px);
       background: var(--color-card);
     }
     .detail-panel :global(.page) {
+      width: 100%;
+      min-width: 0;
       padding: 20px;
       max-width: none;
     }

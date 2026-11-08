@@ -147,14 +147,18 @@ def get_photo(data_dir: Path, photo_id: str, thumbnail: bool):
     else:
         path = data_dir / record["storage_key"] if record["storage_key"] else Path("/")
         mime = record["mime_type"]
+    cache = "private, max-age=31536000, immutable"
+    if thumbnail and not path.is_file() and record["storage_key"]:
+        # No client thumbnail was uploaded: serve the original so lists still show the photo,
+        # but only cache briefly so a later thumbnail upload takes over.
+        path = data_dir / record["storage_key"]
+        mime = record["mime_type"]
+        thumbnail = False
+        cache = "private, max-age=300"
     if not path.is_file():
         raise HTTPException(404, detail="photo_not_stored")
     etag = record["sha256"] if not thumbnail else hashlib.sha256(path.read_bytes()).hexdigest()
-    response = FileResponse(
-        path,
-        media_type=mime,
-        headers={"ETag": f'"{etag}"', "Cache-Control": "private, max-age=31536000, immutable"},
-    )
+    response = FileResponse(path, media_type=mime, headers={"ETag": f'"{etag}"', "Cache-Control": cache})
     return response
 
 

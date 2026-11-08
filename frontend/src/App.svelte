@@ -38,7 +38,7 @@
       {#if router.isDesktop}
         <EntryListPage collectionId={router.route.collectionId} detailEntryId={router.route.entryId} />
       {:else}
-        <DetailPage collectionId={router.route.collectionId} entryId={router.route.entryId} />
+        <DetailPage collectionId={router.route.collectionId} entryId={router.route.entryId} variant="page" />
       {/if}
     {:else if router.route.name === 'settings'}<SettingsPage />
     {:else if router.route.name === 'diagnostics'}<DiagnosticsPage />

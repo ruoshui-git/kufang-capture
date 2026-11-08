@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onDestroy, onMount } from 'svelte'
+  import { Camera, Images } from '@lucide/svelte'
   import type { EntryRow as EntryRowModel, Entry, Photo } from '$lib/types'
   import { formatSequence } from '$lib/types'
   import { repo } from '$lib/db'
@@ -34,7 +35,6 @@
   let focused = $state('')
   let quantityError = $state(false)
   let status = $state('Saved on this device')
-  let isDesktop = $state(false)
   let mode = $state<CaptureMode>('native')
   let cameraOpen = $state(false)
   let autosaveEntryId = ''
@@ -56,15 +56,10 @@
   })
   onDestroy(() => void autosave.dispose())
   onMount(() => {
-    const media = window.matchMedia('(min-width: 900px)')
-    const update = () => (isDesktop = media.matches)
     const flush = () => void autosave.flush()
-    update()
-    media.addEventListener('change', update)
     window.addEventListener('pagehide', flush)
     document.addEventListener('visibilitychange', flush)
     return () => {
-      media.removeEventListener('change', update)
       window.removeEventListener('pagehide', flush)
       document.removeEventListener('visibilitychange', flush)
     }
@@ -113,7 +108,7 @@
   }
 </script>
 
-<article class="entry-row" class:desktop-row={isDesktop}>
+<article class="entry-row">
   <div class="row-head">
     <button
       class="tag-link"
@@ -134,31 +129,37 @@
         void autosave.flush()
       }}
     />
-    <Menu label="Entry actions">
-      <button
-        role="menuitem"
-        onclick={() =>
-          void repo.updateEntry(row.entry.id, {
-            review_status: row.entry.review_status === 'needs_review' ? 'complete' : 'needs_review',
-          })}>{row.entry.review_status === 'needs_review' ? 'Mark complete' : 'Mark needs review'}</button
-      >
-      <button role="menuitem" onclick={() => ondelete(row)}>Delete entry</button>
-    </Menu>
+    <div class="menu-cell">
+      <Menu label="Entry actions">
+        <button
+          role="menuitem"
+          onclick={() =>
+            void repo.updateEntry(row.entry.id, {
+              review_status: row.entry.review_status === 'needs_review' ? 'complete' : 'needs_review',
+            })}>{row.entry.review_status === 'needs_review' ? 'Mark complete' : 'Mark needs review'}</button
+        >
+        <button role="menuitem" onclick={() => ondelete(row)}>Delete entry</button>
+      </Menu>
+    </div>
   </div>
-  <div class="photos-actions">
-    <ThumbnailStrip
-      photos={row.recent_photos}
-      total={row.photo_count}
-      onmore={() => void openMorePhotos()}
-      onopen={(id) => {
-        onviewer(row.entry.id, id)
-      }}
-    />
-    <Button variant="capture" onclick={openCapture}>▣ Add Photo</Button>
-    <button class="library" aria-label="Add from Photos" onclick={() => void capture('library')}
-      >＋<span>Add from Photos</span></button
-    >
+
+  <ThumbnailStrip
+    photos={row.recent_photos}
+    total={row.photo_count}
+    onmore={() => void openMorePhotos()}
+    onopen={(id) => onviewer(row.entry.id, id)}
+  />
+  <div class="photo-actions">
+    <Button variant="capture" onclick={openCapture}>
+      <Camera size={18} aria-hidden="true" />
+      <span class="camera-label">Add Photo</span>
+    </Button>
+    <button class="library" aria-label="Add from Photos" onclick={() => void capture('library')}>
+      <Images size={18} aria-hidden="true" />
+      <span class="visually-hidden">Add from Photos</span>
+    </button>
   </div>
+
   <div class="fields">
     <div class="quantity-wrap">
       <input
@@ -186,6 +187,7 @@
       {#if quantityError}<small class="error">Enter a number such as 12 or 12.5.</small>{/if}
     </div>
     <input
+      class="unit"
       aria-label="Unit"
       list="units-{row.entry.collection_id}"
       placeholder="Unit"
@@ -208,6 +210,7 @@
       }}
     />
     <input
+      class="short-note"
       aria-label="Short note"
       placeholder="Short note"
       bind:value={shortNote}
@@ -225,6 +228,7 @@
       >{#each units as item}<option value={item}></option>{/each}</datalist
     >
   </div>
+
   <div class="row-foot">
     <details class="more-details">
       <summary>More details</summary>
@@ -251,7 +255,7 @@
           }}></textarea></label
       >
     </details>
-    <button class="details-link" onclick={() => ondetails(row.entry)}>Details ›</button>
+    <button class="details-link" aria-label="Details" onclick={() => ondetails(row.entry)}>Details ›</button>
   </div>
   <div class="row-status">
     <StatusLine tone={row.pending_sync ? 'warn' : 'muted'}
@@ -263,77 +267,142 @@
 
 <style>
   .entry-row {
+    min-width: 0;
     background: var(--color-card);
     border: 1px solid var(--color-line);
     border-radius: 8px;
-    padding: 12px;
+    padding: 8px;
     content-visibility: auto;
-    contain-intrinsic-size: 270px;
+    contain-intrinsic-size: 300px;
     display: grid;
-    gap: 10px;
+    grid-template-columns: minmax(0, 1fr) auto;
+    grid-template-areas:
+      'head head'
+      'thumbs actions'
+      'fields fields'
+      'more details'
+      'status status';
+    align-items: center;
+    gap: 8px 4px;
   }
   .row-head {
-    display: flex;
+    grid-area: head;
+    min-width: 0;
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr) auto;
     align-items: center;
-    gap: 10px;
+    gap: 8px;
   }
   .tag-link {
+    grid-area: auto;
     border: 0;
     padding: 0;
     background: transparent;
     cursor: pointer;
   }
   .title {
-    flex: 1;
     min-width: 0;
     font-weight: 600;
   }
   .entry-row input,
   .entry-row textarea {
-    font-size: 16px;
-    min-height: 42px;
+    width: 100%;
+    min-width: 0;
+    min-height: 44px;
     border: 1px solid var(--color-line);
     border-radius: 6px;
     padding: 8px 10px;
     background: var(--color-card);
     color: var(--color-ink);
-    width: 100%;
+    font-size: 16px;
   }
-  .photos-actions {
+  .menu-cell {
+    min-width: 44px;
     display: flex;
-    gap: 8px;
+    justify-content: flex-end;
+  }
+  .menu-cell :global(.menu) {
+    margin: 0;
+  }
+  :global(.thumb-strip),
+  :global(.no-photos) {
+    grid-area: thumbs;
+    min-width: 0;
+  }
+  .photo-actions {
+    grid-area: actions;
+    display: flex;
     align-items: center;
-    flex-wrap: wrap;
+    justify-content: flex-end;
+    gap: 2px;
+    white-space: nowrap;
+  }
+  .photo-actions :global(.button),
+  .library {
+    width: 44px;
+    min-width: 44px;
+    height: 44px;
+    min-height: 44px;
+    padding: 0;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
   }
   .library {
     border: 1px solid var(--color-line);
     background: transparent;
     color: var(--color-ink);
     border-radius: 6px;
-    min-height: 44px;
-    padding: 8px 10px;
+    cursor: pointer;
   }
-  .library span {
+  .visually-hidden {
     position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
     clip: rect(0, 0, 0, 0);
+    white-space: nowrap;
+    border: 0;
+  }
+  .camera-label {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
     clip-path: inset(50%);
+    white-space: nowrap;
   }
   .fields {
+    grid-area: fields;
+    min-width: 0;
     display: grid;
-    grid-template-columns: 1fr 1fr;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
     gap: 8px;
   }
   .quantity-wrap {
     position: relative;
+    min-width: 0;
+  }
+  .unit {
+    grid-column: 2;
+  }
+  .short-note {
+    grid-column: 1 / -1;
+  }
+  datalist {
+    display: none;
   }
   .error {
     color: var(--color-danger);
     font-size: 13px;
   }
   .row-foot {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
+    display: contents;
+  }
+  .more-details {
+    grid-area: more;
   }
   .more-details summary,
   .details-link {
@@ -343,73 +412,106 @@
   .more-details label {
     display: block;
     margin-top: 8px;
-    font-size: 13px;
     color: var(--color-muted);
+    font-size: 13px;
   }
   .more-details textarea {
     display: block;
-    width: 100%;
     margin-top: 4px;
   }
   .details-link {
+    grid-area: details;
+    min-height: 44px;
     border: 0;
+    padding: 0 4px;
     background: none;
+    color: var(--color-ballpoint);
     font: inherit;
     white-space: nowrap;
   }
   .row-status {
+    grid-area: status;
     display: flex;
     justify-content: space-between;
     color: var(--color-muted);
     font-size: 13px;
   }
-  .desktop-row {
-    grid-template-columns: 250px 230px minmax(270px, 1.5fr) minmax(180px, 1fr) 90px;
-    align-items: center;
-    gap: 10px;
-    padding: 8px 10px;
-    border-radius: 0;
+
+  @media (max-width: 430px) {
+    .entry-row {
+      padding: 4px;
+      gap: 6px 2px;
+    }
   }
-  .desktop-row .row-head {
-    grid-column: 1;
-    grid-row: 1;
-    min-width: 0;
-  }
-  .desktop-row .photos-actions {
-    grid-column: 2;
-    grid-row: 1;
-    flex-wrap: wrap;
-  }
-  .desktop-row .photos-actions :global(.button) {
-    min-height: 36px;
-    padding: 5px 8px;
-    font-size: 13px;
-  }
-  .desktop-row .fields {
-    grid-column: 3 / 5;
-    grid-row: 1;
-    grid-template-columns: 90px 110px minmax(100px, 1fr);
-  }
-  .desktop-row .row-foot {
-    grid-column: 5;
-    grid-row: 1;
-  }
-  .desktop-row .row-status {
-    grid-column: 1 / -1;
-    border-top: 1px solid var(--color-line);
-    padding-top: 5px;
-  }
-  .desktop-row .more-details {
-    display: none;
-  }
-  @media (min-width: 900px) {
-    .library span {
+
+  @container entry-list (min-width: 1130px) {
+    .entry-row {
+      grid-template-columns: 76px minmax(160px, 1.2fr) 242px 140px 88px 110px minmax(180px, 2fr) 64px 44px;
+      grid-template-areas:
+        'tag title thumbs actions quantity unit note details menu'
+        'status status status status status status status status status';
+      gap: 2px;
+      padding: 4px;
+      border-radius: 0;
+    }
+    .row-head,
+    .fields,
+    .row-foot {
+      display: contents;
+    }
+    .tag-link {
+      grid-area: tag;
+      justify-self: start;
+    }
+    .title {
+      grid-area: title;
+      min-width: 160px;
+    }
+    :global(.thumb-strip),
+    :global(.no-photos) {
+      grid-area: thumbs;
+    }
+    .photo-actions {
+      grid-area: actions;
+      flex-wrap: nowrap;
+      justify-content: flex-start;
+      gap: 4px;
+    }
+    .photo-actions :global(.button) {
+      width: auto;
+      min-width: 92px;
+      padding: 0 8px;
+    }
+    .camera-label {
       position: static;
-      clip: auto;
+      width: auto;
+      height: auto;
+      overflow: visible;
       clip-path: none;
     }
-    .library {
-      white-space: nowrap;
+    .quantity-wrap {
+      grid-area: quantity;
+    }
+    .unit {
+      grid-area: unit;
+    }
+    .short-note {
+      grid-area: note;
+      grid-column: auto;
+    }
+    .details-link {
+      grid-area: details;
+      min-height: 44px;
+    }
+    .menu-cell {
+      grid-area: menu;
+    }
+    .more-details {
+      display: none;
+    }
+    .row-status {
+      border-top: 1px solid var(--color-line);
+      padding-top: 4px;
     }
   }
 </style>
