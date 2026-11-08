@@ -9,7 +9,9 @@ for arg in "$@"; do [[ $arg == --quick ]] && quick=1 || rev=$arg; done
 ctx=$(mktemp -d)
 trap 'rm -rf "$ctx"' EXIT
 git -C "$repo" archive "$rev" | tar -x -C "$ctx"
-ln -s "$repo/frontend/node_modules" "$ctx/frontend/node_modules"
+# Own install inside the export (hard links from the pnpm store; offline, fast). Never
+# symlink the real node_modules: pnpm would relink it into this temp dir.
+(cd "$ctx/frontend" && pnpm install --frozen-lockfile --offline --silent >/dev/null)
 (cd "$ctx/frontend" && pnpm check >/dev/null && pnpm format:check >/dev/null && pnpm test 2>&1 | grep -E 'Tests ' &&
 	{ ((quick)) || "$repo/scripts/heavy" pnpm build >/dev/null; })
 (cd "$ctx/backend" && uv run --quiet pytest -q 2>&1 | tail -1 && uv run --quiet ruff check . >/dev/null &&
