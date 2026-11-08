@@ -21,6 +21,7 @@ import type {
   Photo,
   PhotoBlob,
   Setting,
+  StorageMode,
 } from '../types'
 import { SETTING_KEYS, formatSequence } from '../types'
 import { createId } from '../ids'
@@ -31,12 +32,18 @@ import {
   defaultImageProcessor,
   sha256,
   type ImageProcessor,
+  invalidateThumbnail,
 } from '../photos'
 
 interface RepoOptions {
   databaseName?: string
   imageProcessor?: ImageProcessor
   now?: () => Date
+}
+
+interface PhotoWithUploadRetry extends Photo {
+  upload_attempts?: number
+  upload_next_attempt_at?: string | null
 }
 
 /**
@@ -48,10 +55,11 @@ interface RepoOptions {
 class CaptureDb extends Dexie {
   collections!: Table<Collection, Id>
   entries!: Table<Entry, Id>
-  photos!: Table<Photo, Id>
+  photos!: Table<PhotoWithUploadRetry, Id>
   photoBlobs!: Table<PhotoBlob, Id>
   outbox!: Table<OutboxItem, Id>
   settings!: Table<Setting, string>
+  conflicts!: Table<import('../sync/api').SyncConflict, Id>
   constructor(name: string) {
     super(name)
     this.version(1).stores({
@@ -65,11 +73,35 @@ class CaptureDb extends Dexie {
         'id, [collection_id+entity_id], [collection_id+entity+entity_id], next_attempt_at, collection_id',
       settings: 'key',
     })
+    this.version(2).stores({
+      conflicts: 'id, collection_id, [entity+entity_id], created_at',
+    })
+    this.version(3)
+      .stores({})
+      .upgrade((transaction) =>
+        transaction
+          .table('photos')
+          .toCollection()
+          .modify((photo: Photo & { upload_attempts?: number; upload_next_attempt_at?: string | null }) => {
+            photo.upload_attempts ??= 0
+            photo.upload_next_attempt_at ??= null
+          }),
+      )
   }
 }
 
+/** Shared schema accessor for the sync engine and repository. */
+export function getCaptureDb(name = 'kufang-capture'): CaptureDb {
+  return new CaptureDb(name)
+}
+
+/** Returns whether this device still has the original bytes for a photo. */
+export async function hasLocalBlob(id: Id, databaseName = 'kufang-capture'): Promise<boolean> {
+  return (await getCaptureDb(databaseName).photoBlobs.get(id)) !== undefined
+}
+
 export function createRepo(options: RepoOptions = {}): Repo {
-  const db = new CaptureDb(options.databaseName ?? 'kufang-capture')
+  const db = getCaptureDb(options.databaseName)
   const imageProcessor = options.imageProcessor ?? defaultImageProcessor
   const now = options.now ?? (() => new Date())
   const stamp = () => now().toISOString()
@@ -645,6 +677,8 @@ export function createRepo(options: RepoOptions = {}): Repo {
               height: saved.height,
             })
           })
+          // The preview cache may hold the full original as a stand-in; switch to the thumbnail.
+          invalidateThumbnail(item.id)
         } catch {
           /* Original and metadata were already durably committed; thumbnail can be retried later. */
         }
@@ -783,10 +817,63 @@ export function createRepo(options: RepoOptions = {}): Repo {
       }) as Watchable<Photo[]>,
     getSetting: async <T>(key: string, fallback: T): Promise<T> =>
       ((await db.settings.get(key))?.value as T) ?? fallback,
-    setStorageMode: async () => {
-      // Placeholder until the wave-3 sync engine lands.
-      throw new Error('Changing storage mode is not available yet.')
-    },
+    setStorageMode: async (id, mode: StorageMode, opts) =>
+      db.transaction('rw', db.collections, db.entries, db.photos, db.outbox, async () => {
+        const collection = await db.collections.get(id)
+        if (!collection) throw new Error('Collection not found')
+        if (collection.storage_mode === mode) return
+        const at = stamp()
+        if (mode === 'synced' && !opts.consentToUploadExisting)
+          throw new Error('Consent is required before uploading existing data.')
+        const [entries, photos] = await Promise.all([
+          db.entries.where('collection_id').equals(id).toArray(),
+          db.photos.where('collection_id').equals(id).toArray(),
+        ])
+        if (mode === 'local_only') {
+          await db.outbox.where('collection_id').equals(id).delete()
+          await db.photos.bulkPut(
+            photos.map((photo) => ({
+              ...photo,
+              upload_state: photo.upload_state === 'uploaded' ? 'uploaded' : 'not_needed',
+              upload_next_attempt_at: null,
+              sync_state: 'local_only' as const,
+            })),
+          )
+          await db.entries.bulkPut(entries.map((entry) => ({ ...entry, sync_state: 'local_only' })))
+          await db.collections.put({
+            ...collection,
+            storage_mode: mode,
+            updated_at: at,
+            sync_state: 'local_only',
+          })
+          return
+        }
+        const synced = {
+          ...collection,
+          storage_mode: mode,
+          sync_consented_at: at,
+          updated_at: at,
+          sync_state: 'pending' as const,
+        }
+        await db.collections.put(synced)
+        await enqueue(synced, 'collection', synced, 'upsert', { ...synced })
+        for (const entry of entries) {
+          const pending = { ...entry, sync_state: 'pending' as const }
+          await db.entries.put(pending)
+          await enqueue(synced, 'entry', pending, 'upsert', { ...pending })
+        }
+        for (const photo of photos) {
+          const pending = {
+            ...photo,
+            sync_state: 'pending' as const,
+            upload_state: photo.deleted_at === null ? ('pending' as const) : photo.upload_state,
+            upload_attempts: 0,
+            upload_next_attempt_at: null,
+          }
+          await db.photos.put(pending)
+          await enqueue(synced, 'photo', pending, 'upsert', { ...pending })
+        }
+      }),
     readForExport: async (collectionIds) =>
       db.transaction('r', db.collections, db.entries, db.photos, async () => {
         const collections =

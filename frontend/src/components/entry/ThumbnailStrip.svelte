@@ -12,7 +12,10 @@
 
   $effect(() => {
     for (const photo of photos) {
-      if (!(photo.id in urls)) void thumbnailUrl(photo.id).then((url) => (urls[photo.id] = url))
+      // Keyed by revision: once the thumbnail is generated (revision bumps), fetch it instead of
+      // the full-size stand-in.
+      const key = `${photo.id}:${photo.revision}`
+      if (!(key in urls)) void thumbnailUrl(photo.id).then((url) => (urls[key] = url))
     }
   })
 </script>
@@ -23,9 +26,11 @@
   <div class="thumb-strip" aria-label="Recent photos">
     {#each photos as photo (photo.id)}
       <button class="thumb" aria-label="Open photo" onclick={() => onopen(photo.id)}>
-        {#if urls[photo.id]}<img src={urls[photo.id] ?? ''} alt="" loading="lazy" />{:else}<span
-            aria-hidden="true">▧</span
-          >{/if}
+        {#if urls[`${photo.id}:${photo.revision}`]}<img
+            src={urls[`${photo.id}:${photo.revision}`] ?? ''}
+            alt=""
+            loading="lazy"
+          />{:else}<span aria-hidden="true">▧</span>{/if}
       </button>
     {/each}
     {#if total > photos.length}<button class="thumb more" aria-label="Open remaining photos" onclick={onmore}
