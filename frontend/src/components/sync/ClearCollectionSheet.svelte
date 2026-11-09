@@ -3,6 +3,7 @@
   import type { ClearCheck } from '$lib/repo'
   import { repo } from '$lib/db'
   import { exportFromDevice } from '$lib/export/device'
+  import type { ExportDelivery } from '$lib/export/deliver'
   import { showToast } from '../../app/toasts.svelte'
   import Sheet from '../ui/Sheet.svelte'
   import Button from '../ui/Button.svelte'
@@ -10,6 +11,7 @@
   let check = $state<ClearCheck | null>(null)
   let name = $state('')
   let busy = $state(false)
+  let exporting = $state(false)
   let error = $state('')
   $effect(() => {
     if (open) {
@@ -36,15 +38,41 @@
       busy = false
     }
   }
+  // The ZIP built by Export ZIP now, kept when the share sheet needs a fresh tap (large exports).
+  let shareAgain = $state<{ deliver: () => Promise<ExportDelivery>; filename: string } | null>(null)
+  async function delivered(delivery: ExportDelivery, filename: string) {
+    shareAgain = null
+    if (delivery === 'shared' || delivery === 'download') {
+      showToast({ message: `Exported ${filename}` })
+      await refresh()
+    }
+  }
   async function exportNow() {
+    if (exporting) return
+    exporting = true
+    error = ''
+    shareAgain = null
     try {
       const result = await exportFromDevice([item.collection.id])
-      if (result.delivery !== 'cancelled') {
-        showToast({ message: `Exported ${result.filename}` })
-        await refresh()
-      }
+      if (result.delivery === 'needs_tap' && result.deliverAgain)
+        shareAgain = { deliver: result.deliverAgain, filename: result.filename }
+      else await delivered(result.delivery, result.filename)
     } catch (cause) {
-      error = 'The export failed. Check available storage and try again.'
+      error = `The export failed.${cause instanceof Error && cause.message ? ` ${cause.message}` : ''}`
+    } finally {
+      exporting = false
+    }
+  }
+  async function shareNow() {
+    const again = shareAgain
+    if (exporting || !again) return
+    exporting = true
+    try {
+      await delivered(await again.deliver(), again.filename)
+    } catch (cause) {
+      error = `The export failed.${cause instanceof Error && cause.message ? ` ${cause.message}` : ''}`
+    } finally {
+      exporting = false
     }
   }
 </script>
@@ -64,7 +92,14 @@
         <ul>
           {#each check.reasons as reason}<li>{reason}</li>{/each}
         </ul>{/if}
-      <Button variant="quiet" onclick={() => void exportNow()}>Export ZIP now</Button>
+      {#if shareAgain}
+        <p role="status">ZIP ready. Tap Share ZIP to save it.</p>
+        <Button variant="quiet" disabled={exporting} onclick={() => void shareNow()}>Share ZIP</Button>
+      {:else}
+        <Button variant="quiet" disabled={exporting} onclick={() => void exportNow()}
+          >{exporting ? 'Building ZIP…' : 'Export ZIP now'}</Button
+        >
+      {/if}
       <label class="confirm"
         ><span>Type <strong>{item.collection.name}</strong> to confirm</span><input
           aria-label="Type collection name"

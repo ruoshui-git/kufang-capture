@@ -39,6 +39,8 @@ export interface BuildOptions {
   exportedAt: string
   appVersion: string
   source: 'device'
+  /** Called after each original photo is read and verified (large exports take a while on a phone). */
+  onProgress?: (done: number, total: number) => void
 }
 
 const encoder = new TextEncoder()
@@ -301,6 +303,7 @@ export async function buildExport(
     if (blob.size !== photo.byte_size || actual.sha256 !== photo.sha256 || actual.crc32 !== photo.crc32 >>> 0)
       mismatches.push(photo.id)
     photoData.set(photo.id, blob)
+    opts.onProgress?.(photoData.size, exportPhotos.length)
   }
   if (mismatches.length)
     throw new Error(`Original photo verification failed for photo ids: ${mismatches.join(', ')}`)

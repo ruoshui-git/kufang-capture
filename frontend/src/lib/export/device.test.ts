@@ -50,6 +50,40 @@ describe('device export', () => {
     expect((await repo.getCollection(room.id))?.last_exported_at).toBeNull()
   })
 
+  it('keeps a ZIP the share sheet refused and records the export only once it is shared', async () => {
+    const repo = repoFor()
+    const room = await repo.createCollection({ name: 'Big room', storage_mode: 'local_only' })
+    const entry = await repo.createEntry(room.id)
+    await repo.addPhotos(entry.id, [
+      { blob: new Blob(['one'], { type: 'image/jpeg' }), source: 'native_camera' },
+      { blob: new Blob(['two'], { type: 'image/jpeg' }), source: 'native_camera' },
+    ])
+    const outcomes: Array<'needs_tap' | 'shared'> = ['needs_tap', 'shared']
+    const delivered: Blob[] = []
+    const deliver = vi.fn(async (blob: Blob) => {
+      delivered.push(blob)
+      return outcomes.shift()!
+    })
+    const progress: Array<[number, number]> = []
+
+    const result = await exportFromDevice(
+      [room.id],
+      { onProgress: (done, total) => progress.push([done, total]) },
+      { repo, deliver },
+    )
+
+    expect(progress).toEqual([
+      [1, 2],
+      [2, 2],
+    ])
+    expect(result.delivery).toBe('needs_tap')
+    expect(result.byteSize).toBe(delivered[0]!.size)
+    expect((await repo.getCollection(room.id))?.last_exported_at).toBeNull()
+    expect(await result.deliverAgain!()).toBe('shared')
+    expect(delivered[1]).toBe(delivered[0])
+    expect((await repo.getCollection(room.id))?.last_exported_at).toBe(result.manifest.exported_at)
+  })
+
   it('exports shared items once and applies item-level trash rules', async () => {
     const repo = repoFor()
     const a = await repo.createCollection({ name: 'Collection A', storage_mode: 'local_only' })

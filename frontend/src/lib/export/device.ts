@@ -11,11 +11,14 @@ export interface DeviceExportResult {
   delivery: ExportDelivery
   filename: string
   manifest: Manifest
+  byteSize: number
+  /** Present when `delivery` is `needs_tap`: call it from a fresh tap to share the ZIP already built. */
+  deliverAgain?: () => Promise<ExportDelivery>
 }
 
 export async function exportFromDevice(
   scope: Id[] | 'all',
-  opts: { includeTrash?: boolean } = {},
+  opts: { includeTrash?: boolean; onProgress?: (done: number, total: number) => void } = {},
   deps: { repo?: Repo; deliver?: typeof deliverExport; now?: () => Date } = {},
 ): Promise<DeviceExportResult> {
   const repo = deps.repo ?? defaultRepo
@@ -38,14 +41,26 @@ export async function exportFromDevice(
       exportedAt,
       appVersion: import.meta.env.VITE_APP_VERSION ?? 'dev',
       source: 'device',
+      onProgress: opts.onProgress,
     },
   )
-  const delivery = await deliver(blob, filename)
-  if (delivery !== 'cancelled') {
-    await repo.markExported(
-      data.collections.map((c) => c.id),
-      exportedAt,
-    )
+  // An export counts (for the Clear guard) only once the ZIP has actually left the app.
+  const deliverAndRecord = async (): Promise<ExportDelivery> => {
+    const delivery = await deliver(blob, filename)
+    if (delivery === 'shared' || delivery === 'download') {
+      await repo.markExported(
+        data.collections.map((c) => c.id),
+        exportedAt,
+      )
+    }
+    return delivery
   }
-  return { delivery, filename, manifest }
+  const delivery = await deliverAndRecord()
+  return {
+    delivery,
+    filename,
+    manifest,
+    byteSize: blob.size,
+    ...(delivery === 'needs_tap' ? { deliverAgain: deliverAndRecord } : {}),
+  }
 }
