@@ -88,7 +88,7 @@ async def upload_original(request: Request, data_dir: Path, max_bytes: int, min_
             )
             db.execute(
                 "INSERT INTO changes(entity,entity_id,collection_id,kind) VALUES('photo',?,?, 'upsert')",
-                (photo_id, record["collection_id"]),
+                (photo_id, ""),
             )
             db.commit()
         return {

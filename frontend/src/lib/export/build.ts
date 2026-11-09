@@ -1,4 +1,4 @@
-import type { Collection, Entry, Photo } from '../types'
+import type { Collection, Entry, Item, Photo } from '../types'
 import { entryDisplayTitle, formatSequence } from '../types'
 import { writeCsv } from './csv'
 import { createZip, type ZipMember } from './zip'
@@ -6,12 +6,13 @@ import { createZip, type ZipMember } from './zip'
 export interface ExportInput {
   collections: Collection[]
   entries: Entry[]
+  items: Item[]
   photos: Photo[]
   getOriginal(photoId: string): Promise<Blob>
 }
 export interface Manifest {
   format: 'kufang-capture-export'
-  format_version: 1
+  format_version: 2
   exported_at: string
   source: 'device'
   app_version: string
@@ -20,6 +21,7 @@ export interface Manifest {
   collections: Array<{ id: string; name: string; storage_mode: Collection['storage_mode'] }>
   counts: {
     collections: number
+    items: number
     entries: number
     photos: number
     photo_bytes: number
@@ -55,6 +57,7 @@ const collectionHeaders = [
 ]
 const entryHeaders = [
   'entry_id',
+  'item_id',
   'collection_id',
   'sequence_number',
   'sequence_label',
@@ -74,8 +77,7 @@ const entryHeaders = [
 ]
 const photoHeaders = [
   'photo_id',
-  'entry_id',
-  'collection_id',
+  'item_id',
   'path',
   'original_filename',
   'mime_type',
@@ -270,23 +272,26 @@ export async function buildExport(
         collections.findIndex((c) => c.id === a.collection_id) -
           collections.findIndex((c) => c.id === b.collection_id) || a.sequence_number - b.sequence_number,
     )
-  const entryMap = new Map(entries.map((e) => [e.id, e]))
+  const itemMap = new Map(input.items.map((item) => [item.id, item]))
+  const firstEntryIndex = new Map<string, number>()
+  for (const [index, entry] of entries.entries()) {
+    if (!firstEntryIndex.has(entry.item_id)) firstEntryIndex.set(entry.item_id, index)
+    if (!itemMap.has(entry.item_id))
+      throw new Error(`Item ${entry.item_id} is missing from the export snapshot.`)
+  }
   const photos = input.photos
-    .filter((p) => entryMap.has(p.entry_id))
+    .filter((p) => entries.some((e) => e.item_id === p.item_id))
     .sort(
       (a, b) =>
-        collections.findIndex((c) => c.id === entryMap.get(a.entry_id)!.collection_id) -
-          collections.findIndex((c) => c.id === entryMap.get(b.entry_id)!.collection_id) ||
-        entryMap.get(a.entry_id)!.sequence_number - entryMap.get(b.entry_id)!.sequence_number ||
+        firstEntryIndex.get(a.item_id)! - firstEntryIndex.get(b.item_id)! ||
         a.sort_order - b.sort_order ||
         a.captured_at.localeCompare(b.captured_at),
     )
   const activeEntries = entries.filter((e) => e.deleted_at === null)
-  const activeIds = new Set(activeEntries.map((e) => e.id))
-  const activePhotos = photos.filter((p) => p.deleted_at === null && activeIds.has(p.entry_id))
+  const activeItemIds = new Set(activeEntries.map((e) => e.item_id))
+  const activePhotos = photos.filter((p) => p.deleted_at === null && activeItemIds.has(p.item_id))
   const trashEntries = entries.filter((e) => e.deleted_at !== null)
-  const trashIds = new Set(trashEntries.map((e) => e.id))
-  const trashPhotos = photos.filter((p) => trashIds.has(p.entry_id) || p.deleted_at !== null)
+  const trashPhotos = photos.filter((p) => !activeItemIds.has(p.item_id) || p.deleted_at !== null)
   const exportPhotos = opts.includeTrash ? [...activePhotos, ...trashPhotos] : activePhotos
   const photoData = new Map<string, Blob>()
   const mismatches: string[] = []
@@ -300,10 +305,9 @@ export async function buildExport(
   if (mismatches.length)
     throw new Error(`Original photo verification failed for photo ids: ${mismatches.join(', ')}`)
   const activePhotoCounts = new Map<string, number>()
-  for (const p of activePhotos)
-    activePhotoCounts.set(p.entry_id, (activePhotoCounts.get(p.entry_id) ?? 0) + 1)
+  for (const p of activePhotos) activePhotoCounts.set(p.item_id, (activePhotoCounts.get(p.item_id) ?? 0) + 1)
   const trashPhotoCounts = new Map<string, number>()
-  for (const p of trashPhotos) trashPhotoCounts.set(p.entry_id, (trashPhotoCounts.get(p.entry_id) ?? 0) + 1)
+  for (const p of trashPhotos) trashPhotoCounts.set(p.item_id, (trashPhotoCounts.get(p.item_id) ?? 0) + 1)
   const collectionRows = collections.map((c) => ({
     collection_id: c.id,
     name: c.name,
@@ -312,7 +316,9 @@ export async function buildExport(
     storage_mode: c.storage_mode,
     next_sequence_number: c.next_sequence_number,
     entry_count: activeEntries.filter((e) => e.collection_id === c.id).length,
-    photo_count: activePhotos.filter((p) => p.collection_id === c.id).length,
+    photo_count: activePhotos.filter((p) =>
+      activeEntries.some((e) => e.collection_id === c.id && e.item_id === p.item_id),
+    ).length,
     created_at: c.created_at,
     updated_at: c.updated_at,
     archived_at: c.archived_at,
@@ -320,29 +326,29 @@ export async function buildExport(
   const entryRows = (rows: Entry[], counts: Map<string, number>) =>
     csvRow(rows, (e) => ({
       entry_id: e.id,
+      item_id: e.item_id,
       collection_id: e.collection_id,
       sequence_number: e.sequence_number,
       sequence_label: formatSequence(e.sequence_number),
-      title: e.title,
-      display_title: entryDisplayTitle(e),
+      title: itemMap.get(e.item_id)?.title ?? '',
+      display_title: entryDisplayTitle({ ...e, title: itemMap.get(e.item_id)?.title ?? '' }),
       quantity: e.quantity,
       unit: e.unit,
       count_detail: e.count_detail,
-      notes: e.notes,
-      expiration_date: e.expiration_date,
-      dimensions: e.dimensions,
-      review_status: e.review_status,
-      photo_count: counts.get(e.id) ?? 0,
+      notes: itemMap.get(e.item_id)?.notes ?? '',
+      expiration_date: itemMap.get(e.item_id)?.expiration_date ?? null,
+      dimensions: itemMap.get(e.item_id)?.dimensions ?? '',
+      review_status: itemMap.get(e.item_id)?.review_status ?? 'draft',
+      photo_count: counts.get(e.item_id) ?? 0,
       created_at: e.created_at,
-      updated_at: e.updated_at,
+      updated_at: [e.updated_at, itemMap.get(e.item_id)?.updated_at ?? e.updated_at].sort().at(-1),
       deleted_at: e.deleted_at,
     }))
   const makePhotoRows = (rows: Photo[], prefix: string) =>
     rows.map((p) => ({
       photo_id: p.id,
-      entry_id: p.entry_id,
-      collection_id: p.collection_id,
-      path: `${prefix}photos/${p.entry_id}/${p.id}.${extension(p)}`,
+      item_id: p.item_id,
+      path: `${prefix}photos/${p.item_id}/${p.id}.${extension(p)}`,
       original_filename: p.original_filename,
       mime_type: p.mime_type,
       byte_size: p.byte_size,
@@ -391,7 +397,7 @@ export async function buildExport(
     await add(`${base}photos.csv`, pCsv)
     await add(`${base}photos.json`, pJson)
     for (const p of originals) {
-      const path = `${base}photos/${p.entry_id}/${p.id}.${extension(p)}`
+      const path = `${base}photos/${p.item_id}/${p.id}.${extension(p)}`
       await add(path, photoData.get(p.id)!, p.sha256)
     }
   }
@@ -427,7 +433,7 @@ export async function buildExport(
   }
   const manifest: Manifest = {
     format: 'kufang-capture-export',
-    format_version: 1,
+    format_version: 2,
     exported_at: opts.exportedAt,
     source: opts.source,
     app_version: opts.appVersion,
@@ -436,6 +442,7 @@ export async function buildExport(
     collections: collections.map((c) => ({ id: c.id, name: c.name, storage_mode: c.storage_mode })),
     counts: {
       collections: collections.length,
+      items: new Set(activeEntries.map((e) => e.item_id)).size,
       entries: activeEntries.length,
       photos: activePhotos.length,
       photo_bytes: activePhotos.reduce((sum, p) => sum + p.byte_size, 0),

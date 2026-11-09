@@ -29,7 +29,7 @@
   {#each photos as photo (photo.id)}<div class="trash-row">
       <span
         >Photo from {formatSequence(
-          rows.find((row) => row.entry.id === photo.entry_id)?.entry.sequence_number ?? 0,
+          rows.find((row) => row.entry.item_id === photo.item_id)?.entry.sequence_number ?? 0,
         )}</span
       ><button onclick={() => void repo.restorePhoto(photo.id)}>Restore</button>
     </div>{/each}

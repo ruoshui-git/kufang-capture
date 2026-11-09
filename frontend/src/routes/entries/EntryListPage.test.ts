@@ -134,6 +134,20 @@ describe('Entry list', () => {
     expect((await repo.getEntry(entry.id))?.sequence_number).toBe(1)
   })
 
+  it('reports when deleting a shared entry leaves it in another collection', async () => {
+    const source = await repo.createCollection({ name: 'Source room', storage_mode: 'local_only' })
+    const sourceEntry = await repo.createEntry(source.id)
+    await repo.importEntries(collectionId, [sourceEntry.id])
+    render(EntryListPage, { props: { collectionId } })
+    await screen.findByRole('textbox', { name: 'Entry title' })
+    await fireEvent.click(screen.getByRole('menuitem', { name: 'Delete entry' }))
+    await waitFor(() =>
+      expect(toasts.items.at(-1)?.message).toBe('Removed from Test room. Still in Source room.'),
+    )
+    toasts.items.at(-1)?.action?.()
+    await waitFor(() => expect(screen.getByRole('textbox', { name: 'Entry title' })).toBeInTheDocument())
+  })
+
   it('adds a photo to its row without navigating', async () => {
     const entry = await repo.createEntry(collectionId)
     shared.pickPhotos.mockResolvedValue([
@@ -148,7 +162,8 @@ describe('Entry list', () => {
     await fireEvent.click(screen.getByRole('button', { name: /Add Photo/ }))
     await waitFor(() => expect(screen.getByText('1 photo')).toBeInTheDocument())
     expect(shared.pickPhotos).toHaveBeenCalledWith('camera')
-    await fireEvent.click(screen.getByRole('button', { name: 'Open photo' }))
+    // The header chip can update before the row; wait for the row's own thumbnail.
+    await fireEvent.click(await screen.findByRole('button', { name: 'Open photo' }))
     expect(screen.getByRole('dialog', { name: 'Photo viewer' })).toBeInTheDocument()
     expect(shared.navigate).not.toHaveBeenCalled()
   })

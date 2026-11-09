@@ -18,6 +18,8 @@
   let uploadEntryCount = $state(0)
   let uploadPhotoCount = $state(0)
   let uploadBytes = $state(0)
+  let blockers = $state<import('$lib/repo').SharedModeBlocker[]>([])
+  let checking = $state(false)
   onMount(() => {
     void repo
       .readForExport([item.collection.id])
@@ -33,6 +35,23 @@
       .catch(() => (signedIn = false))
   })
   const mb = $derived((uploadBytes / (1024 * 1024)).toFixed(1))
+  $effect(() => {
+    if (!open) return
+    const mode = item.collection.storage_mode === 'local_only' ? 'synced' : 'local_only'
+    checking = true
+    error = ''
+    blockers = []
+    void repo
+      .checkStorageMode(item.collection.id, mode)
+      .then((check) => (blockers = check.blockers))
+      .catch((cause) => (error = cause instanceof Error ? cause.message : String(cause)))
+      .finally(() => (checking = false))
+  })
+  function blockerMessage(blocker: import('$lib/repo').SharedModeBlocker) {
+    const modeName = blocker.storage_mode === 'local_only' ? 'Local Only' : 'Synced'
+    const noun = blocker.shared_items === 1 ? 'item is' : 'items are'
+    return `${blocker.shared_items} ${noun} shared with ${modeName} collection '${blocker.collection_name}'. Remove them from one side, or switch both.`
+  }
   async function enableSync() {
     if (!signedIn) {
       navigate(`/login?return=${encodeURIComponent(location.pathname)}`)
@@ -46,7 +65,7 @@
       open = false
       onchanged?.()
     } catch (cause) {
-      error = 'Could not switch to Sync to Server. Check your connection and try again.'
+      error = cause instanceof Error ? cause.message : String(cause)
     } finally {
       busy = false
     }
@@ -59,7 +78,7 @@
       open = false
       onchanged?.()
     } catch (cause) {
-      error = 'Could not switch to Local Only. Try again.'
+      error = cause instanceof Error ? cause.message : String(cause)
     } finally {
       busy = false
     }
@@ -92,17 +111,26 @@
         <p>
           Upload this collection's {uploadEntryCount} entries and {uploadPhotoCount} photos ({mb} MB) to capture.kufang.org?
         </p>
+        {#if checking}<p>Checking shared items…</p>{/if}
+        {#each blockers as blocker}<p class="blocker">{blockerMessage(blocker)}</p>{/each}
         <label class="consent"
           ><input type="checkbox" bind:checked={consent} /> I understand this uploads existing collection data and
           photos to the server.</label
         >
-        <Button disabled={!consent || busy} onclick={() => void enableSync()}
-          >{busy ? 'Saving…' : 'Sync to Server'}</Button
+        <Button
+          disabled={!consent || busy || checking || blockers.length > 0}
+          onclick={() => void enableSync()}>{busy ? 'Saving…' : 'Sync to Server'}</Button
         >
       {/if}
     {:else}
       <p>Future changes stay on this device. The server copy remains until you remove it.</p>
-      <Button variant="quiet" disabled={busy} onclick={() => void disableSync()}>Switch to Local Only</Button>
+      {#if checking}<p>Checking shared items…</p>{/if}
+      {#each blockers as blocker}<p class="blocker">{blockerMessage(blocker)}</p>{/each}
+      <Button
+        variant="quiet"
+        disabled={busy || checking || blockers.length > 0}
+        onclick={() => void disableSync()}>Switch to Local Only</Button
+      >
       <hr />
       <p>Remove the server copy and its uploaded files permanently. Type the collection name to confirm.</p>
       <input aria-label="Type collection name" bind:value={confirming} placeholder={item.collection.name} />
@@ -122,6 +150,9 @@
     gap: var(--space-3);
     align-items: flex-start;
     margin: var(--space-5) 0;
+  }
+  .blocker {
+    color: var(--color-danger);
   }
   .consent input {
     width: 20px;

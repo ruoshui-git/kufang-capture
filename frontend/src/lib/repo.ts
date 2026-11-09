@@ -8,7 +8,9 @@ import type {
   CollectionSummary,
   Entry,
   EntryRow,
+  EntryView,
   Id,
+  Item,
   Photo,
   PhotoBlob,
   StorageMode,
@@ -29,9 +31,14 @@ export interface EntryQuery {
   sort: EntrySort
 }
 
+/**
+ * Fields the UI edits on an entry. The repository splits a patch: ITEM_FIELDS go to
+ * the shared Item (visible in every collection that has it), ENTRY_COUNT_FIELDS stay
+ * on this collection's Entry.
+ */
 export type EntryPatch = Partial<
   Pick<
-    Entry,
+    EntryView,
     | 'title'
     | 'quantity'
     | 'unit'
@@ -66,6 +73,37 @@ export interface ClearCheck {
   unexported_changes: boolean
   pending_uploads: number
   last_exported_at: string | null
+  /** Active items of this collection that other collections also have; clearing keeps them there. */
+  shared_items: number
+}
+
+/** A collection whose shared items block a storage-mode switch. */
+export interface SharedModeBlocker {
+  collection_id: Id
+  collection_name: string
+  storage_mode: StorageMode
+  /** Items this collection shares with the blocker. */
+  shared_items: number
+}
+
+export interface StorageModeCheck {
+  allowed: boolean
+  /** Collections in the OTHER mode sharing items with this one (deleted entries included). */
+  blockers: SharedModeBlocker[]
+}
+
+export interface ImportCandidate extends EntryRow {
+  /** The target collection already has an active entry for this item. */
+  already_here: boolean
+}
+
+export interface ImportResult {
+  /** New entries created in the target, in source order. */
+  created: EntryView[]
+  /** Deleted target entries for the same item that were restored (keeping their old numbers). */
+  restored: EntryView[]
+  /** Source entry ids skipped because the target already had the item. */
+  skipped: Id[]
 }
 
 export interface StorageEstimate {
@@ -94,32 +132,59 @@ export interface Repo {
    * uploads and drops pending outbox items; it never touches the server copy.
    */
   setStorageMode(id: Id, mode: StorageMode, opts: { consentToUploadExisting: boolean }): Promise<void>
+  /**
+   * Whether a storage-mode switch is allowed. It is not while any of the collection's items
+   * (including removed entries) is shared with a collection in the other mode; setStorageMode
+   * rejects in that case too.
+   */
+  checkStorageMode(id: Id, mode: StorageMode): Promise<StorageModeCheck>
   /** Whether a guarded, irreversible clear is currently safe. */
   checkClearCollection(id: Id): Promise<ClearCheck>
   /**
-   * Irreversibly delete a collection and all its entries/photos/blobs from this
-   * device. Rejects unless checkClearCollection allows it AND confirmName
+   * Irreversibly delete a collection and all its entries from this device. Items (with their
+   * photos and blobs) that no other collection references are deleted too; shared items stay. Rejects unless checkClearCollection allows it AND confirmName
    * exactly equals the collection name.
    */
   clearCollection(id: Id, confirmName: string): Promise<void>
 
   // Entries
   watchEntryRows(collectionId: Id, query: EntryQuery): Watchable<EntryRow[]>
-  watchEntry(id: Id): Watchable<Entry | undefined>
-  getEntry(id: Id): Promise<Entry | undefined>
+  watchEntry(id: Id): Watchable<EntryView | undefined>
+  getEntry(id: Id): Promise<EntryView | undefined>
   /**
-   * Allocate the next sequence number and create the entry in ONE transaction.
-   * unit defaults to the last used unit. Resolves only after the commit.
+   * Allocate the next sequence number and create the entry and its new item (item_id = entry id)
+   * in ONE transaction. unit defaults to the last used unit. Resolves only after the commit.
    */
-  createEntry(collectionId: Id, init?: EntryPatch): Promise<Entry>
+  createEntry(collectionId: Id, init?: EntryPatch): Promise<EntryView>
+  /** Splits the patch between the shared item and this entry; one transaction. */
   updateEntry(id: Id, patch: EntryPatch): Promise<void>
-  /** Soft delete (sets deleted_at). Photos stay linked and come back on restore. */
+  /**
+   * Soft delete of this collection's entry only (sets deleted_at). The item, its photos and its
+   * entries in other collections are untouched. Restore brings back the same number.
+   */
   deleteEntry(id: Id): Promise<void>
   restoreEntry(id: Id): Promise<void>
   /** Neighbours in the given sort order among non-deleted entries. */
   getAdjacentEntryIds(entryId: Id, sort: EntrySort): Promise<{ prev: Id | null; next: Id | null }>
 
-  // Photos
+  // Sharing items between collections
+  /** Collections the target may import from: same storage mode, excluding the target. */
+  watchImportSources(targetCollectionId: Id): Watchable<Collection[]>
+  /** Active entries of the source collection (search as in EntryQuery), marked already_here. */
+  watchImportCandidates(
+    targetCollectionId: Id,
+    sourceCollectionId: Id,
+    search: string,
+  ): Watchable<ImportCandidate[]>
+  /**
+   * In ONE transaction: reject unless both collections exist and share a storage mode; for each
+   * source entry, skip it if the target has an active entry for its item, restore the target's
+   * deleted entry for the item if there is one, else create a new entry with the next sequence
+   * number, the same item_id, the source unit, and blank quantity/count_detail.
+   */
+  importEntries(targetCollectionId: Id, sourceEntryIds: Id[]): Promise<ImportResult>
+
+  // Photos (attached to the entry's item, so shared by every collection that has it)
   /**
    * Persist originals (and derived metadata/thumbnails) for an entry. Resolves
    * after every original Blob is committed; thumbnail generation failure must
@@ -134,17 +199,19 @@ export interface Repo {
   deletePhoto(id: Id): Promise<void>
   restorePhoto(id: Id): Promise<void>
   getPhotoBlob(id: Id): Promise<PhotoBlob | undefined>
-  /** Deleted photos whose entries are NOT deleted (entry-level trash shows its own photos). */
+  /** Deleted photos of items whose entry in this collection is NOT deleted (entry trash shows its own). */
   watchDeletedPhotos(collectionId: Id): Watchable<Photo[]>
 
   // Export
   /**
-   * Snapshot of the given collections (or all) with ALL their entries and photos, including
-   * soft-deleted ones (the exporter decides active vs trash), read in one transaction.
+   * Snapshot of the given collections (or all) with ALL their entries, the items those entries
+   * reference and those items' photos, including soft-deleted ones (the exporter decides active
+   * vs trash), read in one transaction. Each item and photo appears once.
    */
   readForExport(collectionIds: Id[] | 'all'): Promise<{
     collections: Collection[]
     entries: Entry[]
+    items: Item[]
     photos: Photo[]
   }>
 

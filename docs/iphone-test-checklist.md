@@ -93,3 +93,19 @@ Before starting:
 |---|---|---|
 | 300+ entries scroll smoothly | | |
 | Clear blocked before export, allowed after export plus typing the name | | |
+
+## G. Shared items across collections (owner decision 2026-11-09)
+
+1. **Upgrade first.** Before updating the app, note the entry count, photo count and a few entry numbers in two collections (one Local Only, one Synced). Accept the update prompt and reopen. Every number, title, quantity and photo must be unchanged; the Synced collection must still reach **Backed up** with no duplicate photos.
+2. With Airplane Mode on, in a Local Only collection B open the collection menu → **Import from another collection** → pick Local Only collection A → select one entry with photos → **Import 1**. B shows the photos immediately and a blank quantity.
+3. Change the title in B and confirm A shows it. Enter a different quantity in each; each keeps its own.
+4. Delete the entry in A. B still has it with its photos. Undo in A brings it back with its old number.
+5. Confirm that Synced collections are not offered when importing into a Local Only collection, and that switching A to Sync to Server is blocked while it shares an item with B.
+
+| Check | Result | Notes |
+|---|---|---|
+| Existing data unchanged after the update | | |
+| Import works offline and shows photos at once | | |
+| Shared edits appear in both; quantities stay separate | | |
+| Delete in one collection keeps the item in the other | | |
+| Mode rules: other-mode collections hidden, mode switch blocked | | |

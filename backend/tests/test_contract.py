@@ -31,6 +31,43 @@ def make_client(tmp_path, **settings):
     client.__enter__()
     response = client.post("/api/auth/login", json={"password": "test-password"}, headers=HEADERS)
     assert response.status_code == 204
+    original_post = client.post
+
+    def post(path, *args, **kwargs):
+        payload = kwargs.get("json")
+        if path == "/api/sync/batch" and isinstance(payload, dict):
+            mutations = payload.get("mutations", [])
+            known_items = {m.get("entity_id") for m in mutations if m.get("entity") == "item"}
+            ordered = []
+            for mutation in mutations:
+                if mutation.get("entity") == "collection":
+                    ordered.append(mutation)
+                fields = mutation.get("fields", {})
+                if mutation.get("entity") == "entry" and mutation.get("op") == "upsert":
+                    item_id = fields.get("item_id")
+                    if item_id and item_id not in known_items:
+                        ordered.append(item_mutation(item_id, mutation.get("collection_id", "c1")))
+                        known_items.add(item_id)
+                    ordered.append(mutation)
+                elif mutation.get("entity") != "collection":
+                    ordered.append(mutation)
+            payload = {**payload, "schema": 2, "mutations": ordered}
+            kwargs["json"] = payload
+        return original_post(path, *args, **kwargs)
+
+    client.post = post
+    original_get = client.get
+
+    def get(path, *args, **kwargs):
+        if path == "/api/sync/changes":
+            params = dict(kwargs.get("params") or {})
+            params.setdefault("schema", 2)
+            kwargs["params"] = params
+        elif isinstance(path, str) and path.startswith("/api/sync/changes?") and "schema=" not in path:
+            path += "&schema=2"
+        return original_get(path, *args, **kwargs)
+
+    client.get = get
     return client
 
 
@@ -70,16 +107,33 @@ def entry_mutation(mid="m-e", eid="e1", cid="c1", sequence=1):
         "fields": {
             "id": eid,
             "collection_id": cid,
+            "item_id": eid,
             "sequence_number": sequence,
-            "title": "",
             "quantity": None,
             "unit": "",
             "count_detail": "",
+            "deleted_at": None,
+            "created_at": "2026-11-08T12:00:00.000Z",
+            "updated_at": "2026-11-08T12:00:00.000Z",
+        },
+    }
+
+
+def item_mutation(item_id="e1", cid="c1"):
+    return {
+        "id": f"m-item-{item_id}",
+        "entity": "item",
+        "entity_id": item_id,
+        "collection_id": cid,
+        "op": "upsert",
+        "base_revision": None,
+        "fields": {
+            "id": item_id,
+            "title": "",
             "notes": "",
             "expiration_date": None,
             "dimensions": "",
             "review_status": "draft",
-            "deleted_at": None,
             "created_at": "2026-11-08T12:00:00.000Z",
             "updated_at": "2026-11-08T12:00:00.000Z",
         },
@@ -156,7 +210,7 @@ def test_sync_conflicts_next_sequence_restore_purge_and_missing_parent(tmp_path)
 
     title_update = {
         "id": "m-title",
-        "entity": "entry",
+        "entity": "item",
         "entity_id": "e1",
         "collection_id": "c1",
         "op": "upsert",
@@ -195,17 +249,22 @@ def test_sync_conflicts_next_sequence_restore_purge_and_missing_parent(tmp_path)
         == 12
     )
 
-    delete = {**title_update, "id": "m-delete", "op": "delete", "base_revision": 2, "fields": {}}
+    delete = {
+        **entry_mutation("m-delete", "e1"),
+        "op": "delete",
+        "base_revision": 1,
+        "fields": {},
+    }
     deleted = client.post("/api/sync/batch", json={"mutations": [delete]}, headers=HEADERS).json()["results"][
         0
     ]
     assert deleted["record"]["deleted_at"]
-    restore = {**delete, "id": "m-restore", "op": "restore", "base_revision": 3}
+    restore = {**delete, "id": "m-restore", "op": "restore", "base_revision": 2}
     restored = client.post("/api/sync/batch", json={"mutations": [restore]}, headers=HEADERS).json()[
         "results"
     ][0]
     assert restored["record"]["deleted_at"] is None
-    purge = {**delete, "id": "m-purge", "op": "delete", "base_revision": 4}
+    purge = {**delete, "id": "m-purge", "op": "delete", "base_revision": 3}
     client.post("/api/sync/batch", json={"mutations": [purge]}, headers=HEADERS)
     purge["id"] = "m-purge-final"
     purge["op"] = "purge"
@@ -221,8 +280,8 @@ def test_thousand_entries_sync_in_contract_sized_batches(tmp_path):
     client = make_client(tmp_path)
     client.post("/api/sync/batch", json={"mutations": [collection_mutation()]}, headers=HEADERS)
     started = time.monotonic()
-    for base in range(0, 1000, 200):
-        batch = [entry_mutation(f"m-{i}", f"e{i}", sequence=i + 1) for i in range(base, base + 200)]
+    for base in range(0, 1000, 100):
+        batch = [entry_mutation(f"m-{i}", f"e{i}", sequence=i + 1) for i in range(base, base + 100)]
         response = client.post("/api/sync/batch", json={"mutations": batch}, headers=HEADERS)
         assert response.status_code == 200
         assert all(item["status"] == "applied" for item in response.json()["results"])
@@ -247,7 +306,8 @@ def test_sync_create_duplicate_sequence_and_changes(tmp_path):
         headers=HEADERS,
     ).json()["results"]
     assert created[0]["status"] == "applied"
-    assert created[1]["code"] == "sequence_taken"
+    assert created[1]["status"] == "applied"
+    assert created[3]["code"] == "sequence_taken"
     pull = client.get("/api/sync/changes?cursor=0&limit=1")
     assert len(pull.json()["changes"]) == 1
     assert pull.json()["has_more"] is True
@@ -256,6 +316,37 @@ def test_sync_create_duplicate_sequence_and_changes(tmp_path):
     local_only["fields"]["storage_mode"] = "local_only"
     rejected = client.post("/api/sync/batch", json={"mutations": [local_only]}, headers=HEADERS).json()
     assert rejected["results"][0]["code"] == "collection_not_synced"
+    client.close()
+
+
+def test_schema_one_sync_is_rejected_without_writes(tmp_path):
+    client = make_client(tmp_path)
+    old_entry = entry_mutation()
+    old_entry["fields"].update(
+        title="Schema one title",
+        notes="old notes",
+        expiration_date=None,
+        dimensions="",
+        review_status="draft",
+    )
+    old_entry["fields"].pop("item_id")
+    old_photo = {
+        "id": "m-v1-photo",
+        "entity": "photo",
+        "entity_id": "v1-photo",
+        "collection_id": "c1",
+        "op": "upsert",
+        "base_revision": None,
+        "fields": {"id": "v1-photo", "entry_id": "e1", "collection_id": "c1"},
+    }
+    old_body = {"mutations": [collection_mutation(), old_entry, old_photo]}
+    response = client.request("POST", "/api/sync/batch", json=old_body, headers=HEADERS)
+    assert response.status_code == 409
+    assert response.json()["detail"] == "client_outdated"
+    assert client.get("/api/collections").json() == []
+    changes = client.request("GET", "/api/sync/changes?cursor=0&limit=10", headers=HEADERS)
+    assert changes.status_code == 409
+    assert changes.json()["detail"] == "client_outdated"
     client.close()
 
 
@@ -275,8 +366,7 @@ def test_photo_upload_verifies_hashes_and_supports_head(tmp_path, monkeypatch):
         "base_revision": None,
         "fields": {
             "id": "p1",
-            "entry_id": "e1",
-            "collection_id": "c1",
+            "item_id": "e1",
             "sort_order": 0,
             "original_filename": "a.jpg",
             "mime_type": "image/jpeg",
@@ -344,8 +434,7 @@ def test_photo_upload_size_limit_and_low_disk(tmp_path, monkeypatch):
         "base_revision": None,
         "fields": {
             "id": "large",
-            "entry_id": "e1",
-            "collection_id": "c1",
+            "item_id": "e1",
             "sort_order": 0,
             "original_filename": "large.jpg",
             "mime_type": "image/jpeg",
@@ -405,6 +494,165 @@ def test_server_copy_removal_requires_exact_name_and_marks_change(tmp_path):
     client.close()
 
 
+def test_server_copy_removal_preserves_shared_item_until_last_collection(tmp_path):
+    from kufang_capture.db import connect
+
+    client = make_client(tmp_path)
+    item = item_mutation("shared", "c1")
+    entry_one = entry_mutation("m-e1", "e1", "c1", 1)
+    entry_one["fields"]["item_id"] = "shared"
+    entry_two = entry_mutation("m-e2", "e2", "c2", 1)
+    entry_two["fields"]["item_id"] = "shared"
+    response = client.post(
+        "/api/sync/batch",
+        json={
+            "schema": 2,
+            "mutations": [
+                collection_mutation(),
+                collection_mutation("m-c2", "c2", "Room B"),
+                item,
+                entry_one,
+                entry_two,
+            ],
+        },
+        headers=HEADERS,
+    )
+    assert all(result["status"] == "applied" for result in response.json()["results"])
+    photo = {
+        "id": "m-photo",
+        "entity": "photo",
+        "entity_id": "p-shared",
+        "collection_id": "c1",
+        "op": "upsert",
+        "base_revision": None,
+        "fields": {
+            "id": "p-shared",
+            "item_id": "shared",
+            "mime_type": "image/jpeg",
+            "byte_size": 5,
+            "sha256": hashlib.sha256(b"photo").hexdigest(),
+            "crc32": zlib.crc32(b"photo"),
+            "captured_at": "2026-11-08T12:00:00.000Z",
+            "capture_source": "native_camera",
+            "created_at": "2026-11-08T12:00:00.000Z",
+            "updated_at": "2026-11-08T12:00:00.000Z",
+        },
+    }
+    assert (
+        client.post("/api/sync/batch", json={"schema": 2, "mutations": [photo]}, headers=HEADERS).json()[
+            "results"
+        ][0]["status"]
+        == "applied"
+    )
+    data_dir = tmp_path / "data"
+    original = data_dir / "media/originals/p-shared/p-shared"
+    thumbnail = data_dir / "media/thumbnails/p-/p-shared"
+    original.parent.mkdir(parents=True)
+    thumbnail.parent.mkdir(parents=True)
+    original.write_bytes(b"photo")
+    thumbnail.write_bytes(b"thumb")
+    with connect(data_dir) as db:
+        db.execute(
+            "UPDATE photos SET storage_key=?,stored_at=? WHERE id='p-shared'",
+            (str(original.relative_to(data_dir)), "2026-11-08T12:00:00.000Z"),
+        )
+
+    remove_one = client.delete(
+        "/api/collections/c1/server-copy", headers={**HEADERS, "X-Confirm-Name": "Room A"}
+    )
+    assert remove_one.status_code == 204
+    assert original.read_bytes() == b"photo" and thumbnail.read_bytes() == b"thumb"
+    with connect(data_dir) as db:
+        assert db.execute("SELECT 1 FROM items WHERE id='shared'").fetchone()
+        assert db.execute("SELECT 1 FROM photos WHERE id='p-shared'").fetchone()
+    remove_last = client.delete(
+        "/api/collections/c2/server-copy", headers={**HEADERS, "X-Confirm-Name": "Room B"}
+    )
+    assert remove_last.status_code == 204
+    assert not original.exists() and not thumbnail.exists()
+    with connect(data_dir) as db:
+        assert db.execute("SELECT 1 FROM items WHERE id='shared'").fetchone() is None
+        assert db.execute("SELECT 1 FROM photos WHERE id='p-shared'").fetchone() is None
+        purged = {
+            (row[0], row[1]) for row in db.execute("SELECT entity,kind FROM changes WHERE kind='purged'")
+        }
+        assert purged == {("photo", "purged"), ("item", "purged")}
+    client.close()
+
+
+def test_entry_purge_removes_orphan_item_photos_and_media(tmp_path):
+    from kufang_capture.db import connect
+
+    client = make_client(tmp_path)
+    entry = entry_mutation()
+    item = item_mutation("e1", "c1")
+    item["fields"].update(title="Keep me until purge")
+    photo = {
+        "id": "m-purge-photo",
+        "entity": "photo",
+        "entity_id": "p1",
+        "collection_id": "c1",
+        "op": "upsert",
+        "base_revision": None,
+        "fields": {
+            "id": "p1",
+            "item_id": "e1",
+            "mime_type": "image/jpeg",
+            "byte_size": 5,
+            "sha256": hashlib.sha256(b"photo").hexdigest(),
+            "crc32": zlib.crc32(b"photo"),
+            "captured_at": "2026-11-08T12:00:00.000Z",
+            "capture_source": "native_camera",
+            "created_at": "2026-11-08T12:00:00.000Z",
+            "updated_at": "2026-11-08T12:00:00.000Z",
+        },
+    }
+    created = client.post(
+        "/api/sync/batch",
+        json={"schema": 2, "mutations": [collection_mutation(), item, entry, photo]},
+        headers=HEADERS,
+    )
+    assert all(result["status"] == "applied" for result in created.json()["results"])
+    data_dir = tmp_path / "data"
+    original = data_dir / "media/originals/p1/p1"
+    thumbnail = data_dir / "media/thumbnails/p1/p1"
+    original.parent.mkdir(parents=True)
+    thumbnail.parent.mkdir(parents=True)
+    original.write_bytes(b"photo")
+    thumbnail.write_bytes(b"thumb")
+    with connect(data_dir) as db:
+        db.execute("UPDATE photos SET storage_key=? WHERE id='p1'", (str(original.relative_to(data_dir)),))
+    deleted = {
+        **entry,
+        "id": "m-delete-e1",
+        "op": "delete",
+        "base_revision": 1,
+        "fields": {},
+    }
+    assert (
+        client.post("/api/sync/batch", json={"schema": 2, "mutations": [deleted]}, headers=HEADERS).json()[
+            "results"
+        ][0]["status"]
+        == "applied"
+    )
+    purge = {**deleted, "id": "m-purge-e1", "op": "purge", "fields": {}}
+    assert (
+        client.post("/api/sync/batch", json={"schema": 2, "mutations": [purge]}, headers=HEADERS).json()[
+            "results"
+        ][0]["status"]
+        == "applied"
+    )
+    assert not original.exists() and not thumbnail.exists()
+    with connect(data_dir) as db:
+        assert db.execute("SELECT 1 FROM items WHERE id='e1'").fetchone() is None
+        assert db.execute("SELECT 1 FROM photos WHERE id='p1'").fetchone() is None
+        purged = {
+            (row[0], row[1]) for row in db.execute("SELECT entity,kind FROM changes WHERE kind='purged'")
+        }
+        assert purged == {("entry", "purged"), ("photo", "purged"), ("item", "purged")}
+    client.close()
+
+
 def test_streamed_export_with_missing_original_passes_operator_verifier(tmp_path):
     client = make_client(tmp_path)
     client.post(
@@ -419,8 +667,7 @@ def test_streamed_export_with_missing_original_passes_operator_verifier(tmp_path
         "base_revision": None,
         "fields": {
             "id": "missing-photo",
-            "entry_id": "e1",
-            "collection_id": "c1",
+            "item_id": "e1",
             "sort_order": 0,
             "original_filename": "missing.jpg",
             "mime_type": "image/jpeg",
@@ -459,6 +706,80 @@ def test_streamed_export_with_missing_original_passes_operator_verifier(tmp_path
     client.close()
 
 
+def test_version_two_export_shared_and_trash_item_sets(tmp_path):
+    from kufang_capture.db import connect
+
+    client = make_client(tmp_path)
+    client.post("/api/sync/batch", json={"mutations": [collection_mutation()]}, headers=HEADERS)
+    data_dir = tmp_path / "data"
+    with connect(data_dir) as db:
+        db.execute(
+            "INSERT INTO collections(id,name,status,storage_mode,created_at,updated_at) "
+            "VALUES('c2','Room B','active','synced','2026-11-08T12:01:00.000Z','2026-11-08T12:01:00.000Z')"
+        )
+        db.execute(
+            "INSERT INTO items(id,title,notes,expiration_date,dimensions,review_status,revision,"
+            "field_revisions,"
+            "created_at,updated_at) VALUES('i-shared','Shared','',NULL,'','complete',3,'{}',"
+            "'2026-11-08T12:02:00.000Z','2026-11-08T12:10:00.000Z')"
+        )
+        db.execute(
+            "INSERT INTO items(id,title,notes,expiration_date,dimensions,review_status,"
+            "created_at,updated_at) "
+            "VALUES('i-trash','Only trash','',NULL,'','draft','2026-11-08T12:03:00.000Z',"
+            "'2026-11-08T12:03:00.000Z')"
+        )
+        for values in (
+            ("e-active", "c1", "i-shared", 1, None, "2026-11-08T12:04:00.000Z"),
+            ("e-deleted-shared", "c2", "i-shared", 2, "2026-11-08T12:05:00.000Z", "2026-11-08T12:05:00.000Z"),
+            ("e-deleted-only", "c2", "i-trash", 3, "2026-11-08T12:06:00.000Z", "2026-11-08T12:06:00.000Z"),
+        ):
+            db.execute(
+                "INSERT INTO entries(id,collection_id,item_id,sequence_number,quantity,unit,"
+                "count_detail,deleted_at,"
+                "created_at,updated_at) VALUES(?,?,?,?,NULL,'','',?,'2026-11-08T12:00:00.000Z',?)",
+                values,
+            )
+        for photo_id, item_id in (("p-shared", "i-shared"), ("p-trash", "i-trash")):
+            db.execute(
+                "INSERT INTO photos(id,item_id,mime_type,byte_size,sha256,crc32,captured_at,capture_source,"
+                "created_at,updated_at) VALUES(?,?,'image/jpeg',1,?,0,'2026-11-08T12:00:00.000Z',"
+                "'native_camera','2026-11-08T12:00:00.000Z','2026-11-08T12:00:00.000Z')",
+                (photo_id, item_id, "a" * 64),
+            )
+    archive_bytes = client.get("/api/exports/all.zip?include_trash=1").content
+    import io
+
+    with zipfile.ZipFile(io.BytesIO(archive_bytes)) as archive:
+        names = archive.namelist()
+        assert "capture-export/photos/i-shared/p-shared.jpg" not in names
+        assert "capture-export/trash/photos/i-trash/p-trash.jpg" not in names
+        manifest = json.loads(archive.read("capture-export/manifest.json"))
+        active_entries = json.loads(archive.read("capture-export/entries.json"))
+        trash_entries = json.loads(archive.read("capture-export/trash/entries.json"))
+        active_photos = json.loads(archive.read("capture-export/photos.json"))
+        trash_photos = json.loads(archive.read("capture-export/trash/photos.json"))
+    assert manifest["format_version"] == 2
+    assert manifest["counts"] == {
+        "collections": 2,
+        "items": 1,
+        "entries": 1,
+        "photos": 1,
+        "photo_bytes": 1,
+        "trash_entries": 2,
+        "trash_photos": 1,
+    }
+    assert active_entries[0]["item_id"] == "i-shared"
+    assert active_entries[0]["updated_at"] == "2026-11-08T12:10:00.000Z"
+    assert {entry["entry_id"] for entry in trash_entries} == {"e-deleted-shared", "e-deleted-only"}
+    assert [photo["photo_id"] for photo in active_photos + trash_photos] == ["p-shared", "p-trash"]
+    assert active_photos[0]["item_id"] == "i-shared"
+    assert trash_photos[0]["item_id"] == "i-trash"
+    assert active_photos[0]["path"] == "photos/i-shared/p-shared.jpg"
+    assert trash_photos[0]["path"] == "trash/photos/i-trash/p-trash.jpg"
+    client.close()
+
+
 def test_unknown_api_paths_require_a_session_before_revealing_anything(tmp_path):
     from fastapi.testclient import TestClient
 
@@ -469,3 +790,60 @@ def test_unknown_api_paths_require_a_session_before_revealing_anything(tmp_path)
     with TestClient(app) as client:
         assert client.get("/api/some-future-route").status_code == 401
         assert client.get("/api/health").status_code == 200
+
+
+def test_full_client_records_with_local_fields_are_applied_and_wrong_fields_rejected(tmp_path):
+    # The app sends whole local records on create, including device-only bookkeeping.
+    client = make_client(tmp_path)
+    local = {"revision": 1, "server_revision": None, "sync_state": "pending"}
+    collection = collection_mutation()
+    collection["fields"] |= local
+    item = item_mutation()
+    item["fields"] |= local
+    entry = entry_mutation()
+    entry["fields"] |= local
+    photo = {
+        "id": "m-p",
+        "entity": "photo",
+        "entity_id": "p1",
+        "collection_id": "c1",
+        "op": "upsert",
+        "base_revision": None,
+        "fields": {
+            "id": "p1",
+            "item_id": "e1",
+            "sort_order": 0,
+            "original_filename": "a.jpg",
+            "mime_type": "image/jpeg",
+            "byte_size": 3,
+            "width": 1,
+            "height": 1,
+            "sha256": "a" * 64,
+            "crc32": 1,
+            "captured_at": "2026-11-08T12:00:00.000Z",
+            "capture_source": "photo_library",
+            "caption": "",
+            "is_cover": True,
+            "deleted_at": None,
+            "created_at": "2026-11-08T12:00:00.000Z",
+            "updated_at": "2026-11-08T12:00:00.000Z",
+            "upload_state": "pending",
+            "server_storage_key": None,
+            "upload_attempts": 0,
+            "upload_next_attempt_at": None,
+            **local,
+        },
+    }
+    results = client.post(
+        "/api/sync/batch",
+        json={"device_id": "d1", "mutations": [collection, item, entry, photo]},
+        headers=HEADERS,
+    ).json()["results"]
+    assert [r["status"] for r in results] == ["applied"] * 4
+    stale = entry_mutation("m-e-title", "e1")
+    stale["base_revision"] = 1
+    stale["fields"] = {"title": "belongs to the item"}
+    rejected = client.post("/api/sync/batch", json={"mutations": [stale]}, headers=HEADERS).json()
+    assert rejected["results"][0]["status"] == "rejected"
+    assert rejected["results"][0]["code"] == "invalid_field"
+    client.close()

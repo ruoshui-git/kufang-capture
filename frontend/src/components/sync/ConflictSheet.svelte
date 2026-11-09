@@ -32,7 +32,7 @@
     {#if conflicts.length === 0}<p>No conflicts need a decision.</p>{/if}
     {#each conflicts as conflict (conflict.id)}
       <section class="conflict">
-        <h3>{conflict.entity} — {conflict.entity_id}</h3>
+        <h3>{conflict.entity === 'item' ? 'Item fields' : `${conflict.entity} — ${conflict.entity_id}`}</h3>
         {#each conflict.fields as field (field)}
           <div class="field">
             <strong>{field}</strong>

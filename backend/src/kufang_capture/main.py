@@ -223,6 +223,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.post("/api/sync/batch")
     async def sync_batch(request: Request):
         body = await request.json()
+        if not isinstance(body, dict) or body.get("schema") != 2:
+            return JSONResponse(
+                {"detail": "client_outdated", "message": "This client must upgrade to sync schema 2"},
+                status_code=409,
+            )
         mutations = body.get("mutations") if isinstance(body, dict) else None
         if not isinstance(mutations, list) or len(mutations) > 200:
             raise HTTPException(422, detail="invalid_batch")
@@ -230,7 +235,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return {"results": results, "cursor": cursor}
 
     @app.get("/api/sync/changes")
-    def sync_changes(cursor: int = 0, limit: int = 500):
+    def sync_changes(cursor: int = 0, limit: int = 500, schema: int | None = None):
+        if schema != 2:
+            return JSONResponse(
+                {"detail": "client_outdated", "message": "This client must upgrade to sync schema 2"},
+                status_code=409,
+            )
         return pull_changes(config.data_dir, max(cursor, 0), min(max(limit, 1), 1000))
 
     @app.put("/api/photos/{photo_id}/original", status_code=201)
@@ -274,13 +284,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 photos = db.execute(
                     "SELECT COUNT(*), "
                     "COALESCE(SUM(CASE WHEN p.stored_at IS NOT NULL THEN p.byte_size ELSE 0 END),0) "
-                    "FROM photos p JOIN entries e ON e.id=p.entry_id "
-                    "WHERE p.collection_id=? AND p.deleted_at IS NULL AND e.deleted_at IS NULL",
+                    "FROM entries e JOIN items i ON i.id=e.item_id JOIN photos p ON p.item_id=i.id "
+                    "WHERE e.collection_id=? AND p.deleted_at IS NULL AND e.deleted_at IS NULL",
                     (cid,),
                 ).fetchone()
                 missing = db.execute(
-                    "SELECT COUNT(*) FROM photos p JOIN entries e ON e.id=p.entry_id "
-                    "WHERE p.collection_id=? AND p.deleted_at IS NULL AND p.stored_at IS NULL "
+                    "SELECT COUNT(*) FROM entries e JOIN items i ON i.id=e.item_id "
+                    "JOIN photos p ON p.item_id=i.id "
+                    "WHERE e.collection_id=? AND p.deleted_at IS NULL AND p.stored_at IS NULL "
                     "AND e.deleted_at IS NULL",
                     (cid,),
                 ).fetchone()[0]
@@ -309,18 +320,38 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 raise HTTPException(404, detail="collection_not_found")
             if confirm != row[0]:
                 raise HTTPException(409, detail="confirmation_name_mismatch")
-            media_files = [
+            orphan_items = [
                 r[0]
                 for r in db.execute(
-                    "SELECT storage_key FROM photos WHERE collection_id=? AND storage_key IS NOT NULL",
-                    (collection_id,),
+                    "SELECT DISTINCT e.item_id FROM entries e WHERE e.collection_id=? "
+                    "AND NOT EXISTS (SELECT 1 FROM entries other WHERE other.item_id=e.item_id "
+                    "AND other.collection_id<>?)",
+                    (collection_id, collection_id),
                 )
             ]
-            media_files.extend(
-                f"media/thumbnails/{photo_id[:2]}/{photo_id}"
-                for (photo_id,) in db.execute("SELECT id FROM photos WHERE collection_id=?", (collection_id,))
-            )
             db.execute("DELETE FROM collections WHERE id=?", (collection_id,))
+            for item_id in orphan_items:
+                media_files.extend(
+                    r[0]
+                    for r in db.execute(
+                        "SELECT storage_key FROM photos WHERE item_id=? AND storage_key IS NOT NULL",
+                        (item_id,),
+                    )
+                )
+                photo_ids = [r[0] for r in db.execute("SELECT id FROM photos WHERE item_id=?", (item_id,))]
+                media_files.extend(f"media/thumbnails/{pid[:2]}/{pid}" for pid in photo_ids)
+                for photo_id in photo_ids:
+                    db.execute("DELETE FROM photos WHERE id=?", (photo_id,))
+                    db.execute(
+                        "INSERT INTO changes(entity,entity_id,collection_id,kind) "
+                        "VALUES('photo',?,'','purged')",
+                        (photo_id,),
+                    )
+                db.execute("DELETE FROM items WHERE id=?", (item_id,))
+                db.execute(
+                    "INSERT INTO changes(entity,entity_id,collection_id,kind) VALUES('item',?,'','purged')",
+                    (item_id,),
+                )
             db.execute(
                 "INSERT INTO changes(entity,entity_id,collection_id,kind) "
                 "VALUES('collection',?,?, 'removed')",

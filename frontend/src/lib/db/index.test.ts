@@ -4,7 +4,7 @@ import { Blob as NodeBlobImpl } from 'node:buffer'
 
 // Node's Blob survives fake-indexeddb structured cloning; type it as the DOM Blob.
 const NodeBlob = NodeBlobImpl as unknown as typeof Blob
-import { createRepo } from './index'
+import { createRepo, getCaptureDb } from './index'
 import { crc32, readBlob } from '../photos'
 import { addDecimals, isIncomplete, normalizeUnit } from '../summary'
 
@@ -32,6 +32,72 @@ async function first<T>(watch: {
 }
 
 describe('Dexie repository', () => {
+  it('shares item fields across collections while keeping quantities local to each entry', async () => {
+    const repo = isolatedRepo(async () => ({ width: 1, height: 1, thumbnail: new NodeBlob(['thumb']) }))
+    const sourceCollection = await repo.createCollection({ name: 'Source', storage_mode: 'local_only' })
+    const targetCollection = await repo.createCollection({ name: 'Target', storage_mode: 'local_only' })
+    const source = await repo.createEntry(sourceCollection.id, {
+      title: 'Crate',
+      quantity: '5',
+      unit: 'boxes',
+    })
+    const imported = await repo.importEntries(targetCollection.id, [source.id])
+    const target = imported.created[0]!
+    await repo.updateEntry(target.id, { title: 'Shared crate', quantity: '2' })
+    expect((await repo.getEntry(source.id))?.title).toBe('Shared crate')
+    expect((await repo.getEntry(source.id))?.quantity).toBe('5')
+    expect((await repo.getEntry(target.id))?.quantity).toBe('2')
+    expect((await repo.getEntry(source.id))?.shared_with[0]?.collection_id).toBe(targetCollection.id)
+    const photo = (
+      await repo.addPhotos(target.id, [
+        { blob: new NodeBlob(['shared photo'], { type: 'image/jpeg' }), source: 'photo_library' },
+      ])
+    )[0]!
+    expect((await first(repo.watchPhotos(source.id))).map((row) => row.id)).toContain(photo.id)
+    await repo.deleteEntry(source.id)
+    expect((await repo.getEntry(target.id))?.title).toBe('Shared crate')
+  })
+
+  it('coalesces shared item edits across synced collections and blocks mode changes for deleted shares', async () => {
+    const name = `capture-test-shared-outbox-${++counter}`
+    const repo = createRepo({ databaseName: name })
+    const sourceCollection = await repo.createCollection({ name: 'Synced A', storage_mode: 'synced' })
+    const targetCollection = await repo.createCollection({ name: 'Synced B', storage_mode: 'synced' })
+    const source = await repo.createEntry(sourceCollection.id, { title: 'Shared' })
+    const target = (await repo.importEntries(targetCollection.id, [source.id])).created[0]!
+    await repo.updateEntry(target.id, { notes: 'Edited from B' })
+    const db = getCaptureDb(name)
+    const itemMutations = await db.outbox.where('[entity+entity_id]').equals(['item', source.id]).toArray()
+    expect(itemMutations).toHaveLength(1)
+    expect(itemMutations[0]?.fields.notes).toBe('Edited from B')
+    await repo.deleteEntry(target.id)
+    const check = await repo.checkStorageMode(targetCollection.id, 'local_only')
+    expect(check.allowed).toBe(false)
+    expect(check.blockers).toContainEqual(expect.objectContaining({ collection_id: sourceCollection.id }))
+    await db.delete()
+  })
+
+  it('restores deleted imports with their old number, skips active duplicates, and rejects mode mismatch', async () => {
+    const name = `capture-test-import-${++counter}`
+    const repo = createRepo({ databaseName: name })
+    const sourceCollection = await repo.createCollection({ name: 'Local source', storage_mode: 'local_only' })
+    const targetCollection = await repo.createCollection({ name: 'Local target', storage_mode: 'local_only' })
+    const source = await repo.createEntry(sourceCollection.id, { unit: 'pieces' })
+    const created = (await repo.importEntries(targetCollection.id, [source.id])).created[0]!
+    expect(created.sequence_number).toBe(1)
+    await expect(repo.importEntries(targetCollection.id, [source.id])).resolves.toMatchObject({
+      skipped: [source.id],
+    })
+    await repo.deleteEntry(created.id)
+    const restored = await repo.importEntries(targetCollection.id, [source.id])
+    expect(restored.restored[0]?.sequence_number).toBe(created.sequence_number)
+    const db = getCaptureDb(name)
+    expect(await db.outbox.count()).toBe(0)
+    const synced = await repo.createCollection({ name: 'Synced', storage_mode: 'synced' })
+    await expect(repo.importEntries(synced.id, [source.id])).rejects.toThrow('same storage mode')
+    await db.delete()
+  })
+
   it('gives rapid concurrent captures distinct sort orders and exactly one cover', async () => {
     const repo = isolatedRepo(async () => ({ width: 1, height: 1, thumbnail: new NodeBlob(['t']) as Blob }))
     const collection = await repo.createCollection({ name: 'Burst', storage_mode: 'local_only' })
@@ -116,11 +182,7 @@ describe('Dexie repository', () => {
         'id, [collection_id+entity_id], [collection_id+entity+entity_id], next_attempt_at, collection_id',
       settings: 'key',
     })
-    const items = await db
-      .table('outbox')
-      .where('[collection_id+entity+entity_id]')
-      .equals([collection.id, 'entry', entry.id])
-      .toArray()
+    const items = await db.table('outbox').where('[entity+entity_id]').equals(['item', entry.id]).toArray()
     expect(items).toHaveLength(1)
     expect(items[0].fields).toMatchObject({ title: 'First', notes: 'Second' })
     db.close()
@@ -191,18 +253,10 @@ describe('query and sync invariants', () => {
         'id, [collection_id+entity_id], [collection_id+entity+entity_id], next_attempt_at, collection_id',
       settings: 'key',
     })
-    const original = await db
-      .table('outbox')
-      .where('[collection_id+entity+entity_id]')
-      .equals([collection.id, 'entry', entry.id])
-      .first()
+    const original = await db.table('outbox').where('[entity+entity_id]').equals(['item', entry.id]).first()
     await db.table('outbox').put({ ...original, in_flight: true })
     await repo.updateEntry(entry.id, { title: 'after send started' })
-    const items = await db
-      .table('outbox')
-      .where('[collection_id+entity+entity_id]')
-      .equals([collection.id, 'entry', entry.id])
-      .toArray()
+    const items = await db.table('outbox').where('[entity+entity_id]').equals(['item', entry.id]).toArray()
     expect(items).toHaveLength(2)
     expect(items.find((item) => item.in_flight)?.fields.title).toBe('')
     expect(items.find((item) => !item.in_flight)?.fields.title).toBe('after send started')
@@ -254,5 +308,22 @@ describe('query and sync invariants', () => {
     const check = await repo.checkClearCollection(collection.id)
     expect(check.allowed).toBe(false)
     expect(check.unexported_changes).toBe(true)
+  })
+})
+
+describe('pulled data arriving out of order', () => {
+  it('lists an entry whose item has not arrived yet with blank shared fields instead of failing', async () => {
+    const name = `capture-out-of-order-${Date.now()}`
+    const repo = createRepo({ databaseName: name })
+    const collection = await repo.createCollection({ name: 'Desktop copy', storage_mode: 'synced' })
+    const entry = await repo.createEntry(collection.id, { title: 'Arrives later', quantity: '2' })
+    // Simulate a fresh device that pulled the entry page before the item page.
+    await getCaptureDb(name).items.delete(entry.item_id)
+    const view = await repo.getEntry(entry.id)
+    expect(view).toMatchObject({ title: '', notes: '', review_status: 'draft', quantity: '2' })
+    const rows = await first(
+      repo.watchEntryRows(collection.id, { search: '', filter: 'all', sort: 'newest' }),
+    )
+    expect(rows.map((row) => row.entry.id)).toEqual([entry.id])
   })
 })

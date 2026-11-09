@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onDestroy, onMount, untrack } from 'svelte'
   import { Camera, ChevronDown, Images } from '@lucide/svelte'
-  import type { EntryRow as EntryRowModel, Entry, Photo } from '$lib/types'
+  import type { EntryRow as EntryRowModel, EntryView, Photo } from '$lib/types'
   import { formatSequence } from '$lib/types'
   import { repo } from '$lib/db'
   import { pickPhotos, type CaptureMode } from '$lib/camera'
@@ -22,7 +22,7 @@
   }: {
     row: EntryRowModel
     units: string[]
-    ondetails: (entry: Entry) => void
+    ondetails: (entry: EntryView) => void
     onviewer: (entryId: string, photoId: string) => void
     ondelete: (row: EntryRowModel) => void
   } = $props()
@@ -226,6 +226,9 @@
       }}
       onblur={() => void flushDrafts()}
     />
+    {#if row.entry.shared_with.length > 0}<span class="shared-tag"
+        >Shared · {row.entry.shared_with.length + 1} collections</span
+      >{/if}
     <div class="menu-cell">
       <Menu label="Entry actions">
         <button
@@ -420,6 +423,12 @@
     grid-template-columns: auto minmax(0, 1fr) auto;
     align-items: center;
     gap: var(--space-3);
+  }
+  .shared-tag {
+    grid-column: 2;
+    color: var(--color-muted);
+    font-size: var(--text-xs);
+    line-height: var(--leading-tight);
   }
   .tag-link {
     grid-area: auto;

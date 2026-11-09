@@ -57,6 +57,9 @@
     </p>
     <p>Unsynced photos will be lost. Export a verified ZIP before clearing.</p>
     {#if check}
+      {#if check.shared_items > 0}<p>
+          {check.shared_items} shared {check.shared_items === 1 ? 'item stays' : 'items stay'} in other collections.
+        </p>{/if}
       {#if !check.allowed}<p>This collection is blocked from clearing:</p>
         <ul>
           {#each check.reasons as reason}<li>{reason}</li>{/each}

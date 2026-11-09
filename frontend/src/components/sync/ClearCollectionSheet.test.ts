@@ -20,6 +20,7 @@ describe('ClearCollectionSheet', () => {
     repo.checkClearCollection.mockResolvedValue({
       allowed: false,
       reasons: ['Collection has changes that were not exported'],
+      shared_items: 2,
     })
     repo.clearCollection.mockResolvedValue(undefined)
     exportFromDevice.mockImplementation(async () => {
@@ -29,6 +30,7 @@ describe('ClearCollectionSheet', () => {
     render(ClearCollectionSheet, { props: { item, open: true } })
     const clear = await screen.findByRole('button', { name: 'Clear collection' })
     expect(await screen.findByText('Collection has changes that were not exported')).toBeInTheDocument()
+    expect(screen.getByText('2 shared items stay in other collections.')).toBeInTheDocument()
     expect(clear).toBeDisabled()
     await fireEvent.click(screen.getByRole('button', { name: 'Export ZIP now' }))
     await waitFor(() => expect(exportFromDevice).toHaveBeenCalledWith(['room']))

@@ -46,8 +46,25 @@ def run_migrations(data_dir: Path, migrations_dir: Path | None = None) -> None:
                 continue
             script = migration.read_text(encoding="utf-8")
             version = migration.name.replace("'", "''")
-            connection.executescript(
-                "BEGIN IMMEDIATE;\n"
-                + script
-                + f"\nINSERT INTO schema_migrations(version) VALUES ('{version}');\nCOMMIT;"
-            )
+            if migration.name == "0003_items.sql":
+                connection.execute("PRAGMA foreign_keys=OFF")
+                try:
+                    connection.executescript("BEGIN IMMEDIATE;\n" + script)
+                    violations = connection.execute("PRAGMA foreign_key_check").fetchall()
+                    if violations:
+                        raise sqlite3.IntegrityError(
+                            f"foreign key check failed after {migration.name}: {violations}"
+                        )
+                    connection.execute(f"INSERT INTO schema_migrations(version) VALUES ('{version}')")
+                    connection.commit()
+                except Exception:
+                    connection.rollback()
+                    raise
+                finally:
+                    connection.execute("PRAGMA foreign_keys=ON")
+            else:
+                connection.executescript(
+                    "BEGIN IMMEDIATE;\n"
+                    + script
+                    + f"\nINSERT INTO schema_migrations(version) VALUES ('{version}');\nCOMMIT;"
+                )

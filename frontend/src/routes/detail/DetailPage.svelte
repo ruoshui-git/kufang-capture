@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onMount } from 'svelte'
   import { repo } from '$lib/db'
-  import type { Entry, Id, Photo } from '$lib/types'
+  import type { EntryView, Id, Photo } from '$lib/types'
   import { SETTING_KEYS, formatSequence } from '$lib/types'
   import type { EntryPatch, EntrySort } from '$lib/repo'
   import { pickPhotos, type CaptureMode } from '$lib/camera'
@@ -21,7 +21,7 @@
     variant = 'page',
   }: { collectionId: Id; entryId: Id; variant?: 'page' | 'panel' } = $props()
 
-  let entry = $state<Entry | undefined>()
+  let entry = $state<EntryView | undefined>()
   let draft = $state<Partial<Record<EditableKey, string>>>({})
   let dirty = $state(new Set<EditableKey>())
   let savingCount = $state(0)
@@ -191,7 +191,12 @@
     requestAnimationFrame(() => restoreScroll(`entries:${collectionId}`))
   }
   function undoDelete(photo: Photo) {
-    showToast({ message: 'Photo deleted', actionLabel: 'Undo', action: () => repo.restorePhoto(photo.id) })
+    const count = (entry?.shared_with.length ?? 0) + 1
+    showToast({
+      message: count > 1 ? `Photo deleted from ${count} collections.` : 'Photo deleted',
+      actionLabel: 'Undo',
+      action: () => repo.restorePhoto(photo.id),
+    })
   }
 </script>
 
@@ -220,12 +225,22 @@
           onblur={() => void flushField('title')}
         />
       </div>
+      {#if entry.shared_with.length > 0}<p class="shared-hint">
+          Title, notes and photos are shared across {entry.shared_with.length + 1} collections.
+        </p>{/if}
+      {#if entry.shared_with.length > 0}<section class="also-in" aria-label="Also in">
+          <strong>Also in</strong>
+          {#each entry.shared_with as placement (placement.entry_id)}<a
+              href="/c/{placement.collection_id}/e/{placement.entry_id}"
+              >{placement.collection_name} · {formatSequence(placement.sequence_number)}</a
+            >{/each}
+        </section>{/if}
       <label class="review-select"
         >Review status <select
           value={entry.review_status}
           onchange={(event) =>
             void repo.updateEntry(entryId, {
-              review_status: event.currentTarget.value as Entry['review_status'],
+              review_status: event.currentTarget.value as EntryView['review_status'],
             })}
           ><option value="draft">Draft</option><option value="complete">Complete</option><option
             value="needs_review">Needs review</option
@@ -256,6 +271,7 @@
       </div>
       <PhotoGrid
         {photos}
+        {entryId}
         onopen={(id) => {
           viewerPhotoId = id
           viewerOpen = true
@@ -274,7 +290,9 @@
             oninput={(event) => setField('quantity', event.currentTarget.value)}
             onblur={() => void flushField('quantity')}
             aria-invalid={invalidQuantity}
-          />{#if invalidQuantity}<small class="field-hint" role="alert"
+          />{#if entry.shared_with.length > 0}<small class="field-note"
+              >This count is for this collection only.</small
+            >{/if}{#if invalidQuantity}<small class="field-hint" role="alert"
               >Enter a decimal number, such as 12.5.</small
             >{/if}</label
         >
@@ -320,7 +338,9 @@
             rows="4"
             value={draft.notes ?? ''}
             oninput={(event) => setField('notes', event.currentTarget.value)}
-            onblur={() => void flushField('notes')}></textarea></label
+            onblur={() => void flushField('notes')}></textarea>{#if entry.shared_with.length > 0}<small
+              class="field-note">Changes apply across {entry.shared_with.length + 1} collections.</small
+            >{/if}</label
         >
       </div>
     {/if}
@@ -368,6 +388,21 @@
     display: flex;
     align-items: center;
     gap: var(--space-4);
+  }
+  .shared-hint,
+  .also-in {
+    margin: 0;
+    color: var(--color-muted);
+    font-size: var(--text-sm);
+  }
+  .also-in {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--space-3);
+  }
+  .also-in a {
+    color: var(--color-ballpoint);
   }
   .title-input {
     min-width: 0;

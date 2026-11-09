@@ -84,4 +84,6 @@ There are no ambient animations. Honour `prefers-reduced-motion`.
 
 Use plain verbs that are consistent through a flow: `Add Photo`, `Add from Photos`, `New Entry`, `Details`, `Delete entry` → toast `Deleted` → `Undo` / `Restore`, `Recently Deleted`, `Export ZIP` → `Exported`, `Local Only`, `Sync to Server`, `Backed up`.
 
+Shared items: the collection menu offers `Import from another collection`; the sheet's button reads `Import N`, and the toast reads `Imported N items` → `Undo`. A shared row carries a quiet `Shared · N collections` tag; Detail lists `Also in` links and says that title, notes and photos change in every collection while the quantity is for this collection only. Removing a shared entry toasts `Removed from A. Still in B.`; deleting one of its photos toasts `Photo deleted from N collections.`
+
 Empty states give direction. For example: "No entries yet. Tap New Entry, then Add Photo to start counting this room." Errors say what happened and what to do next: "Couldn't reach the server. Changes are saved on this device and will upload when you're back online."

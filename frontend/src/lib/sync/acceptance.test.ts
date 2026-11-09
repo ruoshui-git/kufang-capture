@@ -36,6 +36,7 @@ class MemoryServer {
   failAfterBatch = false
   mismatchUpload = false
   storageLow = false
+  clientOutdated = false
   pageSize = 500
   batchRequests: Mutation[][] = []
   requests: Array<{ url: string; method: string; body?: unknown }> = []
@@ -66,6 +67,8 @@ class MemoryServer {
       return new Response(JSON.stringify({ detail: 'auth_required' }), { status: 401 })
     }
     if (url === '/api/sync/batch') {
+      if (this.clientOutdated)
+        return new Response(JSON.stringify({ code: 'client_outdated' }), { status: 409 })
       const payload = JSON.parse(String(init.body)) as { mutations: Mutation[] }
       this.batchRequests.push(payload.mutations)
       const results: Record<string, unknown>[] = []
@@ -293,6 +296,51 @@ afterEach(() => {
 })
 
 describe('sync acceptance against an in-memory API server', () => {
+  it('sends schema 2 and keeps the outbox when the server requires an app update', async () => {
+    const server = new MemoryServer()
+    const fixture = await syncedEntry(server)
+    expect(server.batchRequests[0]?.map((mutation) => mutation.entity)).toEqual([
+      'collection',
+      'item',
+      'entry',
+    ])
+    await fixture.repo.updateEntry(fixture.entry.id, { quantity: '3' })
+    server.clientOutdated = true
+    let lastError: string | null = null
+    const unsubscribe = fixture.engine.status.subscribe((value) => {
+      lastError = value.last_error
+    })
+    await fixture.engine.syncNow()
+    const batch = server.requests.filter((request) => request.url === '/api/sync/batch').at(-1)!
+    expect(JSON.parse(String(batch.body)).schema).toBe(2)
+    expect(
+      server.requests.some(
+        (request) => request.url.includes('/api/sync/changes?') && request.url.includes('schema=2'),
+      ),
+    ).toBe(true)
+    expect(
+      await fixture.db.outbox.where('[entity+entity_id]').equals(['entry', fixture.entry.id]).count(),
+    ).toBe(1)
+    expect(lastError).toBe('Update the app to keep syncing.')
+    if (typeof unsubscribe === 'function') unsubscribe()
+    else unsubscribe.unsubscribe()
+    await fixture.db.delete()
+  })
+
+  it('keeps local collection data when a removed change arrives after switching to Local Only', async () => {
+    const server = new MemoryServer()
+    const fixture = await syncedEntry(server)
+    await fixture.repo.setStorageMode(fixture.collection.id, 'local_only', { consentToUploadExisting: false })
+    server.pushChange({ entity: 'collection', id: fixture.collection.id, removed: true })
+    await fixture.engine.syncNow()
+    expect(await fixture.db.collections.get(fixture.collection.id)).toMatchObject({
+      storage_mode: 'local_only',
+    })
+    expect(await fixture.db.entries.get(fixture.entry.id)).toBeDefined()
+    expect(await fixture.db.items.get(fixture.entry.id)).toBeDefined()
+    await fixture.db.delete()
+  })
+
   it('upgrades v2 databases without losing existing photo data and initializes retry metadata', async () => {
     const name = dbName()
     const legacy = new Dexie(name)
@@ -355,16 +403,16 @@ describe('sync acceptance against an in-memory API server', () => {
     await fixture.repo.updateEntry(fixture.entry.id, { notes: 'first edit' })
     await fixture.repo.updateEntry(fixture.entry.id, { notes: 'latest edit', title: 'Latest title' })
     const outboxBefore = await fixture.db.outbox
-      .where('[collection_id+entity+entity_id]')
-      .equals([fixture.collection.id, 'entry', fixture.entry.id])
+      .where('[entity+entity_id]')
+      .equals(['item', fixture.entry.id])
       .toArray()
     expect(outboxBefore).toHaveLength(1)
     await fixture.engine.syncNow()
-    const sent = server.batchRequests.at(-1)!.filter((item) => item.entity === 'entry')
-    const local = await fixture.db.entries.get(fixture.entry.id)
+    const sent = server.batchRequests.at(-1)!.filter((item) => item.entity === 'item')
+    const local = await fixture.db.items.get(fixture.entry.id)
     expect(sent).toHaveLength(1)
     expect(sent[0]!.fields).toMatchObject({ notes: 'latest edit', title: 'Latest title' })
-    expect(local?.server_revision).toBe(server.records.get(server.key('entry', fixture.entry.id))!.revision)
+    expect(local?.server_revision).toBe(server.records.get(server.key('item', fixture.entry.id))!.revision)
     expect(local?.sync_state).toBe('synced')
     await fixture.db.delete()
   })
@@ -374,8 +422,8 @@ describe('sync acceptance against an in-memory API server', () => {
     const fixture = await syncedEntry(server)
     await fixture.repo.updateEntry(fixture.entry.id, { notes: 'retry me' })
     const before = await fixture.db.outbox
-      .where('[collection_id+entity+entity_id]')
-      .equals([fixture.collection.id, 'entry', fixture.entry.id])
+      .where('[entity+entity_id]')
+      .equals(['item', fixture.entry.id])
       .first()
     server.failAfterBatch = true
     await fixture.engine.syncNow()
@@ -387,8 +435,9 @@ describe('sync acceptance against an in-memory API server', () => {
       .map((batch) => batch.find((item) => item.entity_id === fixture.entry.id)!.id)
     expect(sentIds.at(-1)).toBe(before!.id)
     expect(new Set(sentIds).size).toBe(1)
-    expect(server.records.get(server.key('entry', fixture.entry.id))?.notes).toBe('retry me')
-    expect([...server.records.values()].filter((row) => row.id === fixture.entry.id)).toHaveLength(1)
+    expect(server.records.get(server.key('item', fixture.entry.id))?.notes).toBe('retry me')
+    expect(server.records.get(server.key('item', fixture.entry.id))).toBeDefined()
+    expect(server.records.get(server.key('entry', fixture.entry.id))).toBeDefined()
     expect(await fixture.db.outbox.get(before!.id)).toBeUndefined()
     await fixture.db.delete()
   })
@@ -522,16 +571,16 @@ describe('sync acceptance against an in-memory API server', () => {
   it('stores field conflict values and resolves mine with a new mutation based on server revision', async () => {
     const server = new MemoryServer()
     const fixture = await syncedEntry(server)
-    server.externalUpdate('entry', fixture.entry.id, { notes: 'server note' })
+    server.externalUpdate('item', fixture.entry.id, { notes: 'server note' })
     await fixture.repo.updateEntry(fixture.entry.id, { notes: 'local note' })
     const firstId = (await fixture.db.outbox
-      .where('[collection_id+entity+entity_id]')
-      .equals([fixture.collection.id, 'entry', fixture.entry.id])
+      .where('[entity+entity_id]')
+      .equals(['item', fixture.entry.id])
       .first())!.id
     await fixture.engine.syncNow()
     const conflict = await fixture.db.conflicts
       .where('[entity+entity_id]')
-      .equals(['entry', fixture.entry.id])
+      .equals(['item', fixture.entry.id])
       .first()
     expect(conflict).toMatchObject({
       local_values: { notes: 'local note' },
@@ -540,10 +589,8 @@ describe('sync acceptance against an in-memory API server', () => {
     await fixture.engine.resolveConflict(conflict!.id, 'mine')
     await waitFor(
       async () =>
-        (await fixture.db.outbox
-          .where('[collection_id+entity+entity_id]')
-          .equals([fixture.collection.id, 'entry', fixture.entry.id])
-          .count()) === 0,
+        (await fixture.db.outbox.where('[entity+entity_id]').equals(['item', fixture.entry.id]).count()) ===
+        0,
     )
     const mine = server.batchRequests
       .flat()
@@ -551,7 +598,7 @@ describe('sync acceptance against an in-memory API server', () => {
       .at(-1)!
     expect(mine.id).not.toBe(firstId)
     expect(mine.base_revision).toBe(conflict!.server_revision)
-    expect(server.records.get(server.key('entry', fixture.entry.id))?.notes).toBe('local note')
+    expect(server.records.get(server.key('item', fixture.entry.id))?.notes).toBe('local note')
     expect(await fixture.db.conflicts.count()).toBe(0)
     await fixture.db.delete()
   })
@@ -559,18 +606,18 @@ describe('sync acceptance against an in-memory API server', () => {
   it('resolves a field conflict with server values without sending another mutation', async () => {
     const server = new MemoryServer()
     const fixture = await syncedEntry(server)
-    server.externalUpdate('entry', fixture.entry.id, { title: 'Server title' })
+    server.externalUpdate('item', fixture.entry.id, { title: 'Server title' })
     await fixture.repo.updateEntry(fixture.entry.id, { title: 'Mine title' })
     await fixture.engine.syncNow()
     const conflict = await fixture.db.conflicts
       .where('[entity+entity_id]')
-      .equals(['entry', fixture.entry.id])
+      .equals(['item', fixture.entry.id])
       .first()
     const batchCount = server.batchRequests.length
     await fixture.engine.resolveConflict(conflict!.id, 'server')
     await waitFor(async () => (await fixture.db.conflicts.count()) === 0)
     await new Promise((resolve) => setTimeout(resolve, 10))
-    expect((await fixture.db.entries.get(fixture.entry.id))?.title).toBe('Server title')
+    expect((await fixture.db.items.get(fixture.entry.id))?.title).toBe('Server title')
     expect(server.batchRequests).toHaveLength(batchCount)
     await fixture.db.delete()
   })
@@ -612,16 +659,17 @@ describe('sync acceptance against an in-memory API server', () => {
     const fixture = await syncedEntry(server)
     server.pageSize = 1
     await fixture.repo.updateEntry(fixture.entry.id, { notes: 'local pending' })
-    server.externalUpdate('entry', fixture.entry.id, { title: 'Server title' })
+    server.externalUpdate('item', fixture.entry.id, { title: 'Server title' })
     const remoteEntry = {
-      ...server.records.get(server.key('entry', fixture.entry.id))!,
+      ...server.records.get(server.key('item', fixture.entry.id))!,
       notes: 'server note',
     }
-    server.pushChange({ entity: 'entry', id: fixture.entry.id, record: remoteEntry })
+    server.pushChange({ entity: 'item', id: fixture.entry.id, record: remoteEntry })
     await fixture.engine.syncNow()
     const merged = await fixture.db.entries.get(fixture.entry.id)
-    expect(merged?.notes).toBe('local pending')
-    expect(merged?.title).toBe('Server title')
+    const mergedItem = await fixture.db.items.get(fixture.entry.id)
+    expect(mergedItem?.notes).toBe('local pending')
+    expect(mergedItem?.title).toBe('Server title')
     expect(server.pulls).toBeGreaterThan(1)
     await fixture.db.entries.put({ ...merged!, id: 'purged-entry', collection_id: fixture.collection.id })
     await fixture.db.collections.put({ ...fixture.collection, id: 'removed-collection' })

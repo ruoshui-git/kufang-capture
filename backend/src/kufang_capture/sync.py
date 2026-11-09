@@ -7,7 +7,7 @@ from typing import Any
 
 from .db import connect, single_writer
 
-TABLES = {"collection": "collections", "entry": "entries", "photo": "photos"}
+TABLES = {"collection": "collections", "item": "items", "entry": "entries", "photo": "photos"}
 COLLECTION_FIELDS = {
     "name": (str, 200),
     "description": (str, 20_000),
@@ -20,15 +20,17 @@ COLLECTION_FIELDS = {
     "archived_at": ("nullable_timestamp", None),
 }
 ENTRY_FIELDS = {
-    "title": (str, 200),
     "quantity": ("quantity", None),
     "unit": (str, 40),
     "count_detail": (str, 20_000),
+    "deleted_at": ("nullable_timestamp", None),
+}
+ITEM_FIELDS = {
+    "title": (str, 200),
     "notes": (str, 20_000),
     "expiration_date": ("date", None),
     "dimensions": (str, 2000),
     "review_status": ("enum", {"draft", "complete", "needs_review"}),
-    "deleted_at": ("nullable_timestamp", None),
 }
 PHOTO_FIELDS = {
     "sort_order": (int, None),
@@ -63,23 +65,28 @@ CREATE_FIELDS = {
     "entry": {
         "id",
         "collection_id",
+        "item_id",
         "sequence_number",
-        "title",
         "quantity",
         "unit",
         "count_detail",
+        "deleted_at",
+        "created_at",
+        "updated_at",
+    },
+    "item": {
+        "id",
+        "title",
         "notes",
         "expiration_date",
         "dimensions",
         "review_status",
-        "deleted_at",
         "created_at",
         "updated_at",
     },
     "photo": {
         "id",
-        "entry_id",
-        "collection_id",
+        "item_id",
         "sort_order",
         "original_filename",
         "mime_type",
@@ -97,7 +104,25 @@ CREATE_FIELDS = {
         "updated_at",
     },
 }
-MUTABLE_FIELDS = {"collection": COLLECTION_FIELDS, "entry": ENTRY_FIELDS, "photo": PHOTO_FIELDS}
+# Server-owned or device-local fields a client may send with a full record; they are ignored
+# (docs/api.md "Server-owned and immutable fields"). Anything else unknown is rejected.
+IGNORED_FIELDS = {
+    "revision",
+    "field_revisions",
+    "server_revision",
+    "sync_state",
+    "upload_state",
+    "server_storage_key",
+    "stored_at",
+    "upload_attempts",
+    "upload_next_attempt_at",
+}
+MUTABLE_FIELDS = {
+    "collection": COLLECTION_FIELDS,
+    "item": ITEM_FIELDS,
+    "entry": ENTRY_FIELDS,
+    "photo": PHOTO_FIELDS,
+}
 QUANTITY_RE = re.compile(r"^-?\d+(\.\d+)?$")
 SHA_RE = re.compile(r"^[0-9a-f]{64}$")
 ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
@@ -207,17 +232,25 @@ def apply_batch(data_dir, mutations: list[dict[str, Any]]) -> tuple[list[dict[st
                             purge_paths.append(media[0])
                         purge_paths.append(f"media/thumbnails/{entity_id[:2]}/{entity_id}")
                     elif entity == "entry":
-                        purge_paths.extend(
-                            row[0]
-                            for row in db.execute(
-                                "SELECT storage_key FROM photos WHERE entry_id=? AND storage_key IS NOT NULL",
-                                (entity_id,),
+                        parent = db.execute("SELECT item_id FROM entries WHERE id=?", (entity_id,)).fetchone()
+                        if (
+                            parent
+                            and not db.execute(
+                                "SELECT 1 FROM entries WHERE item_id=? AND id<>?", (parent[0], entity_id)
+                            ).fetchone()
+                        ):
+                            purge_paths.extend(
+                                row[0]
+                                for row in db.execute(
+                                    "SELECT storage_key FROM photos WHERE item_id=? "
+                                    "AND storage_key IS NOT NULL",
+                                    (parent[0],),
+                                )
                             )
-                        )
-                        purge_paths.extend(
-                            f"media/thumbnails/{row[0][:2]}/{row[0]}"
-                            for row in db.execute("SELECT id FROM photos WHERE entry_id=?", (entity_id,))
-                        )
+                            purge_paths.extend(
+                                f"media/thumbnails/{row[0][:2]}/{row[0]}"
+                                for row in db.execute("SELECT id FROM photos WHERE item_id=?", (parent[0],))
+                            )
                 result = _apply_one(db, mutation)
                 if result["status"] == "applied":
                     media_to_delete.extend(purge_paths)
@@ -241,6 +274,8 @@ def _apply_one(db: sqlite3.Connection, m: dict[str, Any]) -> dict[str, Any]:
     table = TABLES.get(entity)
     if table is None or op not in {"upsert", "delete", "restore", "purge"} or not isinstance(entity_id, str):
         return _reject("invalid_field", "Mutation shape is invalid", m)
+    if entity == "item" and op != "upsert":
+        return _reject("invalid_field", "Items only support upsert", m)
     if (
         not isinstance(m.get("id"), str)
         or ID_RE.fullmatch(m["id"]) is None
@@ -249,42 +284,73 @@ def _apply_one(db: sqlite3.Connection, m: dict[str, Any]) -> dict[str, Any]:
     ):
         return _reject("invalid_field", "Mutation shape is invalid", m)
     fields = dict(m.get("fields", {}))
+    allowed = CREATE_FIELDS[entity] | set(MUTABLE_FIELDS[entity]) | IGNORED_FIELDS
+    unknown = set(fields) - allowed
+    if unknown:
+        return _reject("invalid_field", f"Unknown fields: {', '.join(sorted(unknown))}", m)
+
     collection_id = m.get("collection_id")
     if entity == "collection":
         collection_id = entity_id
-    elif entity == "entry" and fields.get("collection_id"):
-        collection_id = fields["collection_id"]
-    elif entity == "photo" and fields.get("collection_id"):
-        collection_id = fields["collection_id"]
+    elif entity == "entry":
+        collection_id = fields.get("collection_id", collection_id)
+    elif entity in {"item", "photo"}:
+        # Items and photos are shared across collections; their changes carry no collection.
+        collection_id = ""
     if (
-        entity != "collection"
+        entity == "entry"
         and not db.execute("SELECT 1 FROM collections WHERE id=?", (collection_id,)).fetchone()
+    ):
+        return _reject("missing_parent", "Collection does not exist", m)
+    if (
+        entity == "item"
+        and not db.execute("SELECT 1 FROM collections WHERE id=?", (m.get("collection_id"),)).fetchone()
     ):
         return _reject("missing_parent", "Collection does not exist", m)
     if entity == "collection" and op in {"delete", "restore", "purge"}:
         return _reject("invalid_field", "Collections cannot be deleted through sync", m)
+
     current = db.execute(f"SELECT * FROM {table} WHERE id=?", (entity_id,)).fetchone()
     if op == "purge":
         if current is None or current["deleted_at"] is None:
             return _reject("invalid_field", "Only deleted records can be purged", m)
-        db.execute(f"DELETE FROM {table} WHERE id=?", (entity_id,))
-        db.execute(
-            "INSERT INTO changes(entity,entity_id,collection_id,kind) VALUES(?,?,?,?)",
-            (entity, entity_id, collection_id, "purged"),
-        )
+        if entity == "entry":
+            item_id = current["item_id"]
+            db.execute("DELETE FROM entries WHERE id=?", (entity_id,))
+            _log_change(db, "entry", entity_id, collection_id, "purged")
+            if not db.execute("SELECT 1 FROM entries WHERE item_id=?", (item_id,)).fetchone():
+                photo_ids = [r[0] for r in db.execute("SELECT id FROM photos WHERE item_id=?", (item_id,))]
+                db.execute("DELETE FROM photos WHERE item_id=?", (item_id,))
+                for photo_id in photo_ids:
+                    _log_change(db, "photo", photo_id, "", "purged")
+                db.execute("DELETE FROM items WHERE id=?", (item_id,))
+                _log_change(db, "item", item_id, "", "purged")
+        elif entity == "photo":
+            db.execute("DELETE FROM photos WHERE id=?", (entity_id,))
+            _log_change(db, entity, entity_id, "", "purged")
+        else:
+            return _reject("invalid_field", "This record cannot be purged", m)
         return {"id": m["id"], "status": "applied", "server_revision": None, "record": None}
+
     if current is None:
         if op != "upsert" or m.get("base_revision") is not None:
             return _reject("missing_parent", "Record does not exist", m)
         if entity == "collection" and fields.get("storage_mode") != "synced":
             return _reject("collection_not_synced", "Only synced collections are accepted", m)
-        allowed = CREATE_FIELDS[entity]
-        fields = {key: value for key, value in fields.items() if key in allowed}
+        fields = {key: value for key, value in fields.items() if key in CREATE_FIELDS[entity]}
         fields["id"] = entity_id
         if entity == "collection":
             fields["storage_mode"] = "synced"
+        if entity == "item":
+            for key in ("title", "notes", "expiration_date", "dimensions", "review_status"):
+                fields.setdefault(
+                    key, "draft" if key == "review_status" else None if key == "expiration_date" else ""
+                )
         if entity == "entry":
             fields["collection_id"] = collection_id
+            item_id = fields.get("item_id")
+            if not item_id or not db.execute("SELECT 1 FROM items WHERE id=?", (item_id,)).fetchone():
+                return _reject("missing_parent", "Item does not exist", m)
             if "sequence_number" not in fields:
                 return _reject("invalid_field", "sequence_number is required", m)
             taken = db.execute(
@@ -300,22 +366,24 @@ def _apply_one(db: sqlite3.Connection, m: dict[str, Any]) -> dict[str, Any]:
                     "record": public_record(collection, "collection"),
                     "code": "sequence_taken",
                 }
+            if db.execute(
+                "SELECT 1 FROM entries WHERE collection_id=? AND item_id=?", (collection_id, item_id)
+            ).fetchone():
+                return _reject(
+                    "item_already_in_collection", "Item already has an entry in this collection", m
+                )
         if entity == "photo":
-            parent = db.execute(
-                "SELECT collection_id FROM entries WHERE id=?", (fields.get("entry_id"),)
-            ).fetchone()
-            if parent is None:
-                return _reject("missing_parent", "Entry does not exist", m)
-            fields["collection_id"] = parent[0]
-        for key, rule in MUTABLE_FIELDS[entity].items():
-            if key in fields and not _valid(key, fields[key], rule):
-                return _reject("invalid_field", f"Invalid {key}", m)
+            item_id = fields.get("item_id")
+            if not item_id or not db.execute("SELECT 1 FROM items WHERE id=?", (item_id,)).fetchone():
+                return _reject("missing_parent", "Item does not exist", m)
         required = {"created_at", "updated_at"}
         if entity == "entry":
-            required |= {"collection_id", "sequence_number", "review_status"}
+            required |= {"collection_id", "item_id", "sequence_number"}
+        if entity == "item":
+            required |= {"review_status"}
         if entity == "photo":
             required |= {
-                "entry_id",
+                "item_id",
                 "mime_type",
                 "byte_size",
                 "sha256",
@@ -327,12 +395,8 @@ def _apply_one(db: sqlite3.Connection, m: dict[str, Any]) -> dict[str, Any]:
             required |= {"name", "status"}
         if not required.issubset(fields):
             return _reject("invalid_field", "Create record is missing required fields", m)
-        for key in required:
-            if (
-                key in fields
-                and key in MUTABLE_FIELDS[entity]
-                and not _valid(key, fields[key], MUTABLE_FIELDS[entity][key])
-            ):
+        for key, rule in MUTABLE_FIELDS[entity].items():
+            if key in fields and not _valid(key, fields[key], rule):
                 return _reject("invalid_field", f"Invalid {key}", m)
         for key in ("created_at", "updated_at"):
             if not _valid_timestamp(fields.get(key)):
@@ -345,8 +409,8 @@ def _apply_one(db: sqlite3.Connection, m: dict[str, Any]) -> dict[str, Any]:
             type(fields.get("next_sequence_number")) is not int or fields["next_sequence_number"] < 1
         ):
             return _reject("invalid_field", "Invalid next_sequence_number", m)
-        field_revisions = {k: 1 for k in fields if k in MUTABLE_FIELDS[entity]}
-        fields.update(revision=1, field_revisions=json.dumps(field_revisions))
+        revisions = {key: 1 for key in fields if key in MUTABLE_FIELDS[entity]}
+        fields.update(revision=1, field_revisions=json.dumps(revisions))
         if entity == "photo":
             fields["is_cover"] = int(bool(fields.get("is_cover", False)))
         columns = list(fields)
@@ -355,17 +419,19 @@ def _apply_one(db: sqlite3.Connection, m: dict[str, Any]) -> dict[str, Any]:
             [fields[k] for k in columns],
         )
         record = db.execute(f"SELECT * FROM {table} WHERE id=?", (entity_id,)).fetchone()
-        db.execute(
-            "INSERT INTO changes(entity,entity_id,collection_id,kind) VALUES(?,?,?,?)",
-            (entity, entity_id, collection_id, "upsert"),
-        )
+        _log_change(db, entity, entity_id, collection_id, "upsert")
         return {
             "id": m["id"],
             "status": "applied",
             "server_revision": 1,
             "record": public_record(record, entity),
         }
+
+    if entity == "item" or entity == "photo":
+        collection_id = ""
     if op in {"delete", "restore"}:
+        if entity not in {"entry", "photo"}:
+            return _reject("invalid_field", "This entity does not support deletion", m)
         fields["deleted_at"] = now() if op == "delete" else None
     fields = {key: value for key, value in fields.items() if key in MUTABLE_FIELDS[entity]}
     if op == "upsert":
@@ -403,13 +469,10 @@ def _apply_one(db: sqlite3.Connection, m: dict[str, Any]) -> dict[str, Any]:
             changed["is_cover"] = int(changed["is_cover"])
         assignments = ",".join(f"{key}=?" for key in changed)
         db.execute(
-            f"UPDATE {table} SET {assignments}, revision=?,field_revisions=?,updated_at=? WHERE id=?",
+            f"UPDATE {table} SET {assignments},revision=?,field_revisions=?,updated_at=? WHERE id=?",
             [*changed.values(), revision, json.dumps(revisions), now(), entity_id],
         )
-        db.execute(
-            "INSERT INTO changes(entity,entity_id,collection_id,kind) VALUES(?,?,?,?)",
-            (entity, entity_id, collection_id, op if op in {"delete", "restore"} else "upsert"),
-        )
+        _log_change(db, entity, entity_id, collection_id, op if op in {"delete", "restore"} else "upsert")
     record = db.execute(f"SELECT * FROM {table} WHERE id=?", (entity_id,)).fetchone()
     return {
         "id": m["id"],
@@ -417,6 +480,13 @@ def _apply_one(db: sqlite3.Connection, m: dict[str, Any]) -> dict[str, Any]:
         "server_revision": record["revision"],
         "record": public_record(record, entity),
     }
+
+
+def _log_change(db: sqlite3.Connection, entity: str, entity_id: str, collection_id: str, kind: str) -> None:
+    db.execute(
+        "INSERT INTO changes(entity,entity_id,collection_id,kind) VALUES(?,?,?,?)",
+        (entity, entity_id, collection_id, kind),
+    )
 
 
 def pull_changes(data_dir, cursor: int, limit: int) -> dict[str, Any]:

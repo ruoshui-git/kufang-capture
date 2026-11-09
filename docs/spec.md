@@ -69,9 +69,13 @@ Represents an observation at physical-count time. It is **not** yet an ERPNext I
 
 No forced Item Group, manufacturer, model, barcode, price, cost, valuation, or ERPNext code at capture time. Those belong to later enrichment or import.
 
+### Shared items (owner decision 2026-11-09)
+
+An entry can be **imported** into another collection of the same storage mode (Local Only with Local Only, Synced with Synced). The two entries then share one **Item**: photos, title, notes, expiration date, dimensions and review status are edited once and appear everywhere. Quantity, unit, count detail, sequence number and deletion stay per collection. All collections are equal: deleting an entry removes the item from that collection only, and the item lives while any collection still has it. A collection cannot switch storage mode while it shares items with a collection in the other mode. Contracts: `frontend/src/lib/types.ts` (`Item`, `Entry`, `EntryView`), `docs/api.md` (schema 2), `docs/export-format.md` (version 2).
+
 ### Photo
 
-Each Entry has a one-to-many relationship with photos.
+Each Item (and so every entry that shares it) has a one-to-many relationship with photos.
 
 - `id`: stable client-generated UUID/ULID
 - `entry_id`, `sort_order`

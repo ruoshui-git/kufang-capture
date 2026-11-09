@@ -33,4 +33,23 @@ describe('ConflictSheet', () => {
     await fireEvent.click(screen.getByRole('button', { name: 'Use server' }))
     await waitFor(() => expect(syncEngine.resolveConflict).toHaveBeenCalledWith('conflict-1', 'server'))
   })
+
+  it('labels shared item conflicts as Item fields', async () => {
+    syncEngine.conflicts.subscribe.mockImplementation((next: (rows: unknown[]) => void) => {
+      next([
+        {
+          id: 'conflict-item',
+          entity: 'item',
+          entity_id: 'item-1',
+          fields: ['title'],
+          local_values: { title: 'Local title' },
+          server_values: { title: 'Server title' },
+        },
+      ])
+      return () => {}
+    })
+    render(ConflictSheet, { props: { open: true } })
+    expect(await screen.findByRole('heading', { name: 'Item fields' })).toBeInTheDocument()
+    expect(screen.getByText('Local title')).toBeInTheDocument()
+  })
 })

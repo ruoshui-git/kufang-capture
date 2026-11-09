@@ -17,6 +17,7 @@
   import SyncStatusChip from '../../components/sync/SyncStatusChip.svelte'
   import SyncNowButton from '../../components/sync/SyncNowButton.svelte'
   import ExportSheet from '../../components/sync/ExportSheet.svelte'
+  import ImportEntriesSheet from '../../components/entry/ImportEntriesSheet.svelte'
 
   let { collectionId, detailEntryId }: { collectionId: string; detailEntryId?: string } = $props()
   let summary = $state<CollectionSummary | undefined>()
@@ -35,6 +36,7 @@
   let sentinel = $state<HTMLDivElement>()
   let listElement = $state<HTMLDivElement>()
   let exportOpen = $state(false)
+  let importOpen = $state(false)
   let conflictOpen = $state(false)
   let ConflictSheetView: typeof import('../../components/sync/ConflictSheet.svelte').default | null =
     $state(null)
@@ -151,8 +153,12 @@
   }
   async function deleteRow(row: EntryRow) {
     await repo.deleteEntry(row.entry.id)
+    const shared = row.entry.shared_with
+    const message = shared.length
+      ? `Removed from ${summary?.collection.name ?? 'this collection'}. Still in ${shared[0]!.collection_name}${shared.length > 1 ? ` (+${shared.length - 1})` : ''}.`
+      : `Deleted ${format(row.entry.sequence_number)}`
     showToast({
-      message: `Deleted ${format(row.entry.sequence_number)}`,
+      message,
       actionLabel: 'Undo',
       action: () => void repo.restoreEntry(row.entry.id),
     })
@@ -238,6 +244,7 @@
             }}>Oldest first</button
           >
           <button role="menuitem" onclick={() => (exportOpen = true)}>Export ZIP</button>
+          <button role="menuitem" onclick={() => (importOpen = true)}>Import from another collection</button>
         </Menu>
       </div>
       <div class="search-row">
@@ -286,6 +293,11 @@
     bind:open={exportOpen}
     scope={[summary.collection.id]}
     title={`Export ${summary.collection.name}`}
+  />{/if}
+{#if summary}<ImportEntriesSheet
+    bind:open={importOpen}
+    targetCollectionId={collectionId}
+    storageMode={summary.collection.storage_mode}
   />{/if}
 {#if conflictOpen && ConflictSheetView}<ConflictSheetView bind:open={conflictOpen} />{/if}
 

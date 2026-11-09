@@ -25,6 +25,40 @@ async function first<T>(watch: {
 }
 
 describe('entry row inline editing', () => {
+  it('shows a compact shared collections tag', async () => {
+    const collection = await repo.createCollection({
+      name: `Shared ${Date.now()}`,
+      storage_mode: 'local_only',
+    })
+    const entry = await repo.createEntry(collection.id)
+    const query = { search: '', filter: 'all' as const, sort: 'newest' as const }
+    const [row] = await first(repo.watchEntryRows(collection.id, query))
+    render(EntryRow, {
+      props: {
+        row: {
+          ...row!,
+          entry: {
+            ...row!.entry,
+            shared_with: [
+              {
+                collection_id: 'other',
+                collection_name: 'Other room',
+                entry_id: 'other-entry',
+                sequence_number: 4,
+              },
+            ],
+          },
+        },
+        units: [],
+        ondetails: () => {},
+        onviewer: () => {},
+        ondelete: () => {},
+      },
+    })
+    expect(screen.getByText('Shared · 2 collections')).toBeInTheDocument()
+    expect(await repo.getEntry(entry.id)).toBeDefined()
+  })
+
   it('preserves a dirty quantity through focus changes, live updates, and a row remount', async () => {
     const collection = await repo.createCollection({ name: `Room ${Date.now()}`, storage_mode: 'local_only' })
     const entry = await repo.createEntry(collection.id)

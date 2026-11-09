@@ -1,7 +1,7 @@
 import { unzipSync } from 'fflate'
 import { mkdirSync, writeFileSync } from 'node:fs'
 import { describe, expect, it } from 'vitest'
-import type { Collection, Entry, Photo } from '../types'
+import type { Collection, Entry, Item, Photo } from '../types'
 import { buildExport } from './build'
 import { createZip } from './zip'
 
@@ -33,22 +33,19 @@ const collection = (id: string, name: string): Collection => ({
 })
 const entry = (
   id: string,
+  item_id: string,
   collection_id: string,
   sequence_number: number,
   deleted_at: string | null = null,
   quantity: string | null = '2',
 ): Entry => ({
   id,
+  item_id,
   collection_id,
   sequence_number,
-  title: '',
   quantity,
   unit: 'Boxes',
   count_detail: '',
-  notes: '',
-  expiration_date: null,
-  dimensions: '',
-  review_status: 'draft',
   deleted_at,
   created_at: at,
   updated_at: at,
@@ -58,15 +55,13 @@ const entry = (
 })
 const photo = (
   id: string,
-  entry_id: string,
-  collection_id: string,
+  item_id: string,
   bytes: Uint8Array,
   captured_at = at,
   deleted_at: string | null = null,
 ): Photo => ({
   id,
-  entry_id,
-  collection_id,
+  item_id,
   sort_order: 0,
   original_filename: `${id}.jpeg`,
   mime_type: 'image/jpeg',
@@ -88,6 +83,19 @@ const photo = (
   upload_state: 'not_needed',
   server_storage_key: null,
 })
+const item = (id: string, title = ''): Item => ({
+  id,
+  title,
+  notes: '',
+  expiration_date: null,
+  dimensions: '',
+  review_status: 'draft',
+  created_at: at,
+  updated_at: at,
+  revision: 1,
+  server_revision: null,
+  sync_state: 'local_only',
+})
 
 async function fixture(includeTrash = false) {
   const secondBytes = Uint8Array.from({ length: 128 }, (_, index) => index)
@@ -97,9 +105,9 @@ async function fixture(includeTrash = false) {
     ['P3', new Blob([new Uint8Array([6])])],
   ])
   const allPhotos = [
-    photo('P1', 'E1', 'C1', new Uint8Array([1, 2, 3])),
-    photo('P2', 'E2', 'C1', secondBytes, '2026-11-09T07:00:00.000Z'),
-    photo('P3', 'E3', 'C2', new Uint8Array([6]), at, at),
+    photo('P1', 'I1', new Uint8Array([1, 2, 3])),
+    photo('P2', 'I2', secondBytes, '2026-11-09T07:00:00.000Z'),
+    photo('P3', 'I3', new Uint8Array([6]), at, at),
   ]
   for (const p of allPhotos) {
     const bytes = new Uint8Array(await blobs.get(p.id)!.arrayBuffer())
@@ -112,7 +120,14 @@ async function fixture(includeTrash = false) {
   return buildExport(
     {
       collections: [collection('C1', 'Temple 2 / A04'), collection('C2', 'Other')],
-      entries: [entry('E1', 'C1', 1), entry('E2', 'C1', 2, null, null), entry('E3', 'C2', 1, at)],
+      entries: [
+        entry('E1', 'I1', 'C1', 1),
+        entry('E2', 'I2', 'C1', 2, null, null),
+        entry('E3', 'I1', 'C2', 1),
+        entry('E4', 'I1', 'C2', 2, at),
+        entry('E5', 'I3', 'C2', 3, at),
+      ],
+      items: [item('I1', 'Shared title'), item('I2'), item('I3')],
       photos: allPhotos,
       getOriginal: async (id) => blobs.get(id)!,
     },
@@ -123,9 +138,9 @@ async function fixture(includeTrash = false) {
 describe('device export', () => {
   it('writes a STORE ZIP with ordered CSV/JSON and verified original bytes', async () => {
     const result = await fixture()
-    if (process.env.W1_EXPORT_SAMPLE === '1') {
+    if (process.env.W5_EXPORT_SAMPLE === '1') {
       mkdirSync('/tmp/codex-runs', { recursive: true })
-      writeFileSync('/tmp/codex-runs/w1-export-sample.zip', new Uint8Array(await result.blob.arrayBuffer()))
+      writeFileSync('/tmp/codex-runs/w5-export-sample.zip', new Uint8Array(await result.blob.arrayBuffer()))
     }
     const files = unzipSync(new Uint8Array(await result.blob.arrayBuffer()))
     expect(Object.keys(files)).toEqual([
@@ -136,40 +151,39 @@ describe('device export', () => {
       'capture-export/entries.json',
       'capture-export/photos.csv',
       'capture-export/photos.json',
-      'capture-export/photos/E1/P1.jpg',
-      'capture-export/photos/E2/P2.jpg',
+      'capture-export/photos/I1/P1.jpg',
+      'capture-export/photos/I2/P2.jpg',
     ])
     expect(result.filename).toBe('kufang-capture-all-20261108-070000Z.zip')
     expect([...files['capture-export/entries.csv']!.slice(0, 3)]).toEqual([0xef, 0xbb, 0xbf])
     const entriesCsv = new TextDecoder().decode(files['capture-export/entries.csv'])
     expect(entriesCsv).toContain(
-      'entry_id,collection_id,sequence_number,sequence_label,title,display_title,quantity,unit,count_detail,notes,expiration_date,dimensions,review_status,photo_count,created_at,updated_at,deleted_at\r\n',
+      'entry_id,item_id,collection_id,sequence_number,sequence_label,title,display_title,quantity,unit,count_detail,notes,expiration_date,dimensions,review_status,photo_count,created_at,updated_at,deleted_at\r\n',
     )
     expect(entriesCsv.indexOf('\r\nE1,')).toBeLessThan(entriesCsv.indexOf('\r\nE2,'))
-    expect(entriesCsv).toContain('E2,C1,2,#0002,,Entry #0002,,Boxes,')
+    expect(entriesCsv).toContain('E2,I2,C1,2,#0002,,Entry #0002,,Boxes,')
     expect(entriesCsv).not.toMatch(/(?<!\r)\n/)
     const entriesJson = JSON.parse(new TextDecoder().decode(files['capture-export/entries.json']))
     const photosJson = JSON.parse(new TextDecoder().decode(files['capture-export/photos.json']))
-    expect(entriesJson.map((row: { entry_id: string }) => row.entry_id)).toEqual(['E1', 'E2'])
-    expect(
-      photosJson.every((row: { entry_id: string }) =>
-        entriesJson.some((entry: { entry_id: string }) => entry.entry_id === row.entry_id),
-      ),
-    ).toBe(true)
+    expect(entriesJson.map((row: { entry_id: string }) => row.entry_id)).toEqual(['E1', 'E2', 'E3'])
+    expect(entriesJson[0].title).toBe('Shared title')
+    expect(entriesJson[2].title).toBe('Shared title')
     expect(photosJson.map((row: { photo_id: string }) => row.photo_id)).toEqual(['P1', 'P2'])
-    expect(Object.keys(files)).toContain('capture-export/photos/E1/P1.jpg')
-    expect([...files['capture-export/photos/E1/P1.jpg']!]).toEqual([1, 2, 3])
+    expect(Object.keys(files)).toContain('capture-export/photos/I1/P1.jpg')
+    expect([...files['capture-export/photos/I1/P1.jpg']!]).toEqual([1, 2, 3])
     expect(files['capture-export/trash/entries.csv']).toBeUndefined()
     const manifest = JSON.parse(new TextDecoder().decode(files['capture-export/manifest.json']))
     expect(manifest.counts).toMatchObject({
       collections: 2,
-      entries: 2,
+      items: 2,
+      entries: 3,
       photos: 2,
       trash_entries: 0,
       trash_photos: 0,
     })
     expect(manifest.quantity_by_unit).toEqual([
       { collection_id: 'C1', unit: 'Boxes', total: '2', entry_count: 1 },
+      { collection_id: 'C2', unit: 'Boxes', total: '2', entry_count: 1 },
     ])
     for (const file of manifest.files) {
       const bytes = files[`capture-export/${file.path}`]
@@ -183,9 +197,45 @@ describe('device export', () => {
   it('includes deleted entries and photos under trash when requested', async () => {
     const result = await fixture(true)
     const files = unzipSync(new Uint8Array(await result.blob.arrayBuffer()))
-    expect(Object.keys(files)).toContain('capture-export/trash/photos/E3/P3.jpg')
+    expect(Object.keys(files)).toContain('capture-export/trash/photos/I3/P3.jpg')
     const manifest = JSON.parse(new TextDecoder().decode(files['capture-export/manifest.json']))
-    expect(manifest.counts).toMatchObject({ trash_entries: 1, trash_photos: 1 })
+    expect(manifest.counts).toMatchObject({ trash_entries: 2, trash_photos: 1 })
+    const trashEntries = JSON.parse(new TextDecoder().decode(files['capture-export/trash/entries.json']))
+    expect(
+      trashEntries.map((row: { entry_id: string; photo_count: number }) => [row.entry_id, row.photo_count]),
+    ).toEqual([
+      ['E4', 0],
+      ['E5', 1],
+    ])
+    expect(trashEntries.find((row: { entry_id: string }) => row.entry_id === 'E4').item_id).toBe('I1')
+  })
+  it('exports a shared item from one selected collection with its item photos', async () => {
+    const full = await fixture()
+    const allFiles = unzipSync(new Uint8Array(await full.blob.arrayBuffer()))
+    const selectedBytes = new Uint8Array([1, 2, 3])
+    const selectedPhoto = photo('P1', 'I1', selectedBytes)
+    selectedPhoto.sha256 = [
+      ...new Uint8Array(await crypto.subtle.digest('SHA-256', selectedBytes as BufferSource)),
+    ]
+      .map((x) => x.toString(16).padStart(2, '0'))
+      .join('')
+    selectedPhoto.crc32 = crc32(selectedBytes)
+    const selected = await buildExport(
+      {
+        collections: [collection('C2', 'Other')],
+        entries: [entry('E3', 'I1', 'C2', 1), entry('E4', 'I1', 'C2', 2, at), entry('E5', 'I3', 'C2', 3, at)],
+        items: [item('I1', 'Shared title'), item('I3')],
+        photos: [selectedPhoto],
+        getOriginal: async () => new Blob([selectedBytes]),
+      },
+      { scope: 'selected', includeTrash: false, exportedAt: at, appVersion: '0.1.0', source: 'device' },
+    )
+    const selectedFiles = unzipSync(new Uint8Array(await selected.blob.arrayBuffer()))
+    expect(Object.keys(allFiles).filter((path) => path.endsWith('/P1.jpg'))).toHaveLength(1)
+    expect(Object.keys(selectedFiles)).toContain('capture-export/photos/I1/P1.jpg')
+    expect(JSON.parse(new TextDecoder().decode(selectedFiles['capture-export/photos.json']))[0].item_id).toBe(
+      'I1',
+    )
   })
   it('writes valid ZIP64 end records when thresholds are forced', async () => {
     const member = {

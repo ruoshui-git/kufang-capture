@@ -1,4 +1,4 @@
-# REST and sync contract (v1)
+# REST and sync contract (schema 2)
 
 This contract is owned by the orchestrator. The server stores **only** collections whose `storage_mode` is `synced`. Local Only data never reaches these endpoints.
 
@@ -20,17 +20,21 @@ All paths are under `/api`. JSON uses the snake_case field names from `frontend/
 
 ## Sync
 
+**Schema 2 (shared items).** Records are `collection`, `item`, `entry` and `photo`. An `item` holds what is shared by every collection that has it: `title`, `notes`, `expiration_date`, `dimensions`, `review_status` and its photos. An `entry` is the item's place in one collection: `collection_id`, `item_id`, `sequence_number`, `quantity`, `unit`, `count_detail` and `deleted_at`. A photo belongs to an item (`item_id`); photo records have no `collection_id`. Data migrated from schema 1 keeps `item.id = entry.id`, and a never-shared entry created later also uses its own id as `item_id`.
+
+**Version guard.** `POST /api/sync/batch` requires `"schema": 2` in the body, and `GET /api/sync/changes` requires the query parameter `schema=2`. Without it, both answer `409 client_outdated` and write nothing. A schema-1 client keeps its outbox (items are cleared only on acknowledgment) and syncs again after it updates and migrates.
+
 The server keeps per-record integer `revision` (that is, the client's `server_revision`), `field_revisions` (`{field: revision}`), and a global, monotonically increasing change `seq` used as the pull cursor.
 
 ### `POST /api/sync/batch`
 
 ```json
-{ "device_id": "01J...", "mutations": [ { "id": "01J…mutation", "entity": "collection|entry|photo",
+{ "schema": 2, "device_id": "01J...", "mutations": [ { "id": "01J…mutation", "entity": "collection|item|entry|photo",
   "entity_id": "01J…", "collection_id": "01J…", "op": "upsert|delete|restore|purge",
   "base_revision": null, "fields": { } } ] }
 ```
 
-The client sends at most 200 mutations per batch, in outbox `created_at` order, with collections before their children. The server applies them in order, and each one in its own transaction.
+The client sends at most 200 mutations per batch, ordered collection, then item, then entry, then photo, and by outbox `created_at` within each entity. The server applies them in order, and each one in its own transaction.
 
 Each mutation gets one result: `{ "id", "status", "server_revision", "record", "code"?, "message"? }`.
 - `applied`: the change was stored. `record` is the full server record afterwards.
@@ -42,12 +46,14 @@ The response also carries `cursor`, the latest change seq.
 
 **Field rules.**
 - **Create** (`base_revision` null and an unknown id) inserts the full record. A collection create must have `storage_mode: "synced"`, otherwise it is rejected with `collection_not_synced`.
+- **Parents.** An entry create needs its `collection_id` and `item_id` to exist, and a photo create needs its `item_id`; otherwise the result is `rejected` with `missing_parent`. An item create needs the mutation's `collection_id` to be a server collection (any collection with an entry for the item). An entry create for an item that already has an entry in the same collection is `rejected` with `item_already_in_collection`.
 - **Update** compares fields. For each field f in `fields`: if `field_revisions[f] > base_revision` and the server value differs from the incoming value, the result is `conflict` with code `field_conflict`, and `conflicting_fields` is listed in the result. Otherwise all fields are applied, `revision` is incremented, and `field_revisions[f]` is set to the new revision for every changed field. Editing the same record twice before a sync therefore arrives as one coalesced mutation carrying the latest values.
-- **Server-owned and immutable fields** are ignored: `revision`, `server_revision`, `sync_state`, `upload_state`, `server_storage_key`, `id`, `collection_id`/`entry_id` after create, `sequence_number` after create, and `sha256`/`byte_size`/`crc32`/`mime_type` after create.
+- **Server-owned and immutable fields** are ignored: `revision`, `server_revision`, `sync_state`, `upload_state`, `server_storage_key`, `id`, `collection_id`/`item_id` after create, `sequence_number` after create, and `sha256`/`byte_size`/`crc32`/`mime_type` after create.
 - **`next_sequence_number`** on a collection is merged as `max(server, incoming)` and never conflicts.
 - **Entry create with a taken `sequence_number`** (another entry in the same collection already has it) returns `conflict` with code `sequence_taken` and `record` = the collection, which carries the server's `next_sequence_number`. The client reallocates a fresh local number for this never-synced entry and retries. This can happen only with two devices; numbers that have been shared are never renumbered.
 - **`delete`/`restore`** set or clear `deleted_at`, following the same revision rules.
-- **`purge`** permanently removes an entry or photo that is already deleted, together with its media.
+- **`purge`** permanently removes an entry or photo that is already deleted, together with its media. When the last entry of an item is purged, the item and all its photos and media are purged too, each recorded as a `purged` change.
+- **Unknown fields** for an entity (for example a schema-1 `entry_id` on a photo, or `title` on an entry) are `rejected` with `invalid_field`.
 
 ### `GET /api/sync/changes?cursor=N&limit=500`
 
@@ -55,9 +61,12 @@ Returns `{ "changes": [ { "seq": 12, "entity": "entry", "id": "01J…", "record"
 
 - Records are full server records.
 - A purged entity is sent as `{"seq", "entity", "id", "purged": true}`.
-- A collection whose server copy was removed is sent as `{"seq", "entity": "collection", "id", "removed": true}`.
+- A collection whose server copy was removed is sent as `{"seq", "entity": "collection", "id", "removed": true}`. Items left with no entry are purged in the same step and sent as purged items and photos.
+- Changes for items and photos carry an empty `collection_id` internally; clients decide by the local entries that reference the item.
 
 The client merges each record unless the entity has a pending outbox item. In that case it keeps the local values for the fields that are pending and adopts the rest. A logged-in desktop browser therefore receives every synced collection. It never sees Local Only collections.
+
+**Local Only wins locally.** A client never overwrites or deletes local data that belongs to a Local Only collection because of a pulled change: a collection `removed`/record for a local Local Only collection, and an item or photo change (record or purge) for an item that any local Local Only entry references, are ignored.
 
 ### Photo bytes
 
@@ -84,8 +93,8 @@ The response is `201` (or `200` if it was already stored with the same hash), wi
 
 | Method | Path | Notes |
 |---|---|---|
-| GET | `/api/collections` | Server collections, each with active `entry_count`, `photo_count`, `stored_photo_bytes` and `missing_originals` |
-| DELETE | `/api/collections/{id}/server-copy` | Requires the header `X-Confirm-Name` to equal the collection name (URL-encoded UTF-8). Deletes the collection's rows and media, records a `removed` change, and returns `204`. |
+| GET | `/api/collections` | Server collections, each with active `entry_count`, `photo_count`, `stored_photo_bytes` and `missing_originals`. Photo figures count the active photos of items with an active entry in the collection, so a shared photo counts in each collection. |
+| DELETE | `/api/collections/{id}/server-copy` | Requires the header `X-Confirm-Name` to equal the collection name (URL-encoded UTF-8). Deletes the collection and its entries, purges items no remaining entry references (with their photos and media), records the `removed` and `purged` changes, and returns `204`. Items still referenced by another collection are kept. |
 
 ## Exports (server, streamed)
 
@@ -96,6 +105,7 @@ The response is `201` (or `200` if it was already stored with the same hash), wi
 - **Batch response.** The response is `{ "results": [...], "cursor": N }`. A `field_conflict` result also carries `conflicting_fields`, and records expose `revision` and `field_revisions`.
 - **Idempotency.** It covers every outcome, including deterministic `conflict` and `rejected` results. A client that changes a rejected or conflicting operation must send it under a **new** mutation id.
 - **Changes cursor.** While `has_more` is true, `cursor` is the last sequence returned on that page. On the final page, it is the latest sequence. Advance to it; no page is skipped.
+- **Migration 0003 (schema 2).** Runs in one transaction. Each entry yields an item with the same id; the item copies the entry's shared fields, `revision`, and the `field_revisions` of the shared fields; the entry keeps its own revision and per-collection `field_revisions`. Photos keep their id and media, with `item_id` = their old `entry_id`.
 - **Photo storage key.** After upload, photo records expose `server_storage_key` and `stored_at`. The server's internal storage path is never exposed.
 - **`photo_bytes` in server exports.** It counts the metadata `byte_size` of every active photo, including those listed in `missing_originals`.
 - **Trash export.** `trash/entries.csv` also lists active entries that own deleted photos, so every `trash/photos.csv` row has a valid entry reference.

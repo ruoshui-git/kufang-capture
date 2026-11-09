@@ -28,6 +28,7 @@ COLLECTION_COLUMNS = [
 ]
 ENTRY_COLUMNS = [
     "entry_id",
+    "item_id",
     "collection_id",
     "sequence_number",
     "sequence_label",
@@ -47,8 +48,7 @@ ENTRY_COLUMNS = [
 ]
 PHOTO_COLUMNS = [
     "photo_id",
-    "entry_id",
-    "collection_id",
+    "item_id",
     "path",
     "original_filename",
     "mime_type",
@@ -190,52 +190,65 @@ def build_export(
         ]
         if collection_id and not collections:
             raise KeyError(collection_id)
-        cids = [r["id"] for r in collections]
-        if not cids:
-            entries, photos = [], []
-        else:
+        cids = [row["id"] for row in collections]
+        if cids:
             marks = ",".join("?" for _ in cids)
             entries = [
                 dict(row)
                 for row in db.execute(
-                    f"SELECT * FROM entries WHERE collection_id IN ({marks}) "
-                    "ORDER BY collection_id,sequence_number",
+                    f"SELECT e.*,i.title,i.notes,i.expiration_date,i.dimensions,"
+                    f"i.review_status AS item_review_status,"
+                    f"i.updated_at AS item_updated_at FROM entries e JOIN items i ON i.id=e.item_id "
+                    f"WHERE e.collection_id IN ({marks}) ORDER BY e.collection_id,e.sequence_number",
                     cids,
                 )
             ]
-            photos = [
-                dict(row)
-                for row in db.execute(
-                    f"SELECT * FROM photos WHERE collection_id IN ({marks}) "
-                    "ORDER BY entry_id,sort_order,captured_at",
-                    cids,
-                )
-            ]
+            item_ids = sorted({entry["item_id"] for entry in entries})
+            item_marks = ",".join("?" for _ in item_ids)
+            photos = (
+                [
+                    dict(row)
+                    for row in db.execute(
+                        f"SELECT * FROM photos WHERE item_id IN ({item_marks}) "
+                        f"ORDER BY item_id,sort_order,captured_at,id",
+                        item_ids,
+                    )
+                ]
+                if item_ids
+                else []
+            )
+        else:
+            entries, photos = [], []
     coll_order = {row["id"]: i for i, row in enumerate(collections)}
-    entry_order = {row["id"]: (coll_order[row["collection_id"]], row["sequence_number"]) for row in entries}
+    entries.sort(key=lambda row: (coll_order[row["collection_id"]], row["sequence_number"]))
+    first_order = {}
+    for index, entry in enumerate(entries):
+        first_order.setdefault(entry["item_id"], index)
     photos.sort(
         key=lambda row: (
-            *entry_order.get(row["entry_id"], (999999, 999999)),
+            first_order.get(row["item_id"], 999999),
             row["sort_order"],
             row["captured_at"],
+            row["id"],
         )
     )
     active_entries = [row for row in entries if row["deleted_at"] is None]
-    active_photos = [
-        p
-        for p in photos
-        if p["deleted_at"] is None
-        and next((e["deleted_at"] for e in entries if e["id"] == p["entry_id"]), None) is None
-    ]
-    trash_entries = [e for e in entries if e["deleted_at"] is not None]
-    entry_by_id = {e["id"]: e for e in entries}
+    active_item_ids = {row["item_id"] for row in active_entries}
+    active_photos = [row for row in photos if row["deleted_at"] is None and row["item_id"] in active_item_ids]
+    trash_entries = [row for row in entries if row["deleted_at"] is not None]
     trash_photos = [
-        p
-        for p in photos
-        if p["deleted_at"] is not None or entry_by_id[p["entry_id"]]["deleted_at"] is not None
+        row for row in photos if row["deleted_at"] is not None or row["item_id"] not in active_item_ids
     ]
 
     def export_collection(row: dict[str, Any]) -> dict[str, Any]:
+        photo_count = sum(
+            1
+            for photo in active_photos
+            if any(
+                entry["collection_id"] == row["id"] and entry["item_id"] == photo["item_id"]
+                for entry in active_entries
+            )
+        )
         return {
             "collection_id": row["id"],
             "name": row["name"],
@@ -243,68 +256,66 @@ def build_export(
             "status": row["status"],
             "storage_mode": row["storage_mode"],
             "next_sequence_number": row["next_sequence_number"],
-            "entry_count": sum(1 for e in active_entries if e["collection_id"] == row["id"]),
-            "photo_count": sum(1 for p in active_photos if p["collection_id"] == row["id"]),
+            "entry_count": sum(1 for entry in active_entries if entry["collection_id"] == row["id"]),
+            "photo_count": photo_count,
             "created_at": row["created_at"],
             "updated_at": row["updated_at"],
             "archived_at": row["archived_at"],
         }
 
-    c_rows = [export_collection(c) for c in collections]
+    c_rows = [export_collection(row) for row in collections]
 
     def entry_rows(
         source: list[dict[str, Any]], allowed_photos: list[dict[str, Any]]
     ) -> list[dict[str, Any]]:
-        count_by_entry: dict[str, int] = {}
-        for p in allowed_photos:
-            count_by_entry[p["entry_id"]] = count_by_entry.get(p["entry_id"], 0) + 1
-        return [
-            {
-                "entry_id": e["id"],
-                "collection_id": e["collection_id"],
-                "sequence_number": e["sequence_number"],
-                "sequence_label": f"#{e['sequence_number']:04d}",
-                "title": e["title"],
-                "display_title": e["title"].strip() or f"Entry #{e['sequence_number']:04d}",
-                "quantity": e["quantity"],
-                "unit": e["unit"],
-                "count_detail": e["count_detail"],
-                "notes": e["notes"],
-                "expiration_date": e["expiration_date"],
-                "dimensions": e["dimensions"],
-                "review_status": e["review_status"],
-                "photo_count": count_by_entry.get(e["id"], 0),
-                "created_at": e["created_at"],
-                "updated_at": e["updated_at"],
-                "deleted_at": e["deleted_at"],
-            }
-            for e in source
-        ]
+        count_by_item = {}
+        for photo in allowed_photos:
+            count_by_item[photo["item_id"]] = count_by_item.get(photo["item_id"], 0) + 1
+        rows = []
+        for entry in source:
+            seq = entry["sequence_number"]
+            rows.append(
+                {
+                    "entry_id": entry["id"],
+                    "item_id": entry["item_id"],
+                    "collection_id": entry["collection_id"],
+                    "sequence_number": seq,
+                    "sequence_label": f"#{seq:04d}",
+                    "title": entry["title"],
+                    "display_title": entry["title"].strip() or f"Entry #{seq:04d}",
+                    "quantity": entry["quantity"],
+                    "unit": entry["unit"],
+                    "count_detail": entry["count_detail"],
+                    "notes": entry["notes"],
+                    "expiration_date": entry["expiration_date"],
+                    "dimensions": entry["dimensions"],
+                    "review_status": entry["item_review_status"],
+                    "photo_count": count_by_item.get(entry["item_id"], 0),
+                    "created_at": entry["created_at"],
+                    "updated_at": max(entry["updated_at"], entry["item_updated_at"]),
+                    "deleted_at": entry["deleted_at"],
+                }
+            )
+        return rows
 
     e_rows = entry_rows(active_entries, active_photos)
-    trash_entry_ids = {entry["id"] for entry in trash_entries}
-    trash_entry_ids.update(
-        photo["entry_id"] for photo in trash_photos if entry_by_id[photo["entry_id"]]["deleted_at"] is None
-    )
-    t_entries = entry_rows([entry for entry in entries if entry["id"] in trash_entry_ids], trash_photos)
-
+    t_entries = entry_rows(trash_entries, trash_photos)
     missing = []
-    photo_rows = []
-    trash_photo_rows = []
-    active_file_sources: list[tuple[str, int, int, str, Path | None]] = []
-    trash_file_sources: list[tuple[str, int, int, str, Path | None]] = []
+    active_file_sources = []
+    trash_file_sources = []
 
-    def photo_rows_for(source: list[dict[str, Any]], prefix: str) -> list[dict[str, Any]]:
+    def photo_rows_for(source: list[dict[str, Any]], prefix: str):
         rows = []
         for photo in source:
-            path = f"{prefix}photos/{photo['entry_id']}/{photo['id']}.{_extension(photo)}"
-            stored_path = data_dir / photo["storage_key"] if photo["storage_key"] else None
-            stored = stored_path is not None and stored_path.is_file()
+            path = f"{prefix}photos/{photo['item_id']}/{photo['id']}.{_extension(photo)}"
+            disk_path = data_dir / photo["storage_key"] if photo["storage_key"] else None
+            if disk_path is None or not disk_path.is_file():
+                missing.append({"photo_id": photo["id"], "path": path})
+                disk_path = None
             rows.append(
                 {
                     "photo_id": photo["id"],
-                    "entry_id": photo["entry_id"],
-                    "collection_id": photo["collection_id"],
+                    "item_id": photo["item_id"],
                     "path": path,
                     "original_filename": photo["original_filename"],
                     "mime_type": photo["mime_type"],
@@ -321,18 +332,15 @@ def build_export(
                     "deleted_at": photo["deleted_at"],
                 }
             )
-            if stored:
-                file_source = (path, photo["byte_size"], photo["crc32"], photo["sha256"], stored_path)
-                (trash_file_sources if prefix else active_file_sources).append(file_source)
-            else:
-                missing.append({"photo_id": photo["id"], "path": path})
+            if disk_path is not None:
+                active_file_sources_or_trash = trash_file_sources if prefix else active_file_sources
+                active_file_sources_or_trash.append(
+                    (path, photo["byte_size"], photo["crc32"], photo["sha256"], disk_path)
+                )
         return rows
 
     photo_rows = photo_rows_for(active_photos, "")
-    if include_trash:
-        trash_photo_rows = photo_rows_for(trash_photos, "trash/")
-    # Build files in documented order; manifest is emitted first, but hashes list
-    # every other member and therefore can be prepared before streaming.
+    trash_photo_rows = photo_rows_for(trash_photos, "trash/") if include_trash else []
     file_items: list[tuple[str, bytes | None, int, int, str, Path | None]] = []
 
     def add_table(stem: str, rows: list[dict[str, Any]], columns: list[str], prefix: str = "") -> None:
@@ -342,32 +350,36 @@ def build_export(
     add_table("collections", c_rows, COLLECTION_COLUMNS)
     add_table("entries", e_rows, ENTRY_COLUMNS)
     add_table("photos", photo_rows, PHOTO_COLUMNS)
-    for path, size, crc, sha, file_path in active_file_sources:
-        file_items.append((path, None, size, crc, sha, file_path))
+    file_items.extend(
+        (path, None, size, crc, sha, disk_path) for path, size, crc, sha, disk_path in active_file_sources
+    )
     if include_trash:
         add_table("entries", t_entries, ENTRY_COLUMNS, "trash/")
         add_table("photos", trash_photo_rows, PHOTO_COLUMNS, "trash/")
-        for path, size, crc, sha, file_path in trash_file_sources:
-            file_items.append((path, None, size, crc, sha, file_path))
+        file_items.extend(
+            (path, None, size, crc, sha, disk_path) for path, size, crc, sha, disk_path in trash_file_sources
+        )
     json_files = []
     for name, data, size, _crc, sha, _ in file_items:
-        actual_size = len(data) if data is not None else size
-        actual_sha = hashlib.sha256(data).hexdigest() if data is not None else sha
-        json_files.append({"path": name, "byte_size": actual_size, "sha256": actual_sha})
-    quantities: dict[tuple[str, str], list[Any]] = {}
-    latest_spelling: dict[tuple[str, str], tuple[str, str]] = {}
+        json_files.append(
+            {
+                "path": name,
+                "byte_size": len(data) if data is not None else size,
+                "sha256": hashlib.sha256(data).hexdigest() if data is not None else sha,
+            }
+        )
+    quantities = {}
+    latest_spelling = {}
+    from decimal import Decimal
+
     for entry in active_entries:
         if entry["quantity"] is None or entry["quantity"] == "":
             continue
         unit = entry["unit"].strip().casefold()
         key = (entry["collection_id"], unit)
-        # Decimal strings must not pass through binary floating point.
-        from decimal import Decimal
-
-        current = quantities.setdefault(key, [Decimal(0), 0])
+        total, count = quantities.get(key, (Decimal(0), 0))
         try:
-            current[0] += Decimal(entry["quantity"])
-            current[1] += 1
+            quantities[key] = (total + Decimal(entry["quantity"]), count + 1)
         except Exception:
             continue
         latest_spelling[key] = (entry["updated_at"], entry["unit"])
@@ -380,20 +392,20 @@ def build_export(
         }
         for (cid, unit), (total, count) in sorted(quantities.items())
     ]
-    for item in quantity_by_unit:
-        item["total"] = item["total"].rstrip("0").rstrip(".") if "." in item["total"] else item["total"]
-    scope = "all" if collection_id is None else "selected"
+    for value in quantity_by_unit:
+        value["total"] = value["total"].rstrip("0").rstrip(".") if "." in value["total"] else value["total"]
     manifest = {
         "format": "kufang-capture-export",
-        "format_version": 1,
+        "format_version": 2,
         "exported_at": iso_time,
         "source": "server",
         "app_version": app_version,
-        "scope": scope,
+        "scope": "all" if collection_id is None else "selected",
         "include_trash": include_trash,
         "collections": [{"id": c["id"], "name": c["name"], "storage_mode": "synced"} for c in collections],
         "counts": {
             "collections": len(collections),
+            "items": len(active_item_ids),
             "entries": len(active_entries),
             "photos": len(active_photos),
             "photo_bytes": sum(p["byte_size"] for p in active_photos),
@@ -412,7 +424,7 @@ def build_export(
     def stream() -> Iterator[bytes]:
         offset = 0
         central = []
-        all_items: list[tuple[str, bytes | None, int, int, str, Path | None]] = [
+        all_items = [
             (
                 "manifest.json",
                 manifest_bytes,

@@ -63,7 +63,7 @@ describe('foreground sync privacy and consent', () => {
 
     const db = getCaptureDb(name)
     const queued = await db.outbox.where('collection_id').equals(collection.id).toArray()
-    expect(queued.map((item) => item.entity).sort()).toEqual(['collection', 'entry', 'photo'])
+    expect(queued.map((item) => item.entity).sort()).toEqual(['collection', 'entry', 'item', 'photo'])
     expect((await db.photos.toArray()).every((photo) => photo.upload_state === 'pending')).toBe(true)
 
     const photos = await db.photos.toArray()

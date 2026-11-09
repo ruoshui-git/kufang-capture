@@ -6,9 +6,10 @@
 
   let {
     photos,
+    entryId,
     onopen,
     ondelete,
-  }: { photos: Photo[]; onopen: (id: Id) => void; ondelete: (photo: Photo) => void } = $props()
+  }: { photos: Photo[]; entryId: Id; onopen: (id: Id) => void; ondelete: (photo: Photo) => void } = $props()
   let urls = $state<Record<Id, string>>({})
   let captionDraft = $state<Record<Id, string>>({})
   let captionDirty = $state(new Set<Id>())
@@ -32,7 +33,7 @@
     const ordered = [...photos]
     ;[ordered[index], ordered[target]] = [ordered[target]!, ordered[index]!]
     await repo.reorderPhotos(
-      photos[0]!.entry_id,
+      entryId,
       ordered.map((photo) => photo.id),
     )
   }

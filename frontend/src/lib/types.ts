@@ -53,13 +53,42 @@ export interface Collection extends Versioned {
   archived_at: Timestamp | null
 }
 
+/**
+ * Shared record behind one or more entries (one per collection). Holds everything
+ * that is the same wherever the item appears: photos (Photo.item_id), title,
+ * notes, expiration date, dimensions and review status. An item lives while any
+ * entry references it. A never-shared entry has item_id === entry.id; existing
+ * data migrated from v1 keeps that identity, so ids and photo paths are stable.
+ * All collections sharing an item have the same storage_mode.
+ */
+export interface Item extends Versioned {
+  id: Id
+  /** Optional custom title; '' means display "Entry #0042". */
+  title: string
+  notes: string
+  /** YYYY-MM-DD or null (null = unknown/unrecorded, not "no expiration"). */
+  expiration_date: string | null
+  dimensions: string
+  review_status: ReviewStatus
+}
+
+/** Fields stored on the shared Item. Every other EntryPatch field is per collection. */
+export const ITEM_FIELDS = ['title', 'notes', 'expiration_date', 'dimensions', 'review_status'] as const
+export type ItemField = (typeof ITEM_FIELDS)[number]
+/** Per-collection count fields stored on the Entry. */
+export const ENTRY_COUNT_FIELDS = ['quantity', 'unit', 'count_detail'] as const
+export type EntryCountField = (typeof ENTRY_COUNT_FIELDS)[number]
+
+/**
+ * An item's place in one collection: its number and its count there. Deleting an
+ * entry removes the item from this collection only.
+ */
 export interface Entry extends Versioned {
   id: Id
   collection_id: Id
+  item_id: Id
   /** Immutable, allocated from Collection.next_sequence_number. Displayed as #0042. */
   sequence_number: number
-  /** Optional custom title; '' means display "Entry #0042". */
-  title: string
   /**
    * Raw decimal string as typed (normalized: trimmed, '.' decimal separator),
    * or null when not recorded. Never a float. Blank is not zero.
@@ -68,19 +97,29 @@ export interface Entry extends Versioned {
   /** Short free text, e.g. "boxes". '' when unspecified. */
   unit: string
   count_detail: string
-  notes: string
-  /** YYYY-MM-DD or null (null = unknown/unrecorded, not "no expiration"). */
-  expiration_date: string | null
-  dimensions: string
-  review_status: ReviewStatus
+  /** Removed from this collection (soft delete). */
   deleted_at: Timestamp | null
+}
+
+export interface SharedPlacement {
+  collection_id: Id
+  collection_name: string
+  entry_id: Id
+  sequence_number: number
+}
+
+/**
+ * Read model used by the UI: the entry plus its item's shared fields and the
+ * OTHER collections that have an active entry for the same item.
+ */
+export interface EntryView extends Entry, Pick<Item, ItemField> {
+  shared_with: SharedPlacement[]
 }
 
 export interface Photo extends Versioned {
   id: Id
-  entry_id: Id
-  /** Denormalized from the entry for per-collection queries. */
-  collection_id: Id
+  /** Owning item; shared by every collection that has the item. */
+  item_id: Id
   sort_order: number
   original_filename: string
   mime_type: string
@@ -110,7 +149,7 @@ export interface PhotoBlob {
   thumbnail: Blob | null
 }
 
-export type OutboxEntity = 'collection' | 'entry' | 'photo'
+export type OutboxEntity = 'collection' | 'item' | 'entry' | 'photo'
 export type OutboxOp = 'upsert' | 'delete' | 'restore' | 'purge'
 
 /**
@@ -122,6 +161,10 @@ export type OutboxOp = 'upsert' | 'delete' | 'restore' | 'purge'
 export interface OutboxItem {
   /** Mutation ULID; the server treats it as an idempotency key. */
   id: Id
+  /**
+   * Collection the mutation is attributed to. For item and photo mutations this is
+   * a collection with an entry for the item (all share one storage mode).
+   */
   collection_id: Id
   entity: OutboxEntity
   entity_id: Id
@@ -180,7 +223,7 @@ export interface QuantityByUnit {
 
 /** List-row view model for the inline Entry List. */
 export interface EntryRow {
-  entry: Entry
+  entry: EntryView
   photo_count: number
   /** Up to 3 most recently captured, non-deleted photos, newest first. */
   recent_photos: Photo[]
@@ -192,6 +235,6 @@ export function formatSequence(n: number): string {
   return `#${String(n).padStart(4, '0')}`
 }
 
-export function entryDisplayTitle(e: Pick<Entry, 'title' | 'sequence_number'>): string {
+export function entryDisplayTitle(e: Pick<EntryView, 'title' | 'sequence_number'>): string {
   return e.title.trim() || `Entry ${formatSequence(e.sequence_number)}`
 }
