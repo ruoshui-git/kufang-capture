@@ -70,4 +70,26 @@ describe('StorageModeSheet', () => {
     await fireEvent.click(screen.getByRole('button', { name: 'Sync to Server' }))
     expect(await screen.findByRole('alert')).toHaveTextContent('Storage mode changed elsewhere')
   })
+
+  it('does not re-check (and briefly disable the button) when the live summary updates', async () => {
+    authClient.session.mockResolvedValue({ authenticated: true })
+    repo.readForExport.mockResolvedValue({ entries: [], photos: [] })
+    repo.checkStorageMode.mockReset()
+    repo.checkStorageMode.mockResolvedValue({ allowed: true, blockers: [] })
+    const view = render(StorageModeSheet, { props: { item, open: true } })
+    await fireEvent.click(await screen.findByLabelText(/I understand this uploads/))
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Sync to Server' })).toBeEnabled())
+    // A sync status tick delivers a new summary object for the same collection and mode.
+    await view.rerender({
+      item: {
+        collection: { id: 'room', name: 'Room A', storage_mode: 'local_only' },
+        entry_count: 5,
+        photo_count: 3,
+        pending_upload_bytes: 0,
+      } as never,
+      open: true,
+    })
+    expect(screen.getByRole('button', { name: 'Sync to Server' })).toBeEnabled()
+    expect(repo.checkStorageMode).toHaveBeenCalledTimes(1)
+  })
 })

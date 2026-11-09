@@ -6,7 +6,8 @@ const shots = '/tmp/codex-runs/w6-e2e-shots'
 
 async function screenshot(page: import('@playwright/test').Page, name: string) {
   await mkdir(shots, { recursive: true })
-  await page.setViewportSize({ width: 430, height: 932 })
+  // Capture at the project's device viewport. Resizing while a modal sheet is open breaks WebKit's
+  // hit-testing inside the dialog, which a phone never does mid-tap.
   await page.screenshot({ path: `${shots}/${name}.png` })
 }
 

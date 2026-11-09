@@ -35,14 +35,19 @@
       .catch(() => (signedIn = false))
   })
   const mb = $derived((uploadBytes / (1024 * 1024)).toFixed(1))
+  // Primitives, so live summary updates (counts, sync status) do not re-run the check: a re-check
+  // briefly disables the confirm button and would swallow a tap.
+  const collectionId = $derived(item.collection.id)
+  const targetMode = $derived(item.collection.storage_mode === 'local_only' ? 'synced' : 'local_only')
   $effect(() => {
     if (!open) return
-    const mode = item.collection.storage_mode === 'local_only' ? 'synced' : 'local_only'
+    const id = collectionId
+    const mode = targetMode
     checking = true
     error = ''
     blockers = []
     void repo
-      .checkStorageMode(item.collection.id, mode)
+      .checkStorageMode(id, mode)
       .then((check) => (blockers = check.blockers))
       .catch((cause) => (error = cause instanceof Error ? cause.message : String(cause)))
       .finally(() => (checking = false))

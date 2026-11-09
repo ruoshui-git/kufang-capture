@@ -101,6 +101,7 @@ Before starting:
 3. Change the title in B and confirm A shows it. Enter a different quantity in each; each keeps its own.
 4. Delete the entry in A. B still has it with its photos. Undo in A brings it back with its old number.
 5. Confirm that Synced collections are not offered when importing into a Local Only collection, and that switching A to Sync to Server is blocked while it shares an item with B.
+6. With the import sheet open and many collections listed, rotate the phone (or open and close the keyboard in its search field), scroll the list and tap a collection near the bottom. It must respond. (Headless WebKit stops routing taps inside an open sheet after a viewport resize; the sheet now scrolls as one container, but only the device can confirm iOS behaves.)
 
 | Check | Result | Notes |
 |---|---|---|
@@ -109,3 +110,4 @@ Before starting:
 | Shared edits appear in both; quantities stay separate | | |
 | Delete in one collection keeps the item in the other | | |
 | Mode rules: other-mode collections hidden, mode switch blocked | | |
+| Import sheet still responds after rotating or using the keyboard | | |

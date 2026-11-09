@@ -199,12 +199,12 @@
     margin: 0 0 var(--space-3);
     font-size: var(--text-xl);
   }
+  /* No inner scroll areas: the sheet scrolls as one container. A scroller nested in a modal dialog
+     stops receiving taps in WebKit after the viewport changes (keyboard, rotation, toolbar). */
   .source-list,
   .candidate-list {
     display: grid;
     gap: var(--space-2);
-    max-height: 55vh;
-    overflow: auto;
   }
   .source-row,
   .candidate-row {
@@ -296,8 +296,12 @@
     cursor: default;
   }
   .actions {
+    position: sticky;
+    bottom: calc(-1 * var(--space-5));
     display: flex;
     justify-content: flex-end;
     margin-top: var(--space-4);
+    padding: var(--space-3) 0 var(--space-5);
+    background: var(--color-card);
   }
 </style>
