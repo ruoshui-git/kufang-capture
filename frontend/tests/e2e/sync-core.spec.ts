@@ -36,7 +36,7 @@ test('syncs three entries and six exact originals once, including repeated Sync 
   expect(collection).toMatchObject({ entry_count: 3, photo_count: 6 })
   const changes = await api<{ changes: Array<{ entity: string; record: Record<string, unknown> }> }>(
     page,
-    '/api/sync/changes?cursor=0&limit=500',
+    '/api/sync/changes?cursor=0&schema=2',
   )
   const entries = [
     ...new Map(
@@ -45,10 +45,17 @@ test('syncs three entries and six exact originals once, including repeated Sync 
         .map((change) => [String(change.record.id), change]),
     ).values(),
   ]
+  const collectionEntries = changes.changes.filter(
+    (change) => change.entity === 'entry' && change.record.collection_id === collection?.id,
+  )
   const photos = [
     ...new Map(
       changes.changes
-        .filter((change) => change.entity === 'photo' && change.record.collection_id === collection?.id)
+        .filter(
+          (change) =>
+            change.entity === 'photo' &&
+            collectionEntries.some((entry) => entry.record.item_id === change.record.item_id),
+        )
         .map((change) => [String(change.record.id), change]),
     ).values(),
   ]
@@ -109,11 +116,18 @@ test('requires opt-in consent for existing Local Only data and stops future uplo
   const serverCollections = await api<Array<{ id: string; name: string }>>(page, '/api/collections')
   const server = serverCollections.find((item) => item.name === name)
   expect(server).toBeTruthy()
-  const response = await page.request.get('/api/sync/changes?cursor=0&limit=500')
+  const response = await page.request.get('/api/sync/changes?cursor=0&schema=2')
   const payload = await response.json()
+  const entriesFromCollection = payload.changes
+    .filter(
+      (change: { entity: string; record: { collection_id?: string } }) =>
+        change.entity === 'entry' && change.record.collection_id === server?.id,
+    )
+    .map((change: { record: { item_id: string } }) => change.record)
   const uploadedPhoto = payload.changes.find(
-    (change: { entity: string; record: { collection_id: string; sha256: string } }) =>
-      change.entity === 'photo' && change.record.collection_id === server?.id,
+    (change: { entity: string; record: { item_id: string; sha256: string } }) =>
+      change.entity === 'photo' &&
+      entriesFromCollection.some((entry: { item_id: string }) => entry.item_id === change.record.item_id),
   )
   expect(uploadedPhoto.record.sha256).toBe(fixture.sha256)
 
@@ -220,7 +234,7 @@ test('coalesces two offline edits into one server revision with the final values
   const entryId = await row.getAttribute('data-entry-id')
   const beforeChanges = await api<{
     changes: Array<{ entity: string; id: string; record: Record<string, unknown> }>
-  }>(page, '/api/sync/changes?cursor=0&limit=500')
+  }>(page, '/api/sync/changes?cursor=0&schema=2')
   const before = beforeChanges.changes.find((change) => change.entity === 'entry' && change.id === entryId)
   expect(before).toBeTruthy()
 
@@ -235,10 +249,14 @@ test('coalesces two offline edits into one server revision with the final values
   await waitBackedUp(page)
   const afterChanges = await api<{
     changes: Array<{ entity: string; id: string; record: Record<string, unknown> }>
-  }>(page, '/api/sync/changes?cursor=0&limit=500')
+  }>(page, '/api/sync/changes?cursor=0&schema=2')
   const after = afterChanges.changes.filter((change) => change.entity === 'entry' && change.id === entryId)
   const latest = after.at(-1)?.record
-  expect(latest).toMatchObject({ quantity: '12.5', notes: 'final note' })
+  expect(latest).toMatchObject({ quantity: '12.5' })
+  const latestItem = afterChanges.changes
+    .filter((change) => change.entity === 'item' && change.id === entryId)
+    .at(-1)
+  expect(latestItem?.record).toMatchObject({ notes: 'final note' })
   expect(latest?.revision).toBe(Number(before?.record.revision) + 1)
 })
 
@@ -261,7 +279,7 @@ test('shows a field conflict and supports both Keep mine and Use server', async 
     await signIn(otherPage)
     const changes = await api<{
       changes: Array<{ entity: string; id: string; record: Record<string, unknown> }>
-    }>(otherPage, '/api/sync/changes?cursor=0&limit=500')
+    }>(otherPage, '/api/sync/changes?cursor=0&schema=2')
     const current = changes.changes
       .filter((change) => change.entity === 'entry' && change.id === entryId)
       .at(-1)
@@ -273,6 +291,7 @@ test('shows a field conflict and supports both Keep mine and Use server', async 
           credentials: 'include',
           headers: { 'Content-Type': 'application/json', 'X-Capture-Request': '1' },
           body: JSON.stringify({
+            schema: 2,
             device_id: `second-${suffix}`,
             mutations: [
               {
@@ -318,7 +337,7 @@ test('shows a field conflict and supports both Keep mine and Use server', async 
   await page.getByRole('button', { name: 'Close' }).click()
   let pulled = await api<{ changes: Array<{ entity: string; id: string; record: Record<string, unknown> }> }>(
     page,
-    '/api/sync/changes?cursor=0&limit=500',
+    '/api/sync/changes?cursor=0&schema=2',
   )
   const entryId = await row.getAttribute('data-entry-id')
   expect(
@@ -338,7 +357,7 @@ test('shows a field conflict and supports both Keep mine and Use server', async 
   await expect(page.getByRole('heading', { name: 'Resolve conflicts' })).toBeVisible()
   await page.getByRole('button', { name: 'Use server' }).click()
   await waitBackedUp(page)
-  pulled = await api(page, '/api/sync/changes?cursor=0&limit=500')
+  pulled = await api(page, '/api/sync/changes?cursor=0&schema=2')
   expect(
     pulled.changes.filter((change) => change.entity === 'entry' && change.id === entryId).at(-1)?.record
       .quantity,

@@ -64,12 +64,19 @@ test('resumes original uploads after closing and reopening a persistent browser 
     expect(collection).toMatchObject({ entry_count: 1, photo_count: 1 })
     const changes = await api<{ changes: Array<{ entity: string; record: Record<string, unknown> }> }>(
       reopened,
-      '/api/sync/changes?cursor=0&limit=500',
+      '/api/sync/changes?cursor=0&schema=2',
+    )
+    const entries = changes.changes.filter(
+      (change) => change.entity === 'entry' && change.record.collection_id === collection?.id,
     )
     const photos = [
       ...new Map(
         changes.changes
-          .filter((change) => change.entity === 'photo' && change.record.collection_id === collection?.id)
+          .filter(
+            (change) =>
+              change.entity === 'photo' &&
+              entries.some((entry) => entry.record.item_id === change.record.item_id),
+          )
           .map((change) => [String(change.record.id), change]),
       ).values(),
     ]
@@ -172,7 +179,7 @@ test('low free space pauses original upload while synced metadata remains availa
       expect(collection).toMatchObject({ entry_count: 1, photo_count: 1, missing_originals: 1 })
       const changes = await api<{ changes: Array<{ entity: string; record: Record<string, unknown> }> }>(
         page,
-        '/api/sync/changes?cursor=0&limit=500',
+        '/api/sync/changes?cursor=0&schema=2',
       )
       expect(
         changes.changes.some(
@@ -180,7 +187,14 @@ test('low free space pauses original upload while synced metadata remains availa
         ),
       ).toBe(true)
       const photo = changes.changes.find(
-        (change) => change.entity === 'photo' && change.record.collection_id === collection?.id,
+        (change) =>
+          change.entity === 'photo' &&
+          changes.changes.some(
+            (entry) =>
+              entry.entity === 'entry' &&
+              entry.record.collection_id === collection?.id &&
+              entry.record.item_id === change.record.item_id,
+          ),
       )
       expect(photo).toBeTruthy()
       expect((await page.request.head(`/api/photos/${photo?.record.id}/original`)).status()).toBe(404)

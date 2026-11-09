@@ -52,7 +52,9 @@ export async function addPhoto(page: Page, sequence: number, seed: number) {
   const before = await idbSnapshot(page)
   const entryId = before.entries.find((entry) => entry.sequence_number === sequence)?.id
   if (!entryId) throw new Error(`Entry #${String(sequence).padStart(4, '0')} is not in IndexedDB.`)
-  const previousCount = before.photos.filter((photo) => photo.entry_id === entryId).length
+  const itemId = before.entries.find((entry) => entry.id === entryId)?.item_id
+  if (!itemId) throw new Error(`Entry #${String(sequence).padStart(4, '0')} has no item.`)
+  const previousCount = before.photos.filter((photo) => photo.item_id === itemId).length
   const bytes = await page.evaluate(async (value) => {
     const canvas = document.createElement('canvas')
     canvas.width = 24
@@ -75,7 +77,7 @@ export async function addPhoto(page: Page, sequence: number, seed: number) {
   const chooser = await chooserPromise
   await chooser.setFiles({ name: `photo-${seed}.jpg`, mimeType: 'image/jpeg', buffer })
   await expect
-    .poll(async () => (await idbSnapshot(page)).photos.filter((photo) => photo.entry_id === entryId).length, {
+    .poll(async () => (await idbSnapshot(page)).photos.filter((photo) => photo.item_id === itemId).length, {
       timeout: 20_000,
     })
     .toBe(previousCount + 1)
@@ -89,7 +91,7 @@ export async function idbSnapshot(page: Page) {
       request.onsuccess = () => resolve(request.result)
       request.onerror = () => reject(request.error)
     })
-    const names = ['collections', 'entries', 'photos', 'photoBlobs', 'outbox']
+    const names = ['collections', 'items', 'entries', 'photos', 'photoBlobs', 'outbox']
     const transaction = database.transaction(names, 'readonly')
     const rows = await Promise.all(
       names.map(
@@ -105,20 +107,19 @@ export async function idbSnapshot(page: Page) {
     database.close()
     return result as {
       collections: Array<{ id: string; name: string; storage_mode: string; next_sequence_number: number }>
+      items: Array<{ id: string; title: string; notes: string }>
       entries: Array<{
         id: string
         collection_id: string
+        item_id: string
         sequence_number: number
-        title: string
         quantity: string | null
         unit: string
-        notes: string
         deleted_at: string | null
       }>
       photos: Array<{
         id: string
-        entry_id: string
-        collection_id: string
+        item_id: string
         capture_source: string
         deleted_at: string | null
         sha256: string

@@ -2,6 +2,14 @@
 
 Status words follow [acceptance-matrix.md](acceptance-matrix.md). Real-iPhone results are recorded only from the owner.
 
+## 2026-11-09: shared items across collections
+
+- **Feature:** "Import from another collection" links an entry into a second collection of the same storage mode. Photos, title, notes, expiration, dimensions and review status are shared; quantity, unit, count detail, number and deletion stay per collection. Contracts: `types.ts` (`Item`), `docs/api.md` schema 2, `docs/export-format.md` version 2.
+- **Upgrade safety:** Dexie v4 and SQLite `0003_items.sql` keep every id (item id = entry id) and photo path, and rewrite pending outbox changes. The server migration was rehearsed on a copy of the production database: all rows matched, foreign keys clean. Older app versions get `409 client_outdated` and keep their outbox (tested against the deployed engine, `aaf5608`).
+- **Bug fixed on the way:** a pulled `removed`/`purged` change could delete local data of a collection that had since been switched to Local Only.
+- **Tests:** 101 frontend (Vitest), 24 backend (pytest), 10 verifier, end-to-end 35 passed / 7 project-specific skips.
+- **Needs the owner's iPhone:** checklist section G (upgrade with existing data, offline import, shared edits).
+
 ## 2026-11-08: all three phases implemented, deployed and verified (except on a real device)
 
 **Live:** https://capture.kufang.org. Every push to `main` runs unit, backend, design-lint, gitleaks and end-to-end tests (Chromium and WebKit) before deploying.

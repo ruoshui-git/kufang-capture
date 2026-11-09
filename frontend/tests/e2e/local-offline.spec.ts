@@ -90,13 +90,12 @@ test('§9 #2/#3 list-only counting: edit #0003, append row photos, retain place 
   await expect(page).toHaveURL(/\/c\//)
   const state = await idbSnapshot(page)
   const entry = state.entries.find((item) => item.sequence_number === 3)!
-  expect(entry).toMatchObject({
+  expect(state.items.find((item) => item.id === entry.item_id)).toMatchObject({
     title: 'Blue cabinet',
-    quantity: '12.5',
-    unit: 'boxes',
     notes: 'counted here',
   })
-  const photos = state.photos.filter((photo) => photo.entry_id === entry.id)
+  expect(entry).toMatchObject({ quantity: '12.5', unit: 'boxes' })
+  const photos = state.photos.filter((photo) => photo.item_id === entry.item_id)
   expect(photos).toHaveLength(3)
   expect(state.photoBlobs.filter((blob) => photos.some((photo) => photo.id === blob.photo_id))).toHaveLength(
     3,
@@ -305,7 +304,8 @@ test('§9 #11 summary and recovery: quantities stay per unit and sequence number
     .poll(async () => {
       const state = await idbSnapshot(page)
       const entryId = state.entries.find((entry) => entry.sequence_number === 2)?.id
-      return state.photos.filter((item) => item.entry_id === entryId).length
+      const itemId = state.entries.find((entry) => entry.id === entryId)?.item_id
+      return state.photos.filter((item) => item.item_id === itemId).length
     })
     .toBe(1)
   const photo = (await idbSnapshot(page)).photos[0]!
@@ -346,8 +346,8 @@ test('§9 #11 summary and recovery: quantities stay per unit and sequence number
   await page.getByRole('button', { name: 'All' }).click()
   await addEntry(page)
   expect((await idbSnapshot(page)).entries.map((entry) => entry.sequence_number).sort()).toEqual([1, 2, 3])
-  expect(photo.entry_id).toBe(
-    (await idbSnapshot(page)).entries.find((entry) => entry.sequence_number === 2)?.id,
+  expect(photo.item_id).toBe(
+    (await idbSnapshot(page)).entries.find((entry) => entry.sequence_number === 2)?.item_id,
   )
 })
 
@@ -375,10 +375,10 @@ test('§9 #12 export: verifier accepts ZIP and original photo bytes match', asyn
     ],
     { encoding: 'utf8' },
   )
-  const photos = JSON.parse(output) as Array<{ sha256: string; actual_sha256: string; entry_id: string }>
+  const photos = JSON.parse(output) as Array<{ sha256: string; actual_sha256: string; item_id: string }>
   expect(photos.map((photo) => photo.sha256).sort()).toEqual([newestPhoto.sha256, laterPhoto.sha256].sort())
   expect(photos.every((photo) => photo.sha256 === photo.actual_sha256)).toBe(true)
-  expect(photos.find((photo) => photo.sha256 === laterPhoto.sha256)?.entry_id).toBe(entry3.id)
+  expect(photos.find((photo) => photo.sha256 === laterPhoto.sha256)?.item_id).toBe(entry3.item_id)
 })
 
 test('§9 #16 archive and clear: guard blocks before export and exact-name confirmation clears only target', async ({
