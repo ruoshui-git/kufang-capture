@@ -165,7 +165,8 @@ test('wrong password is reported and signing out pauses sync until sign-in resum
       authenticated: false,
     })
   await page.goto(collectionPath)
-  await expect(page.getByRole('status')).toContainText('Sign in to sync')
+  // The collection chip always says so; the global banner also does while changes are still queued.
+  await expect(page.getByRole('status').filter({ hasText: 'Sign in to sync' }).first()).toBeVisible()
   await page.goto('/settings')
   await page.getByRole('button', { name: 'Sign in' }).click()
   await page.getByLabel('Password').fill('dev')
