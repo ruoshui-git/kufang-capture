@@ -59,6 +59,23 @@ describe('entry row inline editing', () => {
     expect(await repo.getEntry(entry.id)).toBeDefined()
   })
 
+  it('colours the status from the derived sync state, not the stored one', async () => {
+    const collection = await repo.createCollection({ name: `Tone ${Date.now()}`, storage_mode: 'local_only' })
+    await repo.createEntry(collection.id)
+    const query = { search: '', filter: 'all' as const, sort: 'newest' as const }
+    const [row] = await first(repo.watchEntryRows(collection.id, query))
+    const props = { units: [], ondetails: () => {}, onviewer: () => {}, ondelete: () => {} }
+    // A legacy row: stored 'pending' (photos were added) but derived as backed up.
+    const legacy = { ...row!.entry, sync_state: 'pending' as const, display_sync_state: 'synced' as const }
+    render(EntryRow, { props: { ...props, row: { ...row!, entry: legacy, pending_sync: false } } })
+    const label = screen.getByText('Backed up')
+    expect(label.closest('.status-line')).toHaveClass('ok')
+    cleanup()
+    const conflict = { ...row!.entry, sync_state: 'synced' as const, display_sync_state: 'conflict' as const }
+    render(EntryRow, { props: { ...props, row: { ...row!, entry: conflict } } })
+    expect(screen.getByText('Conflict').closest('.status-line')).toHaveClass('danger')
+  })
+
   it('preserves a dirty quantity through focus changes, live updates, and a row remount', async () => {
     const collection = await repo.createCollection({ name: `Room ${Date.now()}`, storage_mode: 'local_only' })
     const entry = await repo.createEntry(collection.id)

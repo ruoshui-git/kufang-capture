@@ -335,11 +335,11 @@
       <StatusLine
         tone={syncLabel === 'Syncing'
           ? 'syncing'
-          : row.entry.sync_state === 'conflict' || row.entry.sync_state === 'error'
+          : row.entry.display_sync_state === 'conflict' || row.entry.display_sync_state === 'error'
             ? 'danger'
-            : row.entry.sync_state === 'synced'
+            : row.entry.display_sync_state === 'synced'
               ? 'ok'
-              : row.pending_sync || row.entry.sync_state === 'pending'
+              : row.entry.display_sync_state === 'pending'
                 ? 'warn'
                 : 'muted'}
         >{status === 'Saving…' || status === 'Could not add photos' ? status : syncLabel}</StatusLine
