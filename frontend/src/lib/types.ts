@@ -114,6 +114,12 @@ export interface SharedPlacement {
  */
 export interface EntryView extends Entry, Pick<Item, ItemField> {
   shared_with: SharedPlacement[]
+  /**
+   * Derived status shown to the user, combining the entry, its item and the item's photos
+   * (records, queued outbox rows and uploads). Precedence: conflict, error, pending, synced.
+   * A stored 'pending' with nothing queued and a known server_revision reads as 'synced'.
+   */
+  display_sync_state: RecordSyncState
 }
 
 export interface Photo extends Versioned {
@@ -155,8 +161,10 @@ export type OutboxOp = 'upsert' | 'delete' | 'restore' | 'purge'
 /**
  * Durable mutation queued for a synced collection, written in the same
  * IndexedDB transaction as the change itself. Pending items for the same
- * entity are coalesced (fields merged) until a send attempt starts. An item is
- * removed only after the server acknowledges it.
+ * entity are coalesced (fields merged) until the first send attempt starts;
+ * once sent, a row's mutation id may already be applied on the server, so later
+ * edits go into a new row. At most one row per record is sent at a time. An
+ * item is removed only after the server acknowledges it.
  */
 export interface OutboxItem {
   /** Mutation ULID; the server treats it as an idempotency key. */
@@ -177,6 +185,8 @@ export interface OutboxItem {
   attempts: number
   /** Set while a send is in flight; coalescing must not merge into it. */
   in_flight: boolean
+  /** Set once a send has started (it may have been applied); coalescing must not merge into it. */
+  sent?: boolean
   last_error: string | null
   next_attempt_at: Timestamp | null
 }

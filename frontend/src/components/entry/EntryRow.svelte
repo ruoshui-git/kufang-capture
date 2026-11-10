@@ -192,15 +192,15 @@
     if (next) onviewer(row.entry.id, next.id)
   }
   const syncLabel = $derived(
-    syncPhase === 'syncing' && row.entry.sync_state === 'pending'
+    syncPhase === 'syncing' && row.entry.display_sync_state === 'pending'
       ? 'Syncing'
-      : row.entry.sync_state === 'conflict'
+      : row.entry.display_sync_state === 'conflict'
         ? 'Conflict'
-        : row.entry.sync_state === 'error'
+        : row.entry.display_sync_state === 'error'
           ? 'Sync error'
-          : row.entry.sync_state === 'synced'
+          : row.entry.display_sync_state === 'synced'
             ? 'Backed up'
-            : row.pending_sync || row.entry.sync_state === 'pending'
+            : row.entry.display_sync_state === 'pending'
               ? 'Pending sync'
               : 'Saved on this device',
   )

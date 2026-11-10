@@ -24,6 +24,7 @@ type BatchResult = {
   code?: string
   message?: string
   conflicting_fields?: string[]
+  duplicate?: boolean
 }
 
 export interface SyncEngineOptions {
@@ -245,16 +246,27 @@ export function createSyncEngine(options: SyncEngineOptions = {}): SyncEngineWit
   }
 
   async function push() {
-    const selected = (await eligibleItems())
-      .filter((item) => !item.in_flight && (!item.next_attempt_at || item.next_attempt_at <= timestamp()))
-      .slice(0, 200)
+    const all = await eligibleItems()
+    const blocked = new Set(
+      all.filter((item) => item.in_flight).map((item) => `${item.entity}:${item.entity_id}`),
+    )
+    const selected: OutboxItem[] = []
+    const seenRecords = new Set<string>()
+    for (const item of all) {
+      const key = `${item.entity}:${item.entity_id}`
+      if (blocked.has(key) || seenRecords.has(key)) continue
+      seenRecords.add(key)
+      if (item.in_flight || (item.next_attempt_at && item.next_attempt_at > timestamp())) continue
+      selected.push(item)
+      if (selected.length === 200) break
+    }
     const collections = await db.collections.toArray()
     const modes = new Map(collections.map((collection) => [collection.id, collection.storage_mode]))
     if (selected.some((item) => modes.get(item.collection_id) !== 'synced'))
       throw new Error('Safety check failed: Local Only data cannot be sent.')
     if (!selected.length) return
     await db.transaction('rw', db.outbox, async () => {
-      for (const item of selected) await db.outbox.update(item.id, { in_flight: true })
+      for (const item of selected) await db.outbox.update(item.id, { in_flight: true, sent: true })
     })
     const deviceId = await db.settings.get(SETTING_KEYS.deviceId)
     try {
@@ -341,8 +353,44 @@ export function createSyncEngine(options: SyncEngineOptions = {}): SyncEngineWit
     }
   }
 
+  async function queueCollectionCounter(collection: Collection) {
+    const matches = await db.outbox
+      .where('[entity+entity_id]')
+      .equals(['collection', collection.id])
+      .toArray()
+    const existing = matches.find((row) => !row.in_flight && !row.sent && row.attempts === 0)
+    if (existing) {
+      await db.outbox.put({
+        ...existing,
+        fields: { ...existing.fields, next_sequence_number: collection.next_sequence_number },
+      })
+      return
+    }
+    await db.outbox.add({
+      id: createId(),
+      collection_id: collection.id,
+      entity: 'collection',
+      entity_id: collection.id,
+      op: 'upsert',
+      base_revision: collection.server_revision,
+      fields: { next_sequence_number: collection.next_sequence_number },
+      created_at: timestamp(),
+      attempts: 0,
+      in_flight: false,
+      last_error: null,
+      next_attempt_at: null,
+    })
+  }
+
   async function applyResult(item: OutboxItem, result: BatchResult) {
     if (!item) return
+    const outcome: BatchResult =
+      result.status === 'duplicate' && result.code
+        ? {
+            ...result,
+            status: ['field_conflict', 'sequence_taken'].includes(result.code) ? 'conflict' : 'rejected',
+          }
+        : result
     await db.transaction(
       'rw',
       [db.collections, db.items, db.entries, db.photos, db.outbox, db.conflicts],
@@ -358,22 +406,34 @@ export function createSyncEngine(options: SyncEngineOptions = {}): SyncEngineWit
                 ? db.entries
                 : db.photos
         const record = (await table.get(item.entity_id)) as Collection | Item | Entry | Photo | undefined
-        if (result.status === 'applied' || result.status === 'duplicate') {
+        if (outcome.status === 'applied' || outcome.status === 'duplicate') {
           await db.outbox.delete(item.id)
           if (record) {
-            const stillPending =
-              (await db.outbox.where('[entity+entity_id]').equals([item.entity, item.entity_id]).count()) > 0
+            const remaining = await db.outbox
+              .where('[entity+entity_id]')
+              .equals([item.entity, item.entity_id])
+              .toArray()
+            if (outcome.record) {
+              const revisions = (outcome.record.field_revisions ?? {}) as Record<string, number>
+              for (const row of remaining) {
+                const safeToRebase = Object.keys(row.fields).every(
+                  (field) => field in item.fields || (revisions[field] ?? 0) <= (row.base_revision ?? 0),
+                )
+                if (safeToRebase) await db.outbox.put({ ...row, base_revision: outcome.server_revision })
+              }
+            }
+            const stillPending = remaining.length > 0
             await table.put({
               ...record,
-              server_revision: result.server_revision,
+              server_revision: outcome.server_revision,
               sync_state: stillPending ? record.sync_state : 'synced',
             } as never)
           }
           return
         }
-        if (result.status === 'conflict' && result.code === 'field_conflict' && record) {
-          const fields = result.conflicting_fields ?? []
-          const serverRecord: ServerRecord = result.record ?? { id: item.entity_id }
+        if (outcome.status === 'conflict' && outcome.code === 'field_conflict' && record) {
+          const fields = outcome.conflicting_fields ?? []
+          const serverRecord: ServerRecord = outcome.record ?? { id: item.entity_id }
           const conflict: SyncConflict = {
             id: createId(),
             collection_id: item.collection_id,
@@ -382,7 +442,7 @@ export function createSyncEngine(options: SyncEngineOptions = {}): SyncEngineWit
             fields,
             local_values: Object.fromEntries(fields.map((field) => [field, item.fields[field]])),
             server_values: Object.fromEntries(fields.map((field) => [field, serverRecord[field]])),
-            server_revision: result.server_revision,
+            server_revision: outcome.server_revision,
             created_at: timestamp(),
           }
           await db.conflicts.put(conflict)
@@ -390,12 +450,20 @@ export function createSyncEngine(options: SyncEngineOptions = {}): SyncEngineWit
           await table.put({ ...record, sync_state: 'conflict' } as never)
           return
         }
-        if (result.status === 'conflict' && result.code === 'sequence_taken' && item.entity === 'entry') {
+        if (outcome.status === 'conflict' && outcome.code === 'sequence_taken' && item.entity === 'entry') {
           const collection = await db.collections.get(item.collection_id)
-          const serverNext = Number(result.record?.next_sequence_number ?? 1)
+          const serverNext = Number(outcome.record?.next_sequence_number ?? 1)
           if (collection && record && !record.server_revision) {
             const next = Math.max(collection.next_sequence_number, serverNext)
-            await db.collections.put({ ...collection, next_sequence_number: next + 1 })
+            const updatedCollection = {
+              ...collection,
+              next_sequence_number: next + 1,
+              updated_at: timestamp(),
+              revision: collection.revision + 1,
+              sync_state: 'pending' as const,
+            }
+            await db.collections.put(updatedCollection)
+            await queueCollectionCounter(updatedCollection)
             await db.entries.put({ ...(record as Entry), sequence_number: next, sync_state: 'pending' })
             const replacement = {
               ...current,
@@ -411,7 +479,7 @@ export function createSyncEngine(options: SyncEngineOptions = {}): SyncEngineWit
           }
           return
         }
-        const message = result.message ?? 'The server rejected this change.'
+        const message = outcome.message ?? 'The server rejected this change.'
         await db.outbox.put({
           ...current,
           in_flight: false,
@@ -600,7 +668,7 @@ export function createSyncEngine(options: SyncEngineOptions = {}): SyncEngineWit
   }) {
     await db.transaction(
       'rw',
-      [db.collections, db.items, db.entries, db.photos, db.photoBlobs, db.outbox],
+      [db.collections, db.items, db.entries, db.photos, db.photoBlobs, db.outbox, db.conflicts],
       async () => {
         const deleteUnusedItem = async (itemId: Id) => {
           if (await db.entries.where('item_id').equals(itemId).count()) return
@@ -684,20 +752,40 @@ export function createSyncEngine(options: SyncEngineOptions = {}): SyncEngineWit
           .where('[entity+entity_id]')
           .equals([change.entity, change.id])
           .toArray()
+        const conflictRows = await db.conflicts
+          .where('[entity+entity_id]')
+          .equals([change.entity, change.id])
+          .toArray()
+        const collectionNextSequence =
+          change.entity === 'collection'
+            ? Math.max(
+                Number(incoming.next_sequence_number ?? 1),
+                Number((old as Collection | undefined)?.next_sequence_number ?? 1),
+                ...(await db.entries.where('collection_id').equals(change.id).toArray()).map(
+                  (entry) => entry.sequence_number + 1,
+                ),
+              )
+            : undefined
         if (!old) {
           const merged = {
             ...incoming,
+            ...(collectionNextSequence === undefined ? {} : { next_sequence_number: collectionNextSequence }),
             server_revision: incoming.revision ?? incoming.server_revision ?? null,
-            sync_state: 'synced',
+            sync_state: conflictRows.length ? 'conflict' : 'synced',
             ...(change.entity === 'photo' ? { upload_state: 'uploaded' } : {}),
           }
           await table.put(merged as never)
           return
         }
-        const pendingFields = new Set(pending.flatMap((item) => Object.keys(item.fields)))
+        const pendingFields = new Set([
+          ...pending.flatMap((item) => Object.keys(item.fields)),
+          ...conflictRows.flatMap((row) => row.fields),
+        ])
         const merged = {
           ...incoming,
           ...Object.fromEntries(Object.entries(old).filter(([key]) => pendingFields.has(key))),
+          // The counter only grows: never let a pulled or stale pending value lower it.
+          ...(collectionNextSequence === undefined ? {} : { next_sequence_number: collectionNextSequence }),
           ...(change.entity === 'photo'
             ? {
                 upload_state: (old as Photo).upload_state,
@@ -706,7 +794,7 @@ export function createSyncEngine(options: SyncEngineOptions = {}): SyncEngineWit
               }
             : {}),
           server_revision: incoming.revision ?? incoming.server_revision ?? old.server_revision,
-          sync_state: pending.length ? old.sync_state : 'synced',
+          sync_state: conflictRows.length ? 'conflict' : pending.length ? old.sync_state : 'synced',
         }
         await table.put(merged as never)
       },
@@ -808,6 +896,12 @@ export function createSyncEngine(options: SyncEngineOptions = {}): SyncEngineWit
   function start() {
     if (started) return
     started = true
+    const recoverOutbox = db.outbox.toCollection().modify((item) => {
+      if (item.in_flight) {
+        item.in_flight = false
+        item.sent = true
+      }
+    })
     void db.photos.toCollection().modify((photo) => {
       if (photo.upload_state === 'uploading') photo.upload_state = 'pending'
     })
@@ -826,7 +920,7 @@ export function createSyncEngine(options: SyncEngineOptions = {}): SyncEngineWit
       }, 1_500)
     })
     unsubscribeOutbox = () => outboxSubscription.unsubscribe()
-    void runCycle()
+    void recoverOutbox.then(() => runCycle())
   }
   function stop() {
     started = false

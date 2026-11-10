@@ -17,6 +17,7 @@ vi.mock('$lib/db', async (importOriginal) => {
   }
 })
 vi.mock('$lib/camera', () => ({ pickPhotos: vi.fn(() => Promise.resolve([])) }))
+vi.mock('$lib/sync', () => ({ syncEngine: { status: { subscribe: () => () => {} } } }))
 const { repo } = await import('$lib/db')
 afterEach(() => {
   cleanup()

@@ -225,8 +225,29 @@ def test_sync_conflicts_next_sequence_restore_purge_and_missing_parent(tmp_path)
     conflict_result = client.post("/api/sync/batch", json={"mutations": [conflict]}, headers=HEADERS).json()[
         "results"
     ][0]
+    assert conflict_result["status"] == "conflict"
     assert conflict_result["code"] == "field_conflict"
     assert conflict_result["conflicting_fields"] == ["title"]
+    retried_conflict = client.post("/api/sync/batch", json={"mutations": [conflict]}, headers=HEADERS).json()[
+        "results"
+    ][0]
+    assert retried_conflict["status"] == "conflict"
+    assert retried_conflict["code"] == "field_conflict"
+    assert retried_conflict["conflicting_fields"] == ["title"]
+    assert retried_conflict["duplicate"] is True
+
+    rejected_update = {**title_update, "id": "m-rejected-update", "base_revision": None}
+    rejected_result = client.post(
+        "/api/sync/batch", json={"mutations": [rejected_update]}, headers=HEADERS
+    ).json()["results"][0]
+    assert rejected_result["status"] == "rejected"
+    assert rejected_result["code"] == "invalid_field"
+    retried_rejection = client.post(
+        "/api/sync/batch", json={"mutations": [rejected_update]}, headers=HEADERS
+    ).json()["results"][0]
+    assert retried_rejection["status"] == "rejected"
+    assert retried_rejection["code"] == rejected_result["code"]
+    assert retried_rejection["duplicate"] is True
 
     merge_sequence = {
         "id": "m-seq-max",
@@ -300,6 +321,7 @@ def test_sync_create_duplicate_sequence_and_changes(tmp_path):
         "/api/sync/batch", json={"device_id": "d1", "mutations": [first]}, headers=HEADERS
     )
     assert duplicate.json()["results"][0]["status"] == "duplicate"
+    assert "duplicate" not in duplicate.json()["results"][0]
     created = client.post(
         "/api/sync/batch",
         json={"device_id": "d1", "mutations": [entry_mutation(), entry_mutation("m-e2", "e2")]},

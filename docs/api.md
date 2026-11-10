@@ -36,9 +36,11 @@ The server keeps per-record integer `revision` (that is, the client's `server_re
 
 The client sends at most 200 mutations per batch, ordered collection, then item, then entry, then photo, and by outbox `created_at` within each entity. The server applies them in order, and each one in its own transaction.
 
+**Client outbox rules.** A batch carries at most one mutation per record, and no record is sent while an earlier mutation for it is unacknowledged. Local edits are merged into a queued mutation only until its first send starts; after that the mutation id may already be applied, so later edits go into a new mutation. When a mutation is acknowledged (`applied` or `duplicate`), each later queued mutation for the same record is rebased to the acknowledged `server_revision` if every one of its fields was either written by the acknowledged mutation or has `field_revisions[f] <=` its old base. Otherwise its base is kept, so a change from another device still conflicts. A device therefore never conflicts with its own edits.
+
 Each mutation gets one result: `{ "id", "status", "server_revision", "record", "code"?, "message"? }`.
 - `applied`: the change was stored. `record` is the full server record afterwards.
-- `duplicate`: the mutation id was seen before. The stored result is returned again (idempotency).
+- `duplicate`: the mutation id was seen before and was `applied` then. The stored result is returned again (idempotency). A mutation id whose stored result is `conflict` or `rejected` returns that result again with its **original** status and `"duplicate": true`, so a retry is never mistaken for success.
 - `conflict`: `record` is the current server record and `code` is one of the conflict codes below. Nothing was written.
 - `rejected`: the mutation is invalid. `code` is, for example, `collection_not_synced`, `missing_parent` or `invalid_field`. Nothing was written. The client shows it as `Sync error`.
 
@@ -49,7 +51,7 @@ The response also carries `cursor`, the latest change seq.
 - **Parents.** An entry create needs its `collection_id` and `item_id` to exist, and a photo create needs its `item_id`; otherwise the result is `rejected` with `missing_parent`. An item create needs the mutation's `collection_id` to be a server collection (any collection with an entry for the item). An entry create for an item that already has an entry in the same collection is `rejected` with `item_already_in_collection`.
 - **Update** compares fields. For each field f in `fields`: if `field_revisions[f] > base_revision` and the server value differs from the incoming value, the result is `conflict` with code `field_conflict`, and `conflicting_fields` is listed in the result. Otherwise all fields are applied, `revision` is incremented, and `field_revisions[f]` is set to the new revision for every changed field. Editing the same record twice before a sync therefore arrives as one coalesced mutation carrying the latest values.
 - **Server-owned and immutable fields** are ignored: `revision`, `server_revision`, `sync_state`, `upload_state`, `server_storage_key`, `id`, `collection_id`/`item_id` after create, `sequence_number` after create, and `sha256`/`byte_size`/`crc32`/`mime_type` after create.
-- **`next_sequence_number`** on a collection is merged as `max(server, incoming)` and never conflicts.
+- **`next_sequence_number`** on a collection is merged as `max(server, incoming)` and never conflicts. A client queues the collection's `next_sequence_number` whenever it allocates a number, and on pull keeps `max(incoming, local, 1 + highest local sequence_number in the collection)`, so a pulled counter never lowers the local one.
 - **Entry create with a taken `sequence_number`** (another entry in the same collection already has it) returns `conflict` with code `sequence_taken` and `record` = the collection, which carries the server's `next_sequence_number`. The client reallocates a fresh local number for this never-synced entry and retries. This can happen only with two devices; numbers that have been shared are never renumbered.
 - **`delete`/`restore`** set or clear `deleted_at`, following the same revision rules.
 - **`purge`** permanently removes an entry or photo that is already deleted, together with its media. When the last entry of an item is purged, the item and all its photos and media are purged too, each recorded as a `purged` change.
@@ -64,7 +66,7 @@ Returns `{ "changes": [ { "seq": 12, "entity": "entry", "id": "01J…", "record"
 - A collection whose server copy was removed is sent as `{"seq", "entity": "collection", "id", "removed": true}`. Items left with no entry are purged in the same step and sent as purged items and photos.
 - Changes for items and photos carry an empty `collection_id` internally; clients decide by the local entries that reference the item.
 
-The client merges each record unless the entity has a pending outbox item. In that case it keeps the local values for the fields that are pending and adopts the rest. A logged-in desktop browser therefore receives every synced collection. It never sees Local Only collections.
+The client merges each record unless the entity has a pending outbox item or an unresolved conflict. In that case it keeps the local values for the fields that are pending or in conflict and adopts the rest. A logged-in desktop browser therefore receives every synced collection. It never sees Local Only collections.
 
 **Local Only wins locally.** A client never overwrites or deletes local data that belongs to a Local Only collection because of a pulled change: a collection `removed`/record for a local Local Only collection, and an item or photo change (record or purge) for an item that any local Local Only entry references, are ignored.
 

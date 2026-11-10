@@ -216,7 +216,10 @@ def apply_batch(data_dir, mutations: list[dict[str, Any]]) -> tuple[list[dict[st
                 ).fetchone()
                 if prior:
                     result = json.loads(prior[0])
-                    result["status"] = "duplicate"
+                    if result["status"] in {"applied", "duplicate"}:
+                        result["status"] = "duplicate"
+                    else:
+                        result["duplicate"] = True
                     results.append(result)
                     db.commit()
                     continue

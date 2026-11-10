@@ -34,11 +34,22 @@
   let adjacent = $state<{ prev: Id | null; next: Id | null }>({ prev: null, next: null })
   let captureMode = $state<CaptureMode>('native')
   let failure = $state('')
+  let syncPhase = $state('idle')
   const timers = new Map<EditableKey, ReturnType<typeof setTimeout>>()
 
   const displayedQuantity = $derived(draft.quantity ?? '')
 
   onMount(() => {
+    let unsubscribeSync: (() => void) | undefined
+    void import('$lib/sync').then(({ syncEngine }) => {
+      const subscription = syncEngine.status.subscribe((value) => (syncPhase = value.phase))
+      unsubscribeSync =
+        typeof subscription === 'function'
+          ? subscription
+          : subscription?.unsubscribe
+            ? () => subscription.unsubscribe()
+            : undefined
+    })
     const entrySubscription = repo.watchEntry(entryId).subscribe((value) => {
       entry = value
       if (!value) return
@@ -90,6 +101,7 @@
     return () => {
       window.removeEventListener('pagehide', onPageHide)
       window.removeEventListener('keydown', onKey)
+      unsubscribeSync?.()
       if (typeof entrySubscription === 'function') entrySubscription()
       else entrySubscription.unsubscribe()
       if (typeof photoSubscription === 'function') photoSubscription()
@@ -248,8 +260,8 @@
         ></label
       >
       <p class="save-state" aria-live="polite">
-        {#if savingCount}Saving…{:else if failure}{failure}{:else if entry.sync_state === 'conflict'}Conflict{:else if entry.sync_state === 'error'}Sync
-          error{:else if entry.sync_state === 'pending'}Pending sync{:else if entry.sync_state === 'synced'}Backed
+        {#if savingCount}Saving…{:else if failure}{failure}{:else if syncPhase === 'syncing' && entry.display_sync_state === 'pending'}Syncing{:else if entry.display_sync_state === 'conflict'}Conflict{:else if entry.display_sync_state === 'error'}Sync
+          error{:else if entry.display_sync_state === 'pending'}Pending sync{:else if entry.display_sync_state === 'synced'}Backed
           up{:else}Saved on this device{/if}
       </p>
     </header>

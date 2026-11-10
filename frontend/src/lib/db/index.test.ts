@@ -67,6 +67,13 @@ describe('Dexie repository', () => {
     const target = (await repo.importEntries(targetCollection.id, [source.id])).created[0]!
     await repo.updateEntry(target.id, { notes: 'Edited from B' })
     const db = getCaptureDb(name)
+    const counterMutation = await db.outbox
+      .where('[entity+entity_id]')
+      .equals(['collection', targetCollection.id])
+      .toArray()
+    expect(
+      counterMutation.some((item) => item.fields.next_sequence_number === target.sequence_number + 1),
+    ).toBe(true)
     const itemMutations = await db.outbox.where('[entity+entity_id]').equals(['item', source.id]).toArray()
     expect(itemMutations).toHaveLength(1)
     expect(itemMutations[0]?.fields.notes).toBe('Edited from B')
@@ -165,27 +172,21 @@ describe('Dexie repository', () => {
     expect(isIncomplete({ quantity: '0', review_status: 'draft' }, true)).toBe(false)
   })
 
-  it('coalesces synced edits into one not-in-flight outbox item', async () => {
+  it('does not coalesce an edit into a row that already has an attempt', async () => {
     const name = `capture-test-outbox-${++counter}`
     const repo = createRepo({ databaseName: name })
     const collection = await repo.createCollection({ name: 'Synced', storage_mode: 'synced' })
     const entry = await repo.createEntry(collection.id)
     await repo.updateEntry(entry.id, { title: 'First' })
+    const captureDb = getCaptureDb(name)
+    const queued = await captureDb.outbox.where('[entity+entity_id]').equals(['item', entry.id]).first()
+    await captureDb.outbox.update(queued!.id, { attempts: 1 })
     await repo.updateEntry(entry.id, { notes: 'Second' })
-    const db = new Dexie(name)
-    db.version(1).stores({
-      collections: 'id',
-      entries: 'id',
-      photos: 'id',
-      photoBlobs: 'photo_id',
-      outbox:
-        'id, [collection_id+entity_id], [collection_id+entity+entity_id], next_attempt_at, collection_id',
-      settings: 'key',
-    })
-    const items = await db.table('outbox').where('[entity+entity_id]').equals(['item', entry.id]).toArray()
-    expect(items).toHaveLength(1)
-    expect(items[0].fields).toMatchObject({ title: 'First', notes: 'Second' })
-    db.close()
+    const items = await captureDb.outbox.where('[entity+entity_id]').equals(['item', entry.id]).toArray()
+    expect(items).toHaveLength(2)
+    expect(items.find((item) => item.attempts === 1)?.fields).toMatchObject({ title: 'First' })
+    expect(items.find((item) => item.attempts === 0)?.fields).toMatchObject({ notes: 'Second' })
+    await captureDb.delete()
   })
 })
 

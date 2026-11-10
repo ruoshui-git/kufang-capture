@@ -298,7 +298,7 @@ export function createRepo(options: RepoOptions = {}): Repo {
   ) => {
     if (collection.storage_mode !== 'synced') return
     const matches = await db.outbox.where('[entity+entity_id]').equals([entity, record.id]).toArray()
-    const existing = matches.find((item) => !item.in_flight)
+    const existing = matches.find((item) => !item.in_flight && !item.sent && item.attempts === 0)
     const at = stamp()
     if (existing) {
       await db.outbox.put({
@@ -361,13 +361,37 @@ export function createRepo(options: RepoOptions = {}): Repo {
   const entryViews = async (entries: Entry[]): Promise<EntryView[]> => {
     if (!entries.length) return []
     const itemIds = [...new Set(entries.map((entry) => entry.item_id))]
-    const [items, placements, collections] = await Promise.all([
+    const [items, placements, collections, photos, outbox, conflicts] = await Promise.all([
       db.items.bulkGet(itemIds),
       db.entries.where('item_id').anyOf(itemIds).toArray(),
       db.collections.toArray(),
+      db.photos.where('item_id').anyOf(itemIds).toArray(),
+      db.outbox.toArray(),
+      db.conflicts.toArray(),
     ])
     const itemById = new Map(items.filter((item) => item !== undefined).map((item) => [item.id, item]))
     const names = new Map(collections.map((collection) => [collection.id, collection.name]))
+    const collectionById = new Map(collections.map((collection) => [collection.id, collection]))
+    const outboxByRecord = new Map<string, OutboxItem[]>()
+    for (const row of outbox) {
+      const key = `${row.entity}:${row.entity_id}`
+      const list = outboxByRecord.get(key) ?? []
+      list.push(row)
+      outboxByRecord.set(key, list)
+    }
+    const conflictsByRecord = new Map<string, (typeof conflicts)[number][]>()
+    for (const row of conflicts) {
+      const key = `${row.entity}:${row.entity_id}`
+      const list = conflictsByRecord.get(key) ?? []
+      list.push(row)
+      conflictsByRecord.set(key, list)
+    }
+    const photosByItem = new Map<Id, Photo[]>()
+    for (const photo of photos) {
+      const list = photosByItem.get(photo.item_id) ?? []
+      list.push(photo)
+      photosByItem.set(photo.item_id, list)
+    }
     const placementsByItem = new Map<Id, Entry[]>()
     for (const placement of placements) {
       const list = placementsByItem.get(placement.item_id) ?? []
@@ -377,6 +401,35 @@ export function createRepo(options: RepoOptions = {}): Repo {
     return entries.map((entry) => {
       // A pulled entry can arrive a page before its item; show blank shared fields until it lands.
       const item = itemById.get(entry.item_id) ?? MISSING_ITEM
+      const collection = collectionById.get(entry.collection_id)
+      const itemPhotos = photosByItem.get(entry.item_id) ?? []
+      const recordKeys = [
+        `entry:${entry.id}`,
+        `item:${entry.item_id}`,
+        ...itemPhotos.map((photo) => `photo:${photo.id}`),
+      ]
+      const relevantOutbox = recordKeys.flatMap((key) => outboxByRecord.get(key) ?? [])
+      const relevantConflicts = recordKeys.flatMap((key) => conflictsByRecord.get(key) ?? [])
+      const recordStates = [
+        entry.sync_state,
+        itemById.get(entry.item_id)?.sync_state,
+        ...itemPhotos.map((photo) => photo.sync_state),
+      ]
+      const display_sync_state =
+        collection?.storage_mode === 'local_only'
+          ? 'local_only'
+          : relevantConflicts.length || recordStates.includes('conflict')
+            ? 'conflict'
+            : recordStates.includes('error') ||
+                relevantOutbox.some((row) => !!row.last_error) ||
+                itemPhotos.some((photo) => photo.upload_state === 'error')
+              ? 'error'
+              : relevantOutbox.length > 0 ||
+                  itemPhotos.some((photo) => ['pending', 'uploading'].includes(photo.upload_state))
+                ? 'pending'
+                : entry.server_revision !== null
+                  ? 'synced'
+                  : 'pending'
       return {
         ...entry,
         title: item.title,
@@ -392,6 +445,7 @@ export function createRepo(options: RepoOptions = {}): Repo {
             entry_id: placement.id,
             sequence_number: placement.sequence_number,
           })),
+        display_sync_state,
       }
     })
   }
@@ -816,55 +870,62 @@ export function createRepo(options: RepoOptions = {}): Repo {
       return entry ? entryView(entry) : undefined
     },
     createEntry: async (collectionId, init = {}) =>
-      db.transaction('rw', db.collections, db.items, db.entries, db.outbox, db.settings, async () => {
-        const collection = await db.collections.get(collectionId)
-        if (!collection) throw new Error('Collection not found')
-        const at = stamp()
-        const unit = init.unit ?? (await repo.getSetting(SETTING_KEYS.lastUnit, ''))
-        const id = createId()
-        const item: Item = {
-          id,
-          title: init.title ?? '',
-          notes: init.notes ?? '',
-          expiration_date: init.expiration_date ?? null,
-          dimensions: init.dimensions ?? '',
-          review_status: init.review_status ?? 'draft',
-          created_at: at,
-          updated_at: at,
-          revision: 1,
-          server_revision: null,
-          sync_state: collection.storage_mode === 'local_only' ? 'local_only' : 'pending',
-        }
-        const entry: Entry = {
-          id,
-          collection_id: collectionId,
-          item_id: id,
-          sequence_number: collection.next_sequence_number,
-          quantity: init.quantity ?? null,
-          unit,
-          count_detail: init.count_detail ?? '',
-          deleted_at: null,
-          created_at: at,
-          updated_at: at,
-          revision: 1,
-          server_revision: null,
-          sync_state: collection.storage_mode === 'local_only' ? 'local_only' : 'pending',
-        }
-        const updatedCollection = {
-          ...collection,
-          next_sequence_number: collection.next_sequence_number + 1,
-          updated_at: at,
-          revision: collection.revision + 1,
-          sync_state:
-            collection.storage_mode === 'local_only' ? ('local_only' as const) : ('pending' as const),
-        }
-        await db.collections.put(updatedCollection)
-        await db.items.add(item)
-        await db.entries.add(entry)
-        await enqueue(updatedCollection, 'item', item, 'upsert', { ...item })
-        await enqueue(updatedCollection, 'entry', entry, 'upsert', { ...entry })
-        return entryView(entry)
-      }),
+      db.transaction(
+        'rw',
+        [db.collections, db.items, db.entries, db.photos, db.outbox, db.conflicts, db.settings],
+        async () => {
+          const collection = await db.collections.get(collectionId)
+          if (!collection) throw new Error('Collection not found')
+          const at = stamp()
+          const unit = init.unit ?? (await repo.getSetting(SETTING_KEYS.lastUnit, ''))
+          const id = createId()
+          const item: Item = {
+            id,
+            title: init.title ?? '',
+            notes: init.notes ?? '',
+            expiration_date: init.expiration_date ?? null,
+            dimensions: init.dimensions ?? '',
+            review_status: init.review_status ?? 'draft',
+            created_at: at,
+            updated_at: at,
+            revision: 1,
+            server_revision: null,
+            sync_state: collection.storage_mode === 'local_only' ? 'local_only' : 'pending',
+          }
+          const entry: Entry = {
+            id,
+            collection_id: collectionId,
+            item_id: id,
+            sequence_number: collection.next_sequence_number,
+            quantity: init.quantity ?? null,
+            unit,
+            count_detail: init.count_detail ?? '',
+            deleted_at: null,
+            created_at: at,
+            updated_at: at,
+            revision: 1,
+            server_revision: null,
+            sync_state: collection.storage_mode === 'local_only' ? 'local_only' : 'pending',
+          }
+          const updatedCollection = {
+            ...collection,
+            next_sequence_number: collection.next_sequence_number + 1,
+            updated_at: at,
+            revision: collection.revision + 1,
+            sync_state:
+              collection.storage_mode === 'local_only' ? ('local_only' as const) : ('pending' as const),
+          }
+          await db.collections.put(updatedCollection)
+          await db.items.add(item)
+          await db.entries.add(entry)
+          await enqueue(updatedCollection, 'collection', updatedCollection, 'upsert', {
+            next_sequence_number: updatedCollection.next_sequence_number,
+          })
+          await enqueue(updatedCollection, 'item', item, 'upsert', { ...item })
+          await enqueue(updatedCollection, 'entry', entry, 'upsert', { ...entry })
+          return entryView(entry)
+        },
+      ),
     updateEntry: async (id, patch) =>
       db.transaction('rw', db.collections, db.items, db.entries, db.outbox, db.settings, async () => {
         const entry = await db.entries.get(id)
@@ -1007,69 +1068,78 @@ export function createRepo(options: RepoOptions = {}): Repo {
         )
       }) as Watchable<import('../repo').ImportCandidate[]>,
     importEntries: async (targetId, sourceIds) =>
-      db.transaction('rw', db.collections, db.entries, db.items, db.outbox, db.settings, async () => {
-        const target = await db.collections.get(targetId)
-        if (!target) throw new Error('Collection not found')
-        const sources = await Promise.all(sourceIds.map((sourceId) => db.entries.get(sourceId)))
-        const created: EntryView[] = []
-        const restored: EntryView[] = []
-        const skipped: Id[] = []
-        for (const source of sources) {
-          if (!source) continue
-          const sourceCollection = await db.collections.get(source.collection_id)
-          if (!sourceCollection || sourceCollection.storage_mode !== target.storage_mode)
-            throw new Error('Collections must use the same storage mode to share items.')
-          const current = await db.entries
-            .where('[collection_id+item_id]')
-            .equals([targetId, source.item_id])
-            .toArray()
-          if (current.some((row) => row.deleted_at === null)) {
-            skipped.push(source.id)
-            continue
-          }
-          const deleted = current.find((row) => row.deleted_at !== null)
-          if (deleted) {
-            const saved = {
-              ...deleted,
-              deleted_at: null,
-              updated_at: stamp(),
-              revision: deleted.revision + 1,
-              sync_state:
-                target.storage_mode === 'local_only' ? ('local_only' as const) : ('pending' as const),
+      db.transaction(
+        'rw',
+        [db.collections, db.entries, db.items, db.photos, db.outbox, db.conflicts, db.settings],
+        async () => {
+          const target = await db.collections.get(targetId)
+          if (!target) throw new Error('Collection not found')
+          const sources = await Promise.all(sourceIds.map((sourceId) => db.entries.get(sourceId)))
+          const created: EntryView[] = []
+          const restored: EntryView[] = []
+          const skipped: Id[] = []
+          for (const source of sources) {
+            if (!source) continue
+            const sourceCollection = await db.collections.get(source.collection_id)
+            if (!sourceCollection || sourceCollection.storage_mode !== target.storage_mode)
+              throw new Error('Collections must use the same storage mode to share items.')
+            const current = await db.entries
+              .where('[collection_id+item_id]')
+              .equals([targetId, source.item_id])
+              .toArray()
+            if (current.some((row) => row.deleted_at === null)) {
+              skipped.push(source.id)
+              continue
             }
-            await db.entries.put(saved)
-            await enqueue(target, 'entry', saved, 'restore', { deleted_at: null })
-            restored.push(await entryView(saved))
-          } else {
-            const at = stamp()
-            const entry: Entry = {
-              id: createId(),
-              collection_id: targetId,
-              item_id: source.item_id,
-              sequence_number: target.next_sequence_number++,
-              quantity: null,
-              unit: source.unit,
-              count_detail: '',
-              deleted_at: null,
-              created_at: at,
-              updated_at: at,
-              revision: 1,
-              server_revision: null,
+            const deleted = current.find((row) => row.deleted_at !== null)
+            if (deleted) {
+              const saved = {
+                ...deleted,
+                deleted_at: null,
+                updated_at: stamp(),
+                revision: deleted.revision + 1,
+                sync_state:
+                  target.storage_mode === 'local_only' ? ('local_only' as const) : ('pending' as const),
+              }
+              await db.entries.put(saved)
+              await enqueue(target, 'entry', saved, 'restore', { deleted_at: null })
+              restored.push(await entryView(saved))
+            } else {
+              const at = stamp()
+              const entry: Entry = {
+                id: createId(),
+                collection_id: targetId,
+                item_id: source.item_id,
+                sequence_number: target.next_sequence_number++,
+                quantity: null,
+                unit: source.unit,
+                count_detail: '',
+                deleted_at: null,
+                created_at: at,
+                updated_at: at,
+                revision: 1,
+                server_revision: null,
+                sync_state: target.storage_mode === 'local_only' ? 'local_only' : 'pending',
+              }
+              await db.entries.add(entry)
+              await enqueue(target, 'entry', entry, 'upsert', { ...entry })
+              created.push(await entryView(entry))
+            }
+            const updatedTarget: Collection = {
+              ...target,
+              updated_at: stamp(),
+              revision: target.revision + 1,
               sync_state: target.storage_mode === 'local_only' ? 'local_only' : 'pending',
             }
-            await db.entries.add(entry)
-            await enqueue(target, 'entry', entry, 'upsert', { ...entry })
-            created.push(await entryView(entry))
+            await db.collections.put(updatedTarget)
+            if (!deleted)
+              await enqueue(target, 'collection', updatedTarget, 'upsert', {
+                next_sequence_number: updatedTarget.next_sequence_number,
+              })
           }
-          await db.collections.put({
-            ...target,
-            updated_at: stamp(),
-            revision: target.revision + 1,
-            sync_state: target.storage_mode === 'local_only' ? 'local_only' : 'pending',
-          })
-        }
-        return { created, restored, skipped }
-      }),
+          return { created, restored, skipped }
+        },
+      ),
     addPhotos: async (entryId, incoming) => {
       const entry = await db.entries.get(entryId)
       if (!entry) throw new Error('Entry not found')
@@ -1129,15 +1199,7 @@ export function createRepo(options: RepoOptions = {}): Repo {
             await enqueue(collection, 'photo', item, 'upsert', { ...item })
             made.push(item)
           }
-          const touched = await touchCollection(collection, at)
-          const fresh = await db.entries.get(entryId)
-          if (fresh)
-            await db.entries.put({
-              ...fresh,
-              updated_at: at,
-              revision: fresh.revision + 1,
-              sync_state: collection.storage_mode === 'local_only' ? 'local_only' : 'pending',
-            })
+          await touchCollection(collection, at)
           return made
         },
       )

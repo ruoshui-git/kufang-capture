@@ -428,17 +428,131 @@ describe('sync acceptance against an in-memory API server', () => {
     server.failAfterBatch = true
     await fixture.engine.syncNow()
     expect(await fixture.db.outbox.get(before!.id)).toMatchObject({ in_flight: false, attempts: 1 })
+    await fixture.repo.updateEntry(fixture.entry.id, { notes: 'new edit after lost ack' })
+    expect(
+      await fixture.db.outbox.where('[entity+entity_id]').equals(['item', fixture.entry.id]).count(),
+    ).toBe(2)
     fixedNow.value = new Date(fixedNow.value.getTime() + 10_000)
+    await fixture.engine.syncNow()
     await fixture.engine.syncNow()
     const sentIds = server.batchRequests
       .slice(-2)
       .map((batch) => batch.find((item) => item.entity_id === fixture.entry.id)!.id)
-    expect(sentIds.at(-1)).toBe(before!.id)
-    expect(new Set(sentIds).size).toBe(1)
-    expect(server.records.get(server.key('item', fixture.entry.id))?.notes).toBe('retry me')
+    expect(sentIds[0]).toBe(before!.id)
+    expect(sentIds[1]).not.toBe(before!.id)
+    expect(server.records.get(server.key('item', fixture.entry.id))?.notes).toBe('new edit after lost ack')
     expect(server.records.get(server.key('item', fixture.entry.id))).toBeDefined()
     expect(server.records.get(server.key('entry', fixture.entry.id))).toBeDefined()
     expect(await fixture.db.outbox.get(before!.id)).toBeUndefined()
+    await fixture.db.delete()
+  })
+
+  it('rebases edits made while a create or update is in flight and sends only one mutation per record', async () => {
+    const server = new MemoryServer()
+    const name = dbName()
+    const repo = makeRepo(name)
+    const collection = await repo.createCollection({ name: 'Room', storage_mode: 'synced' })
+    const entry = await repo.createEntry(collection.id, { title: 'first' })
+    let release!: () => void
+    let reached!: () => void
+    let hold = true
+    const entered = new Promise<void>((resolve) => (reached = resolve))
+    const gate = new Promise<void>((resolve) => (release = resolve))
+    const fetcher = async (input: RequestInfo | URL, init: RequestInit = {}) => {
+      const url = String(input)
+      if (url === '/api/sync/batch' && hold) {
+        hold = false
+        const response = await server.fetch(input, init)
+        reached()
+        await gate
+        return response
+      }
+      return server.fetch(input, init)
+    }
+    const engine = createSyncEngine({ repoDbName: name, fetch: fetcher as typeof fetch, now: clock })
+    const firstSync = engine.syncNow()
+    await entered
+    await repo.updateEntry(entry.id, { title: 'typed during create' })
+    const batch = server.batchRequests[0]!
+    expect(
+      batch.filter((mutation) => mutation.entity_id === entry.id && mutation.entity === 'item'),
+    ).toHaveLength(1)
+    release()
+    await firstSync
+    await engine.syncNow()
+    expect(server.records.get(server.key('item', entry.id))?.title).toBe('typed during create')
+    expect(await getCaptureDb(name).conflicts.count()).toBe(0)
+
+    await repo.updateEntry(entry.id, { title: 'first update' })
+    let releaseUpdate!: () => void
+    let reachedUpdate!: () => void
+    const updateEntered = new Promise<void>((resolve) => (reachedUpdate = resolve))
+    const updateGate = new Promise<void>((resolve) => (releaseUpdate = resolve))
+    const updateEngine = createSyncEngine({
+      repoDbName: name,
+      fetch: (async (input: RequestInfo | URL, init: RequestInit = {}) => {
+        if (String(input) === '/api/sync/batch') {
+          const response = await server.fetch(input, init)
+          reachedUpdate()
+          await updateGate
+          return response
+        }
+        return server.fetch(input, init)
+      }) as typeof fetch,
+      now: clock,
+    })
+    const updateSync = updateEngine.syncNow()
+    await updateEntered
+    await repo.updateEntry(entry.id, { title: 'second update' })
+    await repo.updateEntry(entry.id, { title: 'latest update' })
+    releaseUpdate()
+    await updateSync
+    await updateEngine.syncNow()
+    expect(server.records.get(server.key('item', entry.id))?.title).toBe('latest update')
+    expect(await getCaptureDb(name).conflicts.count()).toBe(0)
+    await getCaptureDb(name).delete()
+  })
+
+  it('keeps an R2 rebase blocked when another device changed an R2 field during R1', async () => {
+    const server = new MemoryServer()
+    const fixture = await syncedEntry(server)
+    let release!: () => void
+    let entered!: () => void
+    const requestEntered = new Promise<void>((resolve) => (entered = resolve))
+    const gate = new Promise<void>((resolve) => (release = resolve))
+    let hold = true
+    const engine = createSyncEngine({
+      repoDbName: fixture.name,
+      fetch: (async (input: RequestInfo | URL, init: RequestInit = {}) => {
+        if (String(input) === '/api/sync/batch' && hold) {
+          hold = false
+          entered()
+          await gate
+        }
+        return server.fetch(input, init)
+      }) as typeof fetch,
+      now: clock,
+    })
+
+    await fixture.repo.updateEntry(fixture.entry.id, { title: 'R1 title' })
+    const r1 = engine.syncNow()
+    await requestEntered
+    await fixture.repo.updateEntry(fixture.entry.id, { notes: 'local R2 notes' })
+    server.externalUpdate('item', fixture.entry.id, { notes: 'remote R2 notes' })
+    release()
+    await r1
+    await engine.syncNow()
+
+    const conflict = await fixture.db.conflicts
+      .where('[entity+entity_id]')
+      .equals(['item', fixture.entry.id])
+      .first()
+    expect(conflict).toMatchObject({
+      fields: ['notes'],
+      local_values: { notes: 'local R2 notes' },
+      server_values: { notes: 'remote R2 notes' },
+    })
+    expect((await fixture.repo.getEntry(fixture.entry.id))?.notes).toBe('local R2 notes')
     await fixture.db.delete()
   })
 
@@ -483,6 +597,80 @@ describe('sync acceptance against an in-memory API server', () => {
       server.requests.filter((request) => request.url.endsWith('/original') && request.method === 'PUT'),
     ).toHaveLength(1)
     expect(server.stored.size).toBe(1)
+    await fixture.db.delete()
+  })
+
+  it('derives entry status from photos, heals legacy pending state, and surfaces item conflicts', async () => {
+    const server = new MemoryServer()
+    const fixture = await syncedEntry(server)
+    const photo = await addPhoto(fixture.repo, fixture.entry.id)
+    expect((await fixture.db.entries.get(fixture.entry.id))?.sync_state).toBe('synced')
+    await fixture.engine.syncNow()
+    expect((await fixture.db.photos.get(photo.id))?.upload_state).toBe('uploaded')
+    expect((await fixture.repo.getEntry(fixture.entry.id))?.display_sync_state).toBe('synced')
+
+    await fixture.db.outbox.clear()
+    const entry = (await fixture.db.entries.get(fixture.entry.id))!
+    await fixture.db.entries.put({ ...entry, sync_state: 'pending', server_revision: 1 })
+    expect((await fixture.repo.getEntry(fixture.entry.id))?.display_sync_state).toBe('synced')
+
+    await fixture.db.conflicts.put({
+      id: 'item-conflict',
+      collection_id: fixture.collection.id,
+      entity: 'item',
+      entity_id: fixture.entry.id,
+      fields: ['title'],
+      local_values: { title: 'local' },
+      server_values: { title: 'server' },
+      server_revision: 2,
+      created_at: clock().toISOString(),
+    })
+    expect((await fixture.repo.getEntry(fixture.entry.id))?.display_sync_state).toBe('conflict')
+    await fixture.db.delete()
+  })
+
+  it('keeps and repairs the local next sequence when a lower collection counter is pulled', async () => {
+    const server = new MemoryServer()
+    const fixture = await syncedEntry(server)
+    const collection = (await fixture.db.collections.get(fixture.collection.id))!
+    await fixture.db.collections.put({ ...collection, next_sequence_number: 20 })
+    const deletedEntry = (await fixture.db.entries.get(fixture.entry.id))!
+    await fixture.db.entries.put({ ...deletedEntry, sequence_number: 9, deleted_at: clock().toISOString() })
+    const remote = server.records.get(server.key('collection', fixture.collection.id))!
+
+    server.pushChange({
+      entity: 'collection',
+      id: fixture.collection.id,
+      record: { ...remote, next_sequence_number: 1 },
+    })
+    await fixture.engine.syncNow()
+    expect((await fixture.db.collections.get(fixture.collection.id))?.next_sequence_number).toBe(20)
+
+    const local = (await fixture.db.collections.get(fixture.collection.id))!
+    await fixture.db.collections.put({ ...local, next_sequence_number: 1 })
+    server.pushChange({
+      entity: 'collection',
+      id: fixture.collection.id,
+      record: { ...remote, next_sequence_number: 1 },
+    })
+    await fixture.engine.syncNow()
+    expect((await fixture.db.collections.get(fixture.collection.id))?.next_sequence_number).toBe(10)
+    await fixture.db.delete()
+  })
+
+  it('queues and syncs the collection counter whenever a new entry is allocated', async () => {
+    const server = new MemoryServer()
+    const fixture = await syncedEntry(server)
+    const added = await fixture.repo.createEntry(fixture.collection.id)
+    const queued = await fixture.db.outbox
+      .where('[entity+entity_id]')
+      .equals(['collection', fixture.collection.id])
+      .toArray()
+    expect(queued.some((item) => item.fields.next_sequence_number === added.sequence_number + 1)).toBe(true)
+    await fixture.engine.syncNow()
+    expect(server.records.get(server.key('collection', fixture.collection.id))?.next_sequence_number).toBe(
+      added.sequence_number + 1,
+    )
     await fixture.db.delete()
   })
 
@@ -622,6 +810,101 @@ describe('sync acceptance against an in-memory API server', () => {
     await fixture.db.delete()
   })
 
+  it('keeps conflicted local fields through pull until server resolution is chosen', async () => {
+    const server = new MemoryServer()
+    const fixture = await syncedEntry(server)
+    server.externalUpdate('item', fixture.entry.id, { title: 'Server title' })
+    await fixture.repo.updateEntry(fixture.entry.id, { title: 'Local title' })
+    await fixture.engine.syncNow()
+    const conflict = await fixture.db.conflicts
+      .where('[entity+entity_id]')
+      .equals(['item', fixture.entry.id])
+      .first()
+    expect(conflict).toBeDefined()
+    expect((await fixture.repo.getEntry(fixture.entry.id))?.title).toBe('Local title')
+    await fixture.engine.resolveConflict(conflict!.id, 'server')
+    await waitFor(async () => (await fixture.db.conflicts.count()) === 0)
+    expect((await fixture.repo.getEntry(fixture.entry.id))?.title).toBe('Server title')
+    await fixture.db.delete()
+  })
+
+  it('treats a duplicate carrying a stored rejected outcome as rejected', async () => {
+    const server = new MemoryServer()
+    const fixture = await syncedEntry(server)
+    await fixture.repo.updateEntry(fixture.entry.id, { title: 'bad value' })
+    const fetcher = async (input: RequestInfo | URL, init: RequestInit = {}) => {
+      if (String(input) === '/api/sync/batch') {
+        const payload = JSON.parse(String(init.body)) as { mutations: Mutation[] }
+        return new Response(
+          JSON.stringify({
+            results: payload.mutations.map((mutation) => ({
+              id: mutation.id,
+              status: 'duplicate',
+              duplicate: true,
+              code: 'invalid_field',
+              message: 'Stored rejection.',
+              server_revision: 0,
+            })),
+            cursor: 0,
+          }),
+          { status: 200 },
+        )
+      }
+      return server.fetch(input, init)
+    }
+    const engine = createSyncEngine({ repoDbName: fixture.name, fetch: fetcher as typeof fetch, now: clock })
+    await engine.syncNow()
+    const queued = await fixture.db.outbox
+      .where('[entity+entity_id]')
+      .equals(['item', fixture.entry.id])
+      .first()
+    expect(queued).toMatchObject({ last_error: 'Stored rejection.', in_flight: false })
+    expect((await fixture.db.items.get(fixture.entry.id))?.sync_state).toBe('error')
+    await fixture.db.delete()
+  })
+
+  it('recovers an in-flight mutation on start and selects one mutation per record', async () => {
+    const server = new MemoryServer()
+    const fixture = await syncedEntry(server)
+    await fixture.repo.updateEntry(fixture.entry.id, { notes: 'one' })
+    const first = await fixture.db.outbox
+      .where('[entity+entity_id]')
+      .equals(['item', fixture.entry.id])
+      .first()
+    await fixture.db.outbox.put({ ...first!, in_flight: true, sent: true })
+    const engine = makeEngine(fixture.name, server)
+    engine.start()
+    await waitFor(async () => (await fixture.db.outbox.get(first!.id)) === undefined)
+    engine.stop()
+    expect(
+      server.batchRequests.at(-1)?.filter((mutation) => mutation.entity_id === fixture.entry.id),
+    ).toHaveLength(1)
+    await fixture.db.delete()
+  })
+
+  it('sends only the oldest queued mutation when a record has multiple rows', async () => {
+    const server = new MemoryServer()
+    const fixture = await syncedEntry(server)
+    await fixture.repo.updateEntry(fixture.entry.id, { notes: 'first queued' })
+    const first = (await fixture.db.outbox
+      .where('[entity+entity_id]')
+      .equals(['item', fixture.entry.id])
+      .first())!
+    await fixture.db.outbox.put({
+      ...first,
+      id: `later-${first.id}`,
+      fields: { notes: 'second queued' },
+      created_at: new Date(clock().getTime() + 1000).toISOString(),
+      base_revision: first.base_revision,
+    })
+    await makeEngine(fixture.name, server).syncNow()
+    const sent = server.batchRequests.at(-1)!.filter((mutation) => mutation.entity_id === fixture.entry.id)
+    expect(sent).toHaveLength(1)
+    expect(sent[0]?.id).toBe(first.id)
+    expect(server.records.get(server.key('item', fixture.entry.id))?.notes).toBe('first queued')
+    await fixture.db.delete()
+  })
+
   it('allocates a fresh sequence after sequence_taken and applies it without reusing the taken number', async () => {
     const server = new MemoryServer()
     const fixture = await syncedEntry(server)
@@ -646,11 +929,13 @@ describe('sync acceptance against an in-memory API server', () => {
     expect(server.records.get(server.key('entry', entry.id))?.sequence_number).toBe(
       reallocated?.sequence_number,
     )
-    expect(
-      (await fixture.db.entries.where('collection_id').equals(fixture.collection.id).toArray()).map(
-        (item) => item.sequence_number,
-      ),
-    ).toContain(entry.sequence_number)
+    const localSequences = (
+      await fixture.db.entries.where('collection_id').equals(fixture.collection.id).toArray()
+    ).map((item) => item.sequence_number)
+    expect(new Set(localSequences).size).toBe(localSequences.length)
+    expect((await fixture.db.collections.get(fixture.collection.id))?.next_sequence_number).toBeGreaterThan(
+      reallocated!.sequence_number,
+    )
     await fixture.db.delete()
   })
 
