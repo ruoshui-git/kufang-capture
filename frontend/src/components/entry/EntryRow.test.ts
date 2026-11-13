@@ -107,6 +107,7 @@ describe('entry row inline editing', () => {
       quantity.focus()
       await fireEvent.input(quantity, { target: { value: '5' } })
 
+      await fireEvent.click(screen.getByRole('button', { name: 'More details' }))
       const unit = screen.getByLabelText('Unit') as HTMLInputElement
       unit.focus()
       await quantityWriteStartedPromise
@@ -119,6 +120,7 @@ describe('entry row inline editing', () => {
 
       view.unmount()
       const remounted = render(EntryRow, { props: { ...props, row: updatedRow! } })
+      await fireEvent.click(screen.getByRole('button', { name: 'More details' }))
       const remountedUnit = screen.getByLabelText('Unit') as HTMLInputElement
       remountedUnit.focus()
       await fireEvent.input(remountedUnit, { target: { value: 'boxes' } })
@@ -135,7 +137,32 @@ describe('entry row inline editing', () => {
     }
   })
 
-  it('edits expiration date and dimensions from the row after one tap on More', async () => {
+  it('edits dimensions inline and moves Enter from quantity to dimensions to the note', async () => {
+    const collection = await repo.createCollection({
+      name: `Inline ${Date.now()}`,
+      storage_mode: 'local_only',
+    })
+    const entry = await repo.createEntry(collection.id)
+    const query = { search: '', filter: 'all' as const, sort: 'newest' as const }
+    const [row] = await first(repo.watchEntryRows(collection.id, query))
+    render(EntryRow, {
+      props: { row: row!, units: [], ondetails: () => {}, onviewer: () => {}, ondelete: () => {} },
+    })
+    expect(screen.queryByLabelText('Unit')).not.toBeInTheDocument()
+    const quantity = screen.getByLabelText('Quantity') as HTMLInputElement
+    const dimensions = screen.getByLabelText('Dimensions') as HTMLInputElement
+    quantity.focus()
+    await fireEvent.keyDown(quantity, { key: 'Enter' })
+    expect(document.activeElement).toBe(dimensions)
+    await fireEvent.input(dimensions, { target: { value: '30 × 20 × 15 cm' } })
+    await fireEvent.keyDown(dimensions, { key: 'Enter' })
+    expect(document.activeElement).toBe(screen.getByLabelText('Short note'))
+    await waitFor(async () => {
+      expect((await repo.getEntry(entry.id))?.dimensions).toBe('30 × 20 × 15 cm')
+    })
+  })
+
+  it('edits unit and expiration date from the row after one tap on More', async () => {
     const collection = await repo.createCollection({
       name: `Shelf ${Date.now()}`,
       storage_mode: 'local_only',
@@ -148,20 +175,20 @@ describe('entry row inline editing', () => {
     })
     const toggle = screen.getByRole('button', { name: 'More details' })
     expect(toggle).toHaveAttribute('aria-expanded', 'false')
-    expect(screen.queryByLabelText('Dimensions')).not.toBeInTheDocument()
+    expect(screen.queryByLabelText('Unit')).not.toBeInTheDocument()
     await fireEvent.click(toggle)
     expect(toggle).toHaveAttribute('aria-expanded', 'true')
 
     const expiration = screen.getByLabelText('Expiration date') as HTMLInputElement
     await fireEvent.input(expiration, { target: { value: '2027-03-01' } })
     expiration.blur()
-    const dimensions = screen.getByLabelText('Dimensions') as HTMLInputElement
-    await fireEvent.input(dimensions, { target: { value: '30 × 20 × 15 cm' } })
-    dimensions.blur()
+    const unit = screen.getByLabelText('Unit') as HTMLInputElement
+    await fireEvent.input(unit, { target: { value: 'boxes' } })
+    unit.blur()
     await waitFor(async () => {
       expect(await repo.getEntry(entry.id)).toMatchObject({
         expiration_date: '2027-03-01',
-        dimensions: '30 × 20 × 15 cm',
+        unit: 'boxes',
       })
     })
 

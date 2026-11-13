@@ -25,8 +25,8 @@ gradient washes and soft drop shadows; elevation comes from 1px lines and card-o
 │ 12 boxes   30 pieces                    │   per-unit chips, never summed
 ├─────────────────────────────────────────┤
 │ (o#0015)  [Title… placeholder]       ⋯ │   tag + inline title + overflow
-│ [▣][▣][▣] +2      [ Add Photo ][ ⊞ ]  │   3 newest thumbs; camera; library
-│ [qty][ unit ][ short note………………… ]   │   one line of inline fields
+│ [▣][▣][▣] +2      [ Add Photo ][ ⊞ ]  │   cover + newest thumbs; camera; library
+│ [qty][ dimensions ][ short note……… ]   │   one line of inline fields
 │ More ⌄   ● Saved · 7 photos    Details › │   expander, state, nav
 ├─────────────────────────────────────────┤
 │ …                                       │
@@ -35,7 +35,7 @@ gradient washes and soft drop shadows; elevation comes from 1px lines and card-o
 └─────────────────────────────────────────┘
 ```
 
-Rows are full-bleed cards separated by 8px of floor colour. **More** expands Expiration date, Dimensions, Count detail and Notes inside the row, so these fields are one tap away. Detail shows every field without an expander. Overflow menus (`⋯`) close on a tap outside, on Escape, and after an item is chosen. Content is left aligned, and the tag hangs at the left edge, as if tied to the row.
+Rows are full-bleed cards separated by 8px of floor colour. **More** expands Unit, Expiration date, Count detail and Notes inside the row, so these fields are one tap away. Detail shows every field without an expander. Overflow menus (`⋯`) close on a tap outside, on Escape, and after an item is chosen. Content is left aligned, and the tag hangs at the left edge, as if tied to the row.
 
 ### Desktop and tablet (≥ 900px wide)
 
@@ -43,14 +43,14 @@ This is not a stretched phone. Above 900px, Collections becomes a persistent **l
 
 ```text
 ┌ Collections ┐┌ Temple 2 / A04 ──────────────── summary chips ─── [Export ZIP] ┐
-│ A04       15 ││ (o#0015) [Title……………]  [▣][▣][▣]+2  [qty][unit] [note………]  📷 ⊞ ⋯ │
+│ A04       15 ││ (o#0015) [Title……………]  [▣][▣][▣]+2  [qty][dims…] [note……]  📷 ⊞ ⋯ │
 │ A05        3 ││ (o#0014) …                                                        │
 │ + New        ││                                                                   │
 └──────────────┘└──────────────────────────────── [ + New Entry ] (top right) ─────┘
 ```
 
 - The main column has a max-width of 1200px. Detail opens as a **right-hand panel** (min(520px, 40vw)) beside the ledger, not as a full page, so the list keeps its place.
-- New Entry moves to the toolbar (top right), with keyboard shortcut `N`. `Enter` in quantity moves to unit, then to the note.
+- New Entry moves to the toolbar (top right), with keyboard shortcut `N`. `Enter` in quantity moves to dimensions, then to the note. The ledger has no More expander: unit, expiration, count detail and notes are edited in Detail.
 - Hover reveals nothing essential. Every action is visible or reachable with the keyboard, with a visible focus ring (2px ballpoint, 2px offset).
 
 ## Components

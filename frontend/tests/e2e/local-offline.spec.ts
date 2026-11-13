@@ -79,7 +79,7 @@ test('§9 #2/#3 list-only counting: edit #0003, append row photos, retain place 
   await row3.scrollIntoViewIfNeeded()
   const before = await row3.evaluate((el) => el.getBoundingClientRect().top)
   await row3.getByLabel('Quantity').fill('12.5')
-  await row3.getByLabel('Unit').fill('boxes')
+  await row3.getByLabel('Dimensions').fill('30 × 20 × 15 cm')
   await row3.getByLabel('Short note').fill('counted here')
   await row3.getByLabel('Entry title').fill('Blue cabinet')
   await expect.poll(() => row3.evaluate((el) => el.getBoundingClientRect().top)).toBeGreaterThan(before - 40)
@@ -93,8 +93,9 @@ test('§9 #2/#3 list-only counting: edit #0003, append row photos, retain place 
   expect(state.items.find((item) => item.id === entry.item_id)).toMatchObject({
     title: 'Blue cabinet',
     notes: 'counted here',
+    dimensions: '30 × 20 × 15 cm',
   })
-  expect(entry).toMatchObject({ quantity: '12.5', unit: 'boxes' })
+  expect(entry).toMatchObject({ quantity: '12.5', unit: '' })
   const photos = state.photos.filter((photo) => photo.item_id === entry.item_id)
   expect(photos).toHaveLength(3)
   expect(state.photoBlobs.filter((blob) => photos.some((photo) => photo.id === blob.photo_id))).toHaveLength(
@@ -286,6 +287,7 @@ test('§9 #11 summary and recovery: quantities stay per unit and sequence number
       .locator('[data-entry-id]')
       .filter({ has: page.getByPlaceholder(`Entry #${String(number).padStart(4, '0')}`) })
     await row.getByLabel('Quantity').fill(quantity)
+    await row.getByRole('button', { name: 'More details' }).click()
     await row.getByLabel('Unit').fill(unit)
     await row.getByLabel('Unit').blur()
     await expect

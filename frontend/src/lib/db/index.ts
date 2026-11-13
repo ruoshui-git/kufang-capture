@@ -25,7 +25,7 @@ import type {
   Setting,
   StorageMode,
 } from '../types'
-import { ITEM_FIELDS, SETTING_KEYS, formatSequence } from '../types'
+import { ITEM_FIELDS, byCoverThenNewest, formatSequence } from '../types'
 import { createId } from '../ids'
 import { addDecimals, isIncomplete, normalizeUnit } from '../summary'
 import {
@@ -833,9 +833,7 @@ export function createRepo(options: RepoOptions = {}): Repo {
             return {
               entry,
               photo_count: entryPhotos.length,
-              recent_photos: entryPhotos
-                .sort((a, b) => b.captured_at.localeCompare(a.captured_at) || b.id.localeCompare(a.id))
-                .slice(0, 3),
+              recent_photos: entryPhotos.sort(byCoverThenNewest).slice(0, 3),
               is_incomplete: incomplete,
               pending_sync: queued || photoPending,
             }
@@ -872,12 +870,12 @@ export function createRepo(options: RepoOptions = {}): Repo {
     createEntry: async (collectionId, init = {}) =>
       db.transaction(
         'rw',
-        [db.collections, db.items, db.entries, db.photos, db.outbox, db.conflicts, db.settings],
+        [db.collections, db.items, db.entries, db.photos, db.outbox, db.conflicts],
         async () => {
           const collection = await db.collections.get(collectionId)
           if (!collection) throw new Error('Collection not found')
           const at = stamp()
-          const unit = init.unit ?? (await repo.getSetting(SETTING_KEYS.lastUnit, ''))
+          const unit = init.unit ?? ''
           const id = createId()
           const item: Item = {
             id,
@@ -927,7 +925,7 @@ export function createRepo(options: RepoOptions = {}): Repo {
         },
       ),
     updateEntry: async (id, patch) =>
-      db.transaction('rw', db.collections, db.items, db.entries, db.outbox, db.settings, async () => {
+      db.transaction('rw', db.collections, db.items, db.entries, db.outbox, async () => {
         const entry = await db.entries.get(id)
         if (!entry) throw new Error('Entry not found')
         const itemPatch = Object.fromEntries(
@@ -954,8 +952,6 @@ export function createRepo(options: RepoOptions = {}): Repo {
           await enqueue(collection, 'item', updated, 'upsert', itemPatch)
         }
         if (Object.keys(entryPatch).length) await saveEntry({ ...entry, ...entryPatch }, entryPatch)
-        if (typeof patch.unit === 'string' && patch.unit.trim())
-          await db.settings.put({ key: SETTING_KEYS.lastUnit, value: patch.unit })
       }),
     deleteEntry: async (id) =>
       db.transaction('rw', db.collections, db.entries, db.outbox, async () => {
@@ -1038,7 +1034,7 @@ export function createRepo(options: RepoOptions = {}): Repo {
             const entry = item
             const related = photos
               .filter((photo) => photo.item_id === entry.item_id && photo.deleted_at === null)
-              .sort((a, b) => b.captured_at.localeCompare(a.captured_at) || b.id.localeCompare(a.id))
+              .sort(byCoverThenNewest)
             const already_here = targetEntries.some(
               (other) => other.item_id === entry.item_id && other.deleted_at === null,
             )

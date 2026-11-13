@@ -283,19 +283,44 @@ describe('query and sync invariants', () => {
     }
   })
 
-  it('orders recent photos by capture time independently of manual sort order', async () => {
+  it('orders recent photos cover first, then by capture time, independently of manual sort order', async () => {
     const repo = isolatedRepo(async () => ({ width: 8, height: 8, thumbnail: new NodeBlob(['thumb']) }))
     const collection = await repo.createCollection({ name: 'Camera', storage_mode: 'local_only' })
     const entry = await repo.createEntry(collection.id)
-    const photos = await repo.addPhotos(entry.id, [
+    const [oldest, middle, newest] = await repo.addPhotos(entry.id, [
       { blob: new NodeBlob(['old']), source: 'photo_library', captured_at: '2026-01-01T00:00:00.000Z' },
+      { blob: new NodeBlob(['mid']), source: 'photo_library', captured_at: '2026-01-02T00:00:00.000Z' },
       { blob: new NodeBlob(['new']), source: 'photo_library', captured_at: '2026-01-03T00:00:00.000Z' },
     ])
-    await repo.reorderPhotos(entry.id, [photos[1]!.id, photos[0]!.id])
+    await repo.reorderPhotos(entry.id, [middle!.id, oldest!.id, newest!.id])
+    await repo.setCoverPhoto(middle!.id)
     const rows = await first(
       repo.watchEntryRows(collection.id, { search: '', filter: 'all', sort: 'newest' }),
     )
-    expect(rows[0]?.recent_photos.map((photo) => photo.id)).toEqual([photos[1]!.id, photos[0]!.id])
+    expect(rows[0]?.recent_photos.map((photo) => photo.id)).toEqual([middle!.id, newest!.id, oldest!.id])
+  })
+
+  it('shows the cover first for import candidates', async () => {
+    const repo = isolatedRepo(async () => ({ width: 8, height: 8, thumbnail: new NodeBlob(['thumb']) }))
+    const source = await repo.createCollection({ name: 'Source', storage_mode: 'local_only' })
+    const target = await repo.createCollection({ name: 'Target', storage_mode: 'local_only' })
+    const entry = await repo.createEntry(source.id)
+    const [cover, later] = await repo.addPhotos(entry.id, [
+      { blob: new NodeBlob(['cover']), source: 'photo_library', captured_at: '2026-01-01T00:00:00.000Z' },
+      { blob: new NodeBlob(['later']), source: 'photo_library', captured_at: '2026-01-05T00:00:00.000Z' },
+    ])
+    expect(cover!.is_cover).toBe(true)
+    const candidates = await first(repo.watchImportCandidates(target.id, source.id, ''))
+    expect(candidates[0]?.recent_photos.map((photo) => photo.id)).toEqual([cover!.id, later!.id])
+  })
+
+  it('starts every new entry with a blank unit, whatever unit was typed before', async () => {
+    const repo = isolatedRepo()
+    const collection = await repo.createCollection({ name: 'Units', storage_mode: 'local_only' })
+    const earlier = await repo.createEntry(collection.id)
+    await repo.updateEntry(earlier.id, { unit: 'boxes' })
+    expect((await repo.createEntry(collection.id)).unit).toBe('')
+    expect((await repo.createEntry(collection.id, { unit: 'packs' })).unit).toBe('packs')
   })
 
   it('blocks clear after any edit made after the export', async () => {

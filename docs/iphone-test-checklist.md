@@ -25,7 +25,7 @@ Before starting:
 
 1. Tap **+ New** and create `Temple 2 / A04` as **Local Only**.
 2. Tap **+ New Entry** 15 times. Add 1–5 photos to each with the row's **Add Photo** button. Don't type any titles.
-3. Scroll back to **#0003** without opening Details. Change the quantity to `3`, the unit to `boxes`, add a note and a title.
+3. Scroll back to **#0003** without opening Details. Change the quantity to `3`, the dimensions to `30 × 20 × 15 cm`, add a note and a title. Tap **More** and set the unit to `boxes`.
 4. On #0003, tap **Add Photo** twice (two photos).
 5. Delete one photo in #0003's Details, then tap **Undo**. Delete entry **#0005**, then tap **Undo**. Delete #0005 again and restore it from **Recently Deleted**.
 6. Create a new entry. It must be **#0016**.

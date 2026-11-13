@@ -2,7 +2,7 @@
   import { onDestroy, onMount, untrack } from 'svelte'
   import { Camera, ChevronDown, Images } from '@lucide/svelte'
   import type { EntryRow as EntryRowModel, EntryView, Photo } from '$lib/types'
-  import { formatSequence } from '$lib/types'
+  import { byCoverThenNewest, formatSequence } from '$lib/types'
   import { repo } from '$lib/db'
   import { pickPhotos, type CaptureMode } from '$lib/camera'
   import Button from '../ui/Button.svelte'
@@ -186,9 +186,7 @@
         resolve(items)
       }, reject)
     })
-    const next = photos
-      .slice()
-      .sort((a, b) => b.captured_at.localeCompare(a.captured_at) || b.id.localeCompare(a.id))[3]
+    const next = photos.slice().sort(byCoverThenNewest)[3]
     if (next) onviewer(row.entry.id, next.id)
   }
   const syncLabel = $derived(
@@ -274,7 +272,7 @@
             event.preventDefault()
             ;(
               event.currentTarget.parentElement?.parentElement?.querySelector(
-                '[aria-label="Unit"]',
+                '[aria-label="Dimensions"]',
               ) as HTMLInputElement | null
             )?.focus()
           }
@@ -282,14 +280,13 @@
       />
     </div>
     <input
-      class="unit"
-      aria-label="Unit"
-      list="units-{row.entry.collection_id}"
-      placeholder="Unit"
-      value={unit}
+      class="dimensions"
+      aria-label="Dimensions"
+      placeholder="Dimensions"
+      value={dimensions}
       oninput={(event) => {
-        unit = event.currentTarget.value
-        save('unit', unit)
+        dimensions = event.currentTarget.value
+        save('dimensions', dimensions)
       }}
       onblur={() => void flushDrafts()}
       onkeydown={(event) => {
@@ -317,9 +314,6 @@
       onblur={() => void flushDrafts()}
     />
     {#if quantityError}<small class="error" role="alert">Enter a number such as 12 or 12.5.</small>{/if}
-    <datalist id="units-{row.entry.collection_id}"
-      >{#each units as item}<option value={item}></option>{/each}</datalist
-    >
   </div>
 
   <div class="row-foot">
@@ -350,23 +344,27 @@
   {#if expanded}
     <div class="extra" id="extra-{row.entry.id}">
       <label
+        >Unit<input
+          list="units-{row.entry.collection_id}"
+          placeholder="e.g. boxes"
+          value={unit}
+          oninput={(event) => {
+            unit = event.currentTarget.value
+            save('unit', unit)
+          }}
+          onblur={() => void flushDrafts()}
+        /></label
+      >
+      <datalist id="units-{row.entry.collection_id}"
+        >{#each units as item}<option value={item}></option>{/each}</datalist
+      >
+      <label
         >Expiration date<input
           type="date"
           value={expirationDate}
           oninput={(event) => {
             expirationDate = event.currentTarget.value
             save('expiration_date', expirationDate || null)
-          }}
-          onblur={() => void flushDrafts()}
-        /></label
-      >
-      <label
-        >Dimensions<input
-          placeholder="e.g. 30 × 20 × 15 cm"
-          value={dimensions}
-          oninput={(event) => {
-            dimensions = event.currentTarget.value
-            save('dimensions', dimensions)
           }}
           onblur={() => void flushDrafts()}
         /></label
@@ -515,7 +513,7 @@
     grid-area: fields;
     min-width: 0;
     display: grid;
-    grid-template-columns: minmax(0, 0.8fr) minmax(0, 1fr) minmax(0, 2fr);
+    grid-template-columns: minmax(0, 0.7fr) minmax(0, 1.5fr) minmax(0, 1.8fr);
     gap: var(--space-2);
   }
   .quantity-wrap {
@@ -619,9 +617,9 @@
 
   @container entry-list (min-width: 1130px) {
     .entry-row {
-      grid-template-columns: 76px minmax(120px, 1.5fr) 236px auto 72px 96px minmax(120px, 2fr) auto 44px;
+      grid-template-columns: 76px minmax(120px, 1.5fr) 236px auto 72px 140px minmax(96px, 2fr) auto 44px;
       grid-template-areas:
-        'tag title thumbs actions quantity unit note details menu'
+        'tag title thumbs actions quantity dimensions note details menu'
         'status status status status status status status status status';
       gap: var(--space-1);
       padding: var(--space-2);
@@ -653,8 +651,8 @@
     .quantity-wrap {
       grid-area: quantity;
     }
-    .unit {
-      grid-area: unit;
+    .dimensions {
+      grid-area: dimensions;
     }
     .short-note {
       grid-area: note;

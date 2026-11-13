@@ -58,7 +58,7 @@ Represents an observation at physical-count time. It is **not** yet an ERPNext I
 - `sequence_number`: immutable, monotonic within the collection, e.g. `#0042` (not a primary key; don't renumber after deletion)
 - `title`: optional user-defined label; default display is `Entry #0042`, not a forced name
 - `quantity`: nullable decimal; do not require a value to start an entry
-- `unit`: short, editable text; remember last-used value (`pieces`, `boxes`, `packs`, etc.)
+- `unit`: short, editable text (`pieces`, `boxes`, `packs`, etc.). New entries start blank; the field suggests units already used in the collection. (Owner decision 2026-11-13: most items are unitless, so the last unit is no longer carried forward.)
 - `count_detail`: optional free text for e.g. `3 boxes, 24 packs each, plus 2 loose packs`
 - `notes`: optional multiline text, supports voice dictation via the iOS keyboard
 - `expiration_date`: optional structured date; absence means unknown/unrecorded, **not** "no expiration"
@@ -106,8 +106,8 @@ Deleting one photo should offer undo and not silently delete other photos or the
 
 - Header: collection name and counts (`Entries`, `Photos`, `Needs Review`)
 - Fixed, thumb-reachable `+ New Entry` action
-- **Every row/card must be useful without opening Detail:** immutable `Entry #0001`, optional inline-editable custom title, inline-editable numeric quantity and unit, inline-editable short note, and an optional expandable text area for longer notes/count details
-- Show the **2–3 most recently captured photos** as small tappable thumbnails (plus `+N` for the remainder), not just an old cover image. Tapping a thumbnail opens a full-screen viewer without requiring a visit to Detail.
+- **Every row/card must be useful without opening Detail:** immutable `Entry #0001`, optional inline-editable custom title, inline-editable numeric quantity and dimensions, inline-editable short note, and an optional expandable text area for longer notes/count details
+- Show **2–3 photos** as small tappable thumbnails (plus `+N` for the remainder): the chosen cover first, then the most recently captured. Wherever an entry is represented by one image (for example the Import list), use its cover. Tapping a thumbnail opens a full-screen viewer without requiring a visit to Detail.
 - Each row contains a prominent **Add Photo** camera action that appends to **that specific row**; optional Add from Photos and an overflow menu for actions including Delete
 - Allow changing the title/quantity/notes and adding photos in arbitrary order and on arbitrary older entries; do not make the user advance through a mandatory capture wizard
 - Create a new entry directly from the list, assign the next number, and keep it in a usable inline-editing state; entering the Detail screen is never mandatory for ordinary counting
@@ -125,8 +125,8 @@ Deleting one photo should offer undo and not silently delete other photos or the
 - Large `Add Photo` / camera action, with thumbnail strip or 2–3 column gallery
 - User can take multiple photos without finishing the entry
 - Thumbnail tap opens full-screen zoom; allow reorder, cover selection, caption, delete with undo
-- Quantity and Unit inline and easy to change; free-form count details below
-- Notes inline, no separate modal; optional expiration and dimensions behind `More details`
+- Quantity and Dimensions inline and easy to change; free-form count details below (owner decision 2026-11-13: dimensions are needed on most items, units rarely)
+- Notes inline, no separate modal; optional unit and expiration behind `More details`
 - No manual `Save` required; clearly distinguish `Saved on this device`, `Syncing`, `Backed up`, and `Sync error`
 - Primary navigation: `Back to List`, `Previous`, `Next`, `+ New Entry`
 - Creation should not require photos or quantity. Flag incomplete entries in the list instead of blocking work.
@@ -276,7 +276,7 @@ Do **not** implement a full warehouse ERP, stock ledger, purchasing, cost accoun
 
 1. Install via Safari Add to Home Screen; launch successfully with the network off after initial installation.
 2. Create `Temple 2 / A04`, then 15 entries with 1–5 photos each, without entering names.
-3. From the **list without entering Detail**, modify quantity, unit, notes, and optional title on entry #3 after reaching #15, append two photos with its row's Add Photo button, and verify recent thumbnails, stable scroll, and correct linkage.
+3. From the **list without entering Detail**, modify quantity, dimensions, notes, and optional title on entry #3 after reaching #15, append two photos with its row's Add Photo button, and verify recent thumbnails, stable scroll, and correct linkage.
 4. Use the in-app camera for multiple back-to-back photos; record taps and time; compare fast mode vs native fallback, inspect label sharpness, and test any exposed lens selection, zoom, and focus controls. Document unavailable capabilities rather than hiding them.
 5. Confirm camera permissions and capture work after closing/relaunching the installed PWA and after an incoming call.
 6. In airplane mode, create/modify entries and capture at least 20 photos; force-close/reopen and confirm every entry and photo remains locally available.

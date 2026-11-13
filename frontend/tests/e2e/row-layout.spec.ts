@@ -25,18 +25,25 @@ test('menus close on an outside tap and extra fields fit side by side', async ({
   await expect(row.getByRole('menuitem', { name: 'Delete entry' })).toBeHidden()
 
   const phone = (page.viewportSize()?.width ?? 0) < 700
+  const rowBox = await box(row)
+  const inline = [row.getByLabel('Quantity'), row.getByLabel('Dimensions'), row.getByLabel('Short note')]
+  await inline[1]!.fill('30 × 20 × 15 cm')
+  for (const [index, field] of inline.entries()) {
+    const fieldBox = await box(field)
+    expect(fieldBox.x + fieldBox.width).toBeLessThanOrEqual(rowBox.x + rowBox.width + 0.5)
+    if (index > 0) expect(overlaps(await box(inline[index - 1]!), fieldBox)).toBe(false)
+  }
   if (phone) {
     await row.getByRole('button', { name: 'More details' }).click()
+    const unit = row.getByLabel('Unit')
     const expiration = row.getByLabel('Expiration date')
-    const dimensions = row.getByLabel('Dimensions')
+    await unit.fill('boxes')
     await expiration.fill('2027-03-01')
-    await dimensions.fill('30 × 20 × 15 cm')
-    const rowBox = await box(row)
-    for (const field of [expiration, dimensions]) {
+    for (const field of [unit, expiration]) {
       const fieldBox = await box(field)
       expect(fieldBox.x + fieldBox.width).toBeLessThanOrEqual(rowBox.x + rowBox.width + 0.5)
     }
-    expect(overlaps(await box(expiration), await box(dimensions))).toBe(false)
+    expect(overlaps(await box(unit), await box(expiration))).toBe(false)
   }
   await page.screenshot({ path: testInfo.outputPath('entry-list.png'), fullPage: true })
 

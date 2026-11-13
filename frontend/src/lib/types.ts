@@ -198,7 +198,6 @@ export interface Setting {
 }
 
 export const SETTING_KEYS = {
-  lastUnit: 'last_unit',
   lastStorageMode: 'last_storage_mode',
   deviceId: 'device_id',
   syncCursor: 'sync_cursor',
@@ -235,10 +234,19 @@ export interface QuantityByUnit {
 export interface EntryRow {
   entry: EntryView
   photo_count: number
-  /** Up to 3 most recently captured, non-deleted photos, newest first. */
+  /** Up to 3 non-deleted photos: the cover first, then the most recently captured. */
   recent_photos: Photo[]
   is_incomplete: boolean
   pending_sync: boolean
+}
+
+/** Photo order for previews: the cover first, then newest captured (ties broken by id). */
+export function byCoverThenNewest(a: Photo, b: Photo): number {
+  return (
+    Number(b.is_cover) - Number(a.is_cover) ||
+    b.captured_at.localeCompare(a.captured_at) ||
+    b.id.localeCompare(a.id)
+  )
 }
 
 export function formatSequence(n: number): string {
