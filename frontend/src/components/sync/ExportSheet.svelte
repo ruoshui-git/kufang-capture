@@ -80,8 +80,8 @@
 <Sheet bind:open {title}>
   {#snippet children()}
     <p>
-      This export is built from this device and works offline. On iPhone, choose Save to Files in the share
-      sheet.
+      This export is built on this device. Photos taken on another device are downloaded from the server while
+      the ZIP is built. On iPhone, choose Save to Files in the share sheet.
     </p>
     <label class="toggle"
       ><input type="checkbox" bind:checked={includeTrash} onchange={() => (ready = null)} /> Include Recently Deleted</label

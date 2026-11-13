@@ -1,4 +1,6 @@
+import { execFileSync } from 'node:child_process'
 import { mkdir } from 'node:fs/promises'
+import { join } from 'node:path'
 import { test, expect } from '@playwright/test'
 import { addEntry, addPhoto, api, createCollection, signIn, syncNow, waitBackedUp } from './helpers/sync'
 
@@ -110,7 +112,7 @@ test('Synced collections share an item and original photo once, then restore it 
   page,
   browser,
   baseURL,
-}) => {
+}, testInfo) => {
   await signIn(page)
   const suffix = Date.now()
   const nameC = `Shared synced C ${suffix}`
@@ -185,6 +187,30 @@ test('Synced collections share an item and original photo once, then restore it 
     const restoredRow = freshPage.locator('[data-entry-id]').first()
     await expect(restoredRow.getByLabel('Entry title')).toHaveValue(title)
     await expect(restoredRow.getByRole('button', { name: 'Open photo' })).toBeVisible()
+
+    // This browser holds only synced metadata; the device export downloads the original from the server.
+    await freshPage.locator('summary[aria-label="Collection actions"]').click()
+    await freshPage.getByRole('menuitem', { name: 'Export ZIP' }).click()
+    const downloadPromise = freshPage.waitForEvent('download')
+    await freshPage.getByRole('button', { name: 'Export ZIP' }).last().click()
+    const download = await downloadPromise
+    const zipPath = join(testInfo.outputDir, download.suggestedFilename())
+    await download.saveAs(zipPath)
+    execFileSync('python3', ['-I', '../tools/verify-export.py', zipPath], {
+      cwd: process.cwd(),
+      stdio: 'pipe',
+    })
+    const hashes = execFileSync(
+      'python3',
+      [
+        '-I',
+        '-c',
+        'import sys,zipfile,hashlib,csv,io; z=zipfile.ZipFile(sys.argv[1]); rows=csv.DictReader(io.StringIO(z.read("capture-export/photos.csv").decode("utf-8-sig"))); print("\\n".join(hashlib.sha256(z.read("capture-export/"+r["path"])).hexdigest() for r in rows))',
+        zipPath,
+      ],
+      { encoding: 'utf8' },
+    )
+    expect(hashes.trim().split('\n')).toEqual([fixture.sha256])
   } finally {
     await context.close()
   }

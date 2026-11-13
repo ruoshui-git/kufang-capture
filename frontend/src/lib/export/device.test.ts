@@ -123,4 +123,73 @@ describe('device export', () => {
     expect(all.manifest.counts.trash_entries).toBe(2)
     expect(all.manifest.counts.trash_photos).toBe(1)
   })
+
+  describe('originals that exist only on the server', () => {
+    // Simulates a desktop that synced metadata from a phone: no local blob, upload_state 'uploaded'.
+    async function serverOnly(storage_mode: 'synced' | 'local_only') {
+      const base = repoFor()
+      const room = await base.createCollection({ name: 'Room', storage_mode })
+      const entry = await base.createEntry(room.id)
+      const bytes = new Blob(['phone-original'], { type: 'image/jpeg' })
+      const [photo] = await base.addPhotos(entry.id, [{ blob: bytes, source: 'native_camera' }])
+      const repo = {
+        ...base,
+        getPhotoBlob: async () => undefined,
+        readForExport: async (scope: Parameters<typeof base.readForExport>[0]) => {
+          const data = await base.readForExport(scope)
+          return { ...data, photos: data.photos.map((p) => ({ ...p, upload_state: 'uploaded' as const })) }
+        },
+      }
+      let delivered: Blob | undefined
+      const deliver = async (blob: Blob) => {
+        delivered = blob
+        return 'download' as const
+      }
+      return { repo, room, entry, photo: photo!, bytes, deliver, zip: () => delivered }
+    }
+
+    it('downloads the original from the server and verifies it', async () => {
+      const t = await serverOnly('synced')
+      const fetchOriginal = vi.fn(async () => t.bytes)
+      await exportFromDevice([t.room.id], {}, { repo: t.repo, deliver: t.deliver, fetchOriginal })
+      expect(fetchOriginal).toHaveBeenCalledWith(t.photo.id)
+      const files = unzipSync(new Uint8Array(await readBlob(t.zip()!)))
+      const path = Object.keys(files).find((p) => p.endsWith(`/${t.photo.id}.jpg`))
+      expect(new TextDecoder().decode(files[path!])).toBe('phone-original')
+    })
+
+    it('rejects server bytes that do not match the recorded hash', async () => {
+      const t = await serverOnly('synced')
+      const fetchOriginal = async () => new Blob(['phone-originaX'], { type: 'image/jpeg' })
+      await expect(
+        exportFromDevice([t.room.id], {}, { repo: t.repo, deliver: t.deliver, fetchOriginal }),
+      ).rejects.toThrow(/verification failed/)
+    })
+
+    it('never contacts the server for a Local Only collection', async () => {
+      const t = await serverOnly('local_only')
+      const fetchOriginal = vi.fn(async () => t.bytes)
+      await expect(
+        exportFromDevice([t.room.id], {}, { repo: t.repo, deliver: t.deliver, fetchOriginal }),
+      ).rejects.toThrow(/missing on this device/)
+      expect(fetchOriginal).not.toHaveBeenCalled()
+    })
+
+    it('asks the user to sign in when the server answers 401', async () => {
+      const t = await serverOnly('synced')
+      const fetchSpy = vi
+        .spyOn(globalThis, 'fetch')
+        .mockResolvedValue(new Response('', { status: 401 }) as Response)
+      try {
+        await expect(exportFromDevice([t.room.id], {}, { repo: t.repo, deliver: t.deliver })).rejects.toThrow(
+          'Sign in to include photos stored on the server.',
+        )
+        expect(fetchSpy).toHaveBeenCalledWith(`/api/photos/${t.photo.id}/original`, {
+          credentials: 'same-origin',
+        })
+      } finally {
+        fetchSpy.mockRestore()
+      }
+    })
+  })
 })
