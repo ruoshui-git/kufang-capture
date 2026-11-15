@@ -24,6 +24,18 @@
     return syncStatus.phase === 'syncing' ? 'Syncing' : 'Changes waiting to sync'
   })
   const syncTone = $derived(syncStatus?.phase === 'error' && pending > 0 ? 'danger' : 'info')
+  const collectionGroups = $derived.by(() => {
+    const folders = [
+      ...new Set(collections.map((item) => (item.collection.folder ?? '').trim()).filter(Boolean)),
+    ].sort((a, b) => a.localeCompare(b))
+    const groups = folders.map((folder) => ({
+      folder,
+      items: collections.filter((item) => (item.collection.folder ?? '').trim() === folder),
+    }))
+    const unfiled = collections.filter((item) => !(item.collection.folder ?? '').trim())
+    if (unfiled.length) groups.push({ folder: '', items: unfiled })
+    return groups
+  })
   onMount(() => {
     const subscription = repo
       .watchCollectionSummaries({ includeArchived: false })
@@ -53,12 +65,15 @@
     <aside class="rail" aria-label="Collections">
       <a class="rail-title" href="/">Collections</a>
       <a href="/starred">★ Starred</a>
-      {#each collections as item (item.collection.id)}
-        <a class="rail-row" href="/c/{item.collection.id}"
-          ><span class="rail-row-copy"
-            ><span>{item.collection.name}</span><Badge mode={item.collection.storage_mode} /></span
-          ><span>{item.entry_count}</span></a
-        >
+      {#each collectionGroups as group (group.folder)}
+        {#if group.folder}<div class="rail-folder">{group.folder}</div>{/if}
+        {#each group.items as item (item.collection.id)}
+          <a class="rail-row" href="/c/{item.collection.id}"
+            ><span class="rail-row-copy"
+              ><span>{item.collection.name}</span><Badge mode={item.collection.storage_mode} /></span
+            ><span>{item.entry_count}</span></a
+          >
+        {/each}
       {/each}
       <a class="rail-new" href="/?new=1">+ New collection</a>
       <nav class="rail-account" aria-label="Account">
@@ -89,3 +104,12 @@
   </div>
   <ToastHost />
 </div>
+
+<style>
+  .rail-folder {
+    padding: var(--space-4) var(--space-3) var(--space-2);
+    color: var(--color-muted);
+    font-size: var(--text-sm);
+    font-weight: var(--weight-medium);
+  }
+</style>

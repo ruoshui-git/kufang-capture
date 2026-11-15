@@ -21,6 +21,7 @@
   let error = $state('')
   // Set when the ZIP is built but the share sheet needs a fresh tap (see ExportDelivery 'needs_tap').
   let ready = $state<DeviceExportResult | null>(null)
+  const collectionCount = $derived(Array.isArray(scope) ? scope.length : 0)
   const megabytes = (bytes: number) => `${(bytes / (1024 * 1024)).toFixed(1)} MB`
   function finish(result: DeviceExportResult, delivery: ExportDelivery) {
     if (delivery === 'cancelled') {
@@ -93,9 +94,10 @@
 <Sheet bind:open {title}>
   {#snippet children()}
     <p>
-      This export is built on this device. Photos taken on another device are downloaded from the server while
-      the ZIP is built. On iPhone, choose Save to Files in the share sheet. On Android, the ZIP is saved to
-      Downloads.
+      This export is built on this device{#if collectionCount > 1}{' '}
+        from {collectionCount} collections{/if}. Photos taken on another device are downloaded from the server
+      while the ZIP is built. On iPhone, choose Save to Files in the share sheet. On Android, the ZIP is saved
+      to Downloads.
     </p>
     <label class="toggle"
       ><input type="checkbox" bind:checked={includeTrash} onchange={() => (ready = null)} /> Include Recently Deleted</label

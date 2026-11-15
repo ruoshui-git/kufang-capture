@@ -1,7 +1,7 @@
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/svelte'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-const { fakeRepo, navigateSpy } = vi.hoisted(() => ({
+const { fakeRepo, navigateSpy, exportFromDevice } = vi.hoisted(() => ({
   fakeRepo: {
     watchCollectionSummaries: vi.fn(),
     getSetting: vi.fn(),
@@ -13,9 +13,11 @@ const { fakeRepo, navigateSpy } = vi.hoisted(() => ({
     unarchiveCollection: vi.fn(),
   },
   navigateSpy: vi.fn(),
+  exportFromDevice: vi.fn(),
 }))
 vi.mock('$lib/db', () => ({ repo: fakeRepo }))
 vi.mock('../../app/router.svelte', () => ({ navigate: navigateSpy }))
+vi.mock('$lib/export/device', () => ({ exportFromDevice }))
 import CollectionsPage from './CollectionsPage.svelte'
 
 const sample = {
@@ -40,6 +42,7 @@ const sample = {
 afterEach(() => cleanup())
 beforeEach(() => {
   vi.clearAllMocks()
+  exportFromDevice.mockResolvedValue({ delivery: 'download', filename: 'export.zip', byteSize: 1 })
   fakeRepo.watchCollectionSummaries.mockReturnValue({
     subscribe: (next: (value: unknown[]) => void) => {
       next([sample])
@@ -110,5 +113,82 @@ describe('Collections page', () => {
     await fireEvent.click(headings[1]!)
     expect(fakeRepo.setSetting).toHaveBeenCalledWith('collapsed_folders', ['North'])
     await waitFor(() => expect(document.querySelectorAll('.collection-open')).toHaveLength(1))
+  })
+
+  it('labels unfiled collections only when folders exist', async () => {
+    const base = sample as unknown as Record<string, unknown>
+    const collection = base.collection as Record<string, unknown>
+    const filed = { ...base, collection: { ...collection, id: 'filed', name: 'Filed', folder: 'North' } }
+    const loose = { ...base, collection: { ...collection, id: 'loose', name: 'Loose', folder: '' } }
+    fakeRepo.getSetting.mockResolvedValueOnce([])
+    fakeRepo.watchCollectionSummaries.mockReturnValue({
+      subscribe: (next: (value: unknown[]) => void) => {
+        next([filed, loose])
+        return () => {}
+      },
+    })
+    render(CollectionsPage)
+    expect(screen.getByRole('heading', { name: /Not in a folder/ })).toHaveTextContent('1')
+  })
+
+  it('shows no unfiled label when no collection is in a folder', () => {
+    render(CollectionsPage)
+    expect(screen.queryByRole('heading', { name: /Not in a folder/ })).not.toBeInTheDocument()
+  })
+
+  it('enters and leaves selection mode and toggles a collection card', async () => {
+    render(CollectionsPage)
+    await fireEvent.click(screen.getByRole('button', { name: 'Select' }))
+    expect(screen.getByRole('region', { name: 'Export selected collections' })).toHaveTextContent(
+      '0 selected',
+    )
+    expect(screen.getByRole('button', { name: 'Export ZIP' })).toBeDisabled()
+    expect(screen.queryByRole('link', { name: 'Open Temple 2 / A04' })).not.toBeInTheDocument()
+    await fireEvent.click(screen.getByRole('checkbox', { name: 'Temple 2 / A04' }))
+    expect(screen.getByRole('region', { name: 'Export selected collections' })).toHaveTextContent(
+      '1 selected',
+    )
+    await fireEvent.click(screen.getByRole('button', { name: /^Cancel$/ }))
+    expect(screen.queryByRole('region', { name: 'Export selected collections' })).not.toBeInTheDocument()
+  })
+
+  it('selects and clears all collections in a folder and exports selected ids in display order', async () => {
+    const base = sample as unknown as Record<string, unknown>
+    const collection = base.collection as Record<string, unknown>
+    const northA = { ...base, collection: { ...collection, id: 'north-a', name: 'North A', folder: 'North' } }
+    const south = { ...base, collection: { ...collection, id: 'south', name: 'South', folder: 'South' } }
+    const northB = { ...base, collection: { ...collection, id: 'north-b', name: 'North B', folder: 'North' } }
+    fakeRepo.getSetting.mockResolvedValueOnce([])
+    fakeRepo.watchCollectionSummaries.mockReturnValue({
+      subscribe: (next: (value: unknown[]) => void) => {
+        next([south, northB, northA])
+        return () => {}
+      },
+    })
+    render(CollectionsPage)
+    await fireEvent.click(screen.getByRole('button', { name: 'Select' }))
+    await fireEvent.click(screen.getAllByRole('button', { name: 'Select all' })[0]!)
+    expect(screen.getByRole('region', { name: 'Export selected collections' })).toHaveTextContent(
+      '2 selected',
+    )
+    await fireEvent.click(screen.getByRole('button', { name: 'Export ZIP' }))
+    expect(screen.getByRole('dialog', { name: 'Export 2 collections' })).toBeInTheDocument()
+    expect(screen.getByText(/from 2 collections/)).toBeInTheDocument()
+    await fireEvent.click(screen.getAllByRole('button', { name: 'Export ZIP' }).at(-1)!)
+    await waitFor(() =>
+      expect(exportFromDevice).toHaveBeenCalledWith(['north-b', 'north-a'], expect.anything()),
+    )
+    await fireEvent.click(screen.getByRole('button', { name: 'Close' }))
+    await fireEvent.click(screen.getByRole('button', { name: 'Clear' }))
+    expect(screen.getByRole('region', { name: 'Export selected collections' })).toHaveTextContent(
+      '0 selected',
+    )
+  })
+
+  it('leaves selection mode on Escape', async () => {
+    render(CollectionsPage)
+    await fireEvent.click(screen.getByRole('button', { name: 'Select' }))
+    await fireEvent.keyDown(window, { key: 'Escape' })
+    expect(screen.queryByRole('region', { name: 'Export selected collections' })).not.toBeInTheDocument()
   })
 })

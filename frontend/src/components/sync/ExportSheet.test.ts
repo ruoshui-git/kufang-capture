@@ -56,6 +56,11 @@ describe('ExportSheet', () => {
     expect(await screen.findByText('Exported a01.zip')).toBeInTheDocument()
   })
 
+  it('explains when an export includes several collections', () => {
+    render(ExportSheet, { props: { open: true, scope: ['a01', 'a02', 'a03'] } })
+    expect(screen.getByText(/from 3 collections/)).toBeInTheDocument()
+  })
+
   it('downloads a prepared ZIP and reports the exported filename', async () => {
     const downloadAgain = vi.fn(async () => 'download')
     exportFromDevice.mockResolvedValue({
