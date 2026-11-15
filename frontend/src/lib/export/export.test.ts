@@ -154,14 +154,14 @@ describe('device export', () => {
       'capture-export/entries.json',
       'capture-export/photos.csv',
       'capture-export/photos.json',
-      'capture-export/photos/I1/P1.jpg',
-      'capture-export/photos/I2/P2.jpg',
+      'capture-export/photos/Temple 2 A04/0001 Shared title/01.jpg',
+      'capture-export/photos/Temple 2 A04/0002/01.jpg',
     ])
     expect(result.filename).toBe('kufang-capture-all-20261108-070000Z.zip')
     expect([...files['capture-export/entries.csv']!.slice(0, 3)]).toEqual([0xef, 0xbb, 0xbf])
     const entriesCsv = new TextDecoder().decode(files['capture-export/entries.csv'])
     expect(entriesCsv).toContain(
-      'entry_id,item_id,collection_id,sequence_number,sequence_label,title,display_title,quantity,unit,count_detail,notes,expiration_date,dimensions,review_status,photo_count,created_at,updated_at,deleted_at\r\n',
+      'entry_id,item_id,collection_id,sequence_number,sequence_label,title,display_title,quantity,unit,count_detail,notes,entry_notes,expiration_date,dimensions,review_status,starred_at,photo_count,photo_dir,created_at,updated_at,deleted_at\r\n',
     )
     expect(entriesCsv.indexOf('\r\nE1,')).toBeLessThan(entriesCsv.indexOf('\r\nE2,'))
     expect(entriesCsv).toContain('E2,I2,C1,2,#0002,,Entry #0002,,Boxes,')
@@ -172,8 +172,8 @@ describe('device export', () => {
     expect(entriesJson[0].title).toBe('Shared title')
     expect(entriesJson[2].title).toBe('Shared title')
     expect(photosJson.map((row: { photo_id: string }) => row.photo_id)).toEqual(['P1', 'P2'])
-    expect(Object.keys(files)).toContain('capture-export/photos/I1/P1.jpg')
-    expect([...files['capture-export/photos/I1/P1.jpg']!]).toEqual([1, 2, 3])
+    expect(Object.keys(files)).toContain('capture-export/photos/Temple 2 A04/0001 Shared title/01.jpg')
+    expect([...files['capture-export/photos/Temple 2 A04/0001 Shared title/01.jpg']!]).toEqual([1, 2, 3])
     expect(files['capture-export/trash/entries.csv']).toBeUndefined()
     const manifest = JSON.parse(new TextDecoder().decode(files['capture-export/manifest.json']))
     expect(manifest.counts).toMatchObject({
@@ -200,7 +200,7 @@ describe('device export', () => {
   it('includes deleted entries and photos under trash when requested', async () => {
     const result = await fixture(true)
     const files = unzipSync(new Uint8Array(await result.blob.arrayBuffer()))
-    expect(Object.keys(files)).toContain('capture-export/trash/photos/I3/P3.jpg')
+    expect(Object.keys(files)).toContain('capture-export/trash/photos/Other/0003/01.jpg')
     const manifest = JSON.parse(new TextDecoder().decode(files['capture-export/manifest.json']))
     expect(manifest.counts).toMatchObject({ trash_entries: 2, trash_photos: 1 })
     const trashEntries = JSON.parse(new TextDecoder().decode(files['capture-export/trash/entries.json']))
@@ -234,11 +234,24 @@ describe('device export', () => {
       { scope: 'selected', includeTrash: false, exportedAt: at, appVersion: '0.1.0', source: 'device' },
     )
     const selectedFiles = unzipSync(new Uint8Array(await selected.blob.arrayBuffer()))
-    expect(Object.keys(allFiles).filter((path) => path.endsWith('/P1.jpg'))).toHaveLength(1)
-    expect(Object.keys(selectedFiles)).toContain('capture-export/photos/I1/P1.jpg')
+    expect(Object.keys(allFiles).filter((path) => path.includes('/0001 Shared title/01.jpg'))).toHaveLength(1)
+    expect(Object.keys(selectedFiles)).toContain('capture-export/photos/Other/0001 Shared title/01.jpg')
     expect(JSON.parse(new TextDecoder().decode(selectedFiles['capture-export/photos.json']))[0].item_id).toBe(
       'I1',
     )
+  })
+  it('uses an n-collections filename scope for selected multi-collection exports', async () => {
+    const result = await buildExport(
+      {
+        collections: [collection('C1', 'Temple'), collection('C2', 'Other')],
+        entries: [],
+        items: [],
+        photos: [],
+        getOriginal: async () => new Blob(),
+      },
+      { scope: 'selected', includeTrash: false, exportedAt: at, appVersion: '0.1.0', source: 'device' },
+    )
+    expect(result.filename).toBe('kufang-capture-2-collections-20261108-070000Z.zip')
   })
   it('writes valid ZIP64 end records when thresholds are forced', async () => {
     const member = {

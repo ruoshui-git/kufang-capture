@@ -1,6 +1,7 @@
 import type { Collection, Entry, Item, Photo } from '../types'
 import { entryDisplayTitle, formatSequence } from '../types'
 import { writeCsv } from './csv'
+import { assignPaths } from './paths'
 import { createZip, type ZipMember } from './zip'
 
 export interface ExportInput {
@@ -12,7 +13,7 @@ export interface ExportInput {
 }
 export interface Manifest {
   format: 'kufang-capture-export'
-  format_version: 2
+  format_version: 3
   exported_at: string
   source: 'device'
   app_version: string
@@ -47,6 +48,7 @@ const encoder = new TextEncoder()
 const collectionHeaders = [
   'collection_id',
   'name',
+  'folder',
   'description',
   'status',
   'storage_mode',
@@ -69,10 +71,13 @@ const entryHeaders = [
   'unit',
   'count_detail',
   'notes',
+  'entry_notes',
   'expiration_date',
   'dimensions',
   'review_status',
+  'starred_at',
   'photo_count',
+  'photo_dir',
   'created_at',
   'updated_at',
   'deleted_at',
@@ -263,8 +268,8 @@ export async function buildExport(
   const collections = [...input.collections].sort(
     (a, b) => a.created_at.localeCompare(b.created_at) || a.id.localeCompare(b.id),
   )
-  if (opts.scope === 'selected' && collections.length !== 1) {
-    throw new Error('A selected-scope export must contain exactly one collection')
+  if (opts.scope === 'selected' && collections.length === 0) {
+    throw new Error('A selected-scope export must contain at least one collection')
   }
   const collectionIds = new Set(collections.map((c) => c.id))
   const entries = input.entries
@@ -287,7 +292,8 @@ export async function buildExport(
       (a, b) =>
         firstEntryIndex.get(a.item_id)! - firstEntryIndex.get(b.item_id)! ||
         a.sort_order - b.sort_order ||
-        a.captured_at.localeCompare(b.captured_at),
+        a.captured_at.localeCompare(b.captured_at) ||
+        a.id.localeCompare(b.id),
     )
   const activeEntries = entries.filter((e) => e.deleted_at === null)
   const activeItemIds = new Set(activeEntries.map((e) => e.item_id))
@@ -295,6 +301,25 @@ export async function buildExport(
   const trashEntries = entries.filter((e) => e.deleted_at !== null)
   const trashPhotos = photos.filter((p) => !activeItemIds.has(p.item_id) || p.deleted_at !== null)
   const exportPhotos = opts.includeTrash ? [...activePhotos, ...trashPhotos] : activePhotos
+  const extensions = new Map(exportPhotos.map((p) => [p.id, extension(p)]))
+  const activePaths = assignPaths(
+    collections,
+    input.items,
+    activePhotos,
+    activeEntries,
+    activeItemIds,
+    false,
+    extensions,
+  )
+  const trashPaths = assignPaths(
+    collections,
+    input.items,
+    trashPhotos,
+    [...activeEntries, ...trashEntries],
+    activeItemIds,
+    true,
+    extensions,
+  )
   const photoData = new Map<string, Blob>()
   const mismatches: string[] = []
   for (const photo of exportPhotos) {
@@ -314,6 +339,7 @@ export async function buildExport(
   const collectionRows = collections.map((c) => ({
     collection_id: c.id,
     name: c.name,
+    folder: c.folder,
     description: c.description,
     status: c.status,
     storage_mode: c.storage_mode,
@@ -339,10 +365,16 @@ export async function buildExport(
       unit: e.unit,
       count_detail: e.count_detail,
       notes: itemMap.get(e.item_id)?.notes ?? '',
+      entry_notes: e.entry_notes,
       expiration_date: itemMap.get(e.item_id)?.expiration_date ?? null,
       dimensions: itemMap.get(e.item_id)?.dimensions ?? '',
       review_status: itemMap.get(e.item_id)?.review_status ?? 'draft',
+      starred_at: e.starred_at,
       photo_count: counts.get(e.item_id) ?? 0,
+      photo_dir:
+        (counts.get(e.item_id) ?? 0) > 0
+          ? ((rows === activeEntries ? activePaths : trashPaths).photoDirs.get(e.id) ?? '')
+          : '',
       created_at: e.created_at,
       updated_at: [e.updated_at, itemMap.get(e.item_id)?.updated_at ?? e.updated_at].sort().at(-1),
       deleted_at: e.deleted_at,
@@ -351,7 +383,7 @@ export async function buildExport(
     rows.map((p) => ({
       photo_id: p.id,
       item_id: p.item_id,
-      path: `${prefix}photos/${p.item_id}/${p.id}.${extension(p)}`,
+      path: (prefix ? trashPaths : activePaths).photoPaths.get(p.id) ?? '',
       original_filename: p.original_filename,
       mime_type: p.mime_type,
       byte_size: p.byte_size,
@@ -400,7 +432,7 @@ export async function buildExport(
     await add(`${base}photos.csv`, pCsv)
     await add(`${base}photos.json`, pJson)
     for (const p of originals) {
-      const path = `${base}photos/${p.item_id}/${p.id}.${extension(p)}`
+      const path = (base ? trashPaths : activePaths).photoPaths.get(p.id) ?? ''
       await add(path, photoData.get(p.id)!, p.sha256)
     }
   }
@@ -436,7 +468,7 @@ export async function buildExport(
   }
   const manifest: Manifest = {
     format: 'kufang-capture-export',
-    format_version: 2,
+    format_version: 3,
     exported_at: opts.exportedAt,
     source: opts.source,
     app_version: opts.appVersion,
@@ -471,7 +503,12 @@ export async function buildExport(
     .replace(/[-:]/g, '')
     .replace('T', '-')
     .replace(/\.\d{3}Z$/, 'Z')
-  const slugPart = opts.scope === 'all' ? 'all' : slug(collections[0]?.name ?? 'collection')
+  const slugPart =
+    opts.scope === 'all'
+      ? 'all'
+      : collections.length > 1
+        ? `${collections.length}-collections`
+        : slug(collections[0]?.name ?? 'collection')
   return { blob: createZip(allMembers), filename: `kufang-capture-${slugPart}-${stamp}.zip`, manifest }
 }
 function crc32Bytes(bytes: Uint8Array): number {

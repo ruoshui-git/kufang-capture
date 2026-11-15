@@ -4,6 +4,7 @@ import io
 import json
 import re
 import struct
+import unicodedata
 import zlib
 from collections.abc import Iterator
 from datetime import UTC, datetime
@@ -16,6 +17,7 @@ ROOT = "capture-export/"
 COLLECTION_COLUMNS = [
     "collection_id",
     "name",
+    "folder",
     "description",
     "status",
     "storage_mode",
@@ -38,10 +40,13 @@ ENTRY_COLUMNS = [
     "unit",
     "count_detail",
     "notes",
+    "entry_notes",
     "expiration_date",
     "dimensions",
     "review_status",
+    "starred_at",
     "photo_count",
+    "photo_dir",
     "created_at",
     "updated_at",
     "deleted_at",
@@ -64,6 +69,62 @@ PHOTO_COLUMNS = [
     "created_at",
     "deleted_at",
 ]
+
+
+def _sanitize(value: str) -> str:
+    result = unicodedata.normalize("NFC", value)
+    result = re.sub(r"[\x00-\x1f\x7f/\\:*?\"<>|]", " ", result)
+    result = re.sub(r"\s+", " ", result).strip(" .")
+    result = "".join(list(result)[:60]).rstrip(" .")
+    if re.fullmatch(r"(?i)(con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\..*)?", result):
+        result += "_"
+    return result
+
+
+def _assign_paths(collections, items, entry_order, photo_rows, active_item_ids, trash=False):
+    used = set()
+    collection_dirs = {}
+    for collection in collections:
+        base = _sanitize(collection["name"]) or "Collection"
+        name, suffix = base, 2
+        while name.casefold() in used:
+            name, suffix = f"{base} ({suffix})", suffix + 1
+        used.add(name.casefold())
+        collection_dirs[collection["id"]] = name
+    home = {}
+    for entry in entry_order:
+        if entry["item_id"] not in home and (not trash or entry["item_id"] in active_item_ids):
+            home[entry["item_id"]] = entry
+    if trash:
+        for entry in entry_order:
+            home.setdefault(entry["item_id"], entry)
+    entry_dirs = {}
+    photo_dirs = {}
+    photo_item_ids = {photo["item_id"] for photo in photo_rows}
+    for entry in entry_order:
+        root = home.get(entry["item_id"])
+        if root is None or entry["item_id"] not in photo_item_ids:
+            continue
+        # A title that sanitizes to nothing (e.g. "???") must not leave a trailing space.
+        title = _sanitize(items[root["item_id"]]["title"])
+        dirname = f"{root['sequence_number']:04d}" + (f" {title}" if title else "")
+        entry_dirs[root["id"]] = dirname
+        photo_dirs[entry["id"]] = (
+            f"{'trash/' if trash else ''}photos/{collection_dirs[root['collection_id']]}/{dirname}"
+        )
+    photo_paths = {}
+    numbers = {}
+    for photo in photo_rows:
+        item_id = photo["item_id"]
+        root = home.get(item_id)
+        if root is None:
+            continue
+        numbers[item_id] = numbers.get(item_id, 0) + 1
+        folder = photo_dirs.get(
+            root["id"], f"photos/{collection_dirs[root['collection_id']]}/{entry_dirs[root['id']]}"
+        )
+        photo_paths[photo["id"]] = f"{folder}/{numbers[item_id]:02d}.{_extension(photo)}"
+    return collection_dirs, entry_dirs, photo_dirs, photo_paths
 
 
 def _csv(rows: list[dict[str, Any]], columns: list[str]) -> bytes:
@@ -98,8 +159,9 @@ def _extension(row: dict[str, Any]) -> str:
         "image/webp": "webp",
         "image/gif": "gif",
     }
-    if row["mime_type"] in known:
-        return known[row["mime_type"]]
+    mime_type = row["mime_type"].lower()
+    if mime_type in known:
+        return known[mime_type]
     suffix = Path(row["original_filename"]).suffix.lower().lstrip(".")
     return suffix if re.fullmatch(r"[a-z0-9]{1,5}", suffix) else "bin"
 
@@ -239,6 +301,13 @@ def build_export(
     trash_photos = [
         row for row in photos if row["deleted_at"] is not None or row["item_id"] not in active_item_ids
     ]
+    items_by_id = {entry["item_id"]: entry for entry in entries}
+    _, _, active_photo_dirs, active_photo_paths = _assign_paths(
+        collections, items_by_id, active_entries, active_photos, active_item_ids
+    )
+    _, _, trash_photo_dirs, trash_photo_paths = _assign_paths(
+        collections, items_by_id, active_entries + trash_entries, trash_photos, active_item_ids, True
+    )
 
     def export_collection(row: dict[str, Any]) -> dict[str, Any]:
         photo_count = sum(
@@ -252,6 +321,7 @@ def build_export(
         return {
             "collection_id": row["id"],
             "name": row["name"],
+            "folder": row["folder"],
             "description": row["description"],
             "status": row["status"],
             "storage_mode": row["storage_mode"],
@@ -287,10 +357,19 @@ def build_export(
                     "unit": entry["unit"],
                     "count_detail": entry["count_detail"],
                     "notes": entry["notes"],
+                    "entry_notes": entry["entry_notes"],
                     "expiration_date": entry["expiration_date"],
                     "dimensions": entry["dimensions"],
                     "review_status": entry["item_review_status"],
+                    "starred_at": entry["starred_at"],
                     "photo_count": count_by_item.get(entry["item_id"], 0),
+                    "photo_dir": (
+                        (active_photo_dirs if source is active_entries else trash_photo_dirs).get(
+                            entry["id"], ""
+                        )
+                        if count_by_item.get(entry["item_id"], 0)
+                        else ""
+                    ),
                     "created_at": entry["created_at"],
                     "updated_at": max(entry["updated_at"], entry["item_updated_at"]),
                     "deleted_at": entry["deleted_at"],
@@ -307,7 +386,7 @@ def build_export(
     def photo_rows_for(source: list[dict[str, Any]], prefix: str):
         rows = []
         for photo in source:
-            path = f"{prefix}photos/{photo['item_id']}/{photo['id']}.{_extension(photo)}"
+            path = (trash_photo_paths if prefix else active_photo_paths).get(photo["id"], "")
             disk_path = data_dir / photo["storage_key"] if photo["storage_key"] else None
             if disk_path is None or not disk_path.is_file():
                 missing.append({"photo_id": photo["id"], "path": path})
@@ -396,7 +475,7 @@ def build_export(
         value["total"] = value["total"].rstrip("0").rstrip(".") if "." in value["total"] else value["total"]
     manifest = {
         "format": "kufang-capture-export",
-        "format_version": 2,
+        "format_version": 3,
         "exported_at": iso_time,
         "source": "server",
         "app_version": app_version,

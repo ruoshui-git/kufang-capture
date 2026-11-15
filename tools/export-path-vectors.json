@@ -1,0 +1,318 @@
+{
+  "sanitize": [
+    {
+      "name": "controls",
+      "input": "a\u0000b\u001fc\u007f",
+      "expected": "a b c"
+    },
+    {
+      "name": "reserved punctuation",
+      "input": "/\\:*?\"<>|",
+      "expected": ""
+    },
+    {
+      "name": "whitespace run",
+      "input": "Temple\t\n Room",
+      "expected": "Temple Room"
+    },
+    {
+      "name": "edge dots/spaces",
+      "input": " .. shelf ... ",
+      "expected": "shelf"
+    },
+    {
+      "name": "astral truncation",
+      "input": "\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00",
+      "expected": "\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00\ud83d\ude00"
+    },
+    {
+      "name": "CJK truncation",
+      "input": "\u85cf\u85cf\u85cf\u85cf\u85cf\u85cf\u85cf\u85cf\u85cf\u85cf\u85cf\u85cf\u85cf\u85cf\u85cf\u85cf\u85cf\u85cf\u85cf\u85cf\u85cf\u85cf\u85cf\u85cf\u85cf\u85cf\u85cf\u85cf\u85cf\u85cf\u85cf\u85cf\u85cf\u85cf\u85cf\u85cf\u85cf\u85cf\u85cf\u85cf\u85cf\u85cf\u85cf\u85cf\u85cf\u85cf\u85cf\u85cf\u85cf\u85cf\u85cf\u85cf\u85cf\u85cf\u85cf\u85cf\u85cf\u85cf\u85cf\u85cf\u85cf",
+      "expected": "\u85cf\u85cf\u85cf\u85cf\u85cf\u85cf\u85cf\u85cf\u85cf\u85cf\u85cf\u85cf\u85cf\u85cf\u85cf\u85cf\u85cf\u85cf\u85cf\u85cf\u85cf\u85cf\u85cf\u85cf\u85cf\u85cf\u85cf\u85cf\u85cf\u85cf\u85cf\u85cf\u85cf\u85cf\u85cf\u85cf\u85cf\u85cf\u85cf\u85cf\u85cf\u85cf\u85cf\u85cf\u85cf\u85cf\u85cf\u85cf\u85cf\u85cf\u85cf\u85cf\u85cf\u85cf\u85cf\u85cf\u85cf\u85cf\u85cf\u85cf"
+    },
+    {
+      "name": "NFC input",
+      "input": "caf\u00e9",
+      "expected": "caf\u00e9"
+    },
+    {
+      "name": "NFD input",
+      "input": "cafe\u0301",
+      "expected": "caf\u00e9"
+    },
+    {
+      "name": "reserved con",
+      "input": "con",
+      "expected": "con_"
+    },
+    {
+      "name": "reserved with extension",
+      "input": "Com1.txt",
+      "expected": "Com1.txt_"
+    },
+    {
+      "name": "reserved aux uppercase",
+      "input": "AUX",
+      "expected": "AUX_"
+    },
+    {
+      "name": "normal device-like substring",
+      "input": "connect",
+      "expected": "connect"
+    },
+    {
+      "name": "empty",
+      "input": "",
+      "expected": ""
+    },
+    {
+      "name": "trailing dot after truncation",
+      "input": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaab.ignored",
+      "expected": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaab"
+    },
+    {
+      "name": "surrogate code point",
+      "input": "x\ud800y",
+      "expected": "x\ud800y"
+    }
+  ],
+  "assignment": {
+    "collections": [
+      {
+        "id": "c1",
+        "name": "Room",
+        "order": 0
+      },
+      {
+        "id": "c2",
+        "name": "room",
+        "order": 1
+      },
+      {
+        "id": "c3",
+        "name": " .. Odd / Name... ",
+        "order": 2
+      }
+    ],
+    "entries": [
+      {
+        "id": "e-shared-a",
+        "item": "shared",
+        "collection": "c1",
+        "sequence": 42,
+        "title": "Red lantern",
+        "active": true
+      },
+      {
+        "id": "e-shared-b",
+        "item": "shared",
+        "collection": "c2",
+        "sequence": 5,
+        "title": "Red lantern",
+        "active": false
+      },
+      {
+        "id": "e-other",
+        "item": "other",
+        "collection": "c2",
+        "sequence": 6,
+        "title": "Second room",
+        "active": true
+      },
+      {
+        "id": "e-blank",
+        "item": "blank",
+        "collection": "c1",
+        "sequence": 43,
+        "title": "",
+        "active": true
+      },
+      {
+        "id": "e-cjk",
+        "item": "cjk",
+        "collection": "c3",
+        "sequence": 8,
+        "title": "\u4f5b\u50cf",
+        "active": true
+      },
+      {
+        "id": "e-many",
+        "item": "many",
+        "collection": "c1",
+        "sequence": 50,
+        "title": "Twelve",
+        "active": true
+      },
+      {
+        "id": "e-dead",
+        "item": "dead",
+        "collection": "c3",
+        "sequence": 9,
+        "title": "Deleted only",
+        "active": false
+      },
+      {
+        "id": "e-punct",
+        "item": "punct",
+        "collection": "c1",
+        "sequence": 44,
+        "title": "???",
+        "active": true
+      }
+    ],
+    "photos": [
+      {
+        "id": "p-shared-active",
+        "item": "shared",
+        "active": true,
+        "extension": "jpg"
+      },
+      {
+        "id": "p-shared-trash",
+        "item": "shared",
+        "active": false,
+        "extension": "jpg"
+      },
+      {
+        "id": "p-other",
+        "item": "other",
+        "active": true,
+        "extension": "jpg"
+      },
+      {
+        "id": "p-cjk",
+        "item": "cjk",
+        "active": true,
+        "extension": "jpg"
+      },
+      {
+        "id": "p-many-01",
+        "item": "many",
+        "active": true,
+        "extension": "jpg"
+      },
+      {
+        "id": "p-many-02",
+        "item": "many",
+        "active": true,
+        "extension": "jpg"
+      },
+      {
+        "id": "p-many-03",
+        "item": "many",
+        "active": true,
+        "extension": "jpg"
+      },
+      {
+        "id": "p-many-04",
+        "item": "many",
+        "active": true,
+        "extension": "jpg"
+      },
+      {
+        "id": "p-many-05",
+        "item": "many",
+        "active": true,
+        "extension": "jpg"
+      },
+      {
+        "id": "p-many-06",
+        "item": "many",
+        "active": true,
+        "extension": "jpg"
+      },
+      {
+        "id": "p-many-07",
+        "item": "many",
+        "active": true,
+        "extension": "jpg"
+      },
+      {
+        "id": "p-many-08",
+        "item": "many",
+        "active": true,
+        "extension": "jpg"
+      },
+      {
+        "id": "p-many-09",
+        "item": "many",
+        "active": true,
+        "extension": "jpg"
+      },
+      {
+        "id": "p-many-10",
+        "item": "many",
+        "active": true,
+        "extension": "jpg"
+      },
+      {
+        "id": "p-many-11",
+        "item": "many",
+        "active": true,
+        "extension": "jpg"
+      },
+      {
+        "id": "p-many-12",
+        "item": "many",
+        "active": true,
+        "extension": "jpg"
+      },
+      {
+        "id": "p-dead",
+        "item": "dead",
+        "active": true,
+        "extension": "jpg"
+      },
+      {
+        "id": "p-punct",
+        "item": "punct",
+        "active": true,
+        "extension": "jpg"
+      }
+    ],
+    "expected": {
+      "collection_dirs": {
+        "c1": "Room",
+        "c2": "room (2)",
+        "c3": "Odd Name"
+      },
+      "active": {
+        "photo_dirs": {
+          "e-shared-a": "photos/Room/0042 Red lantern",
+          "e-other": "photos/room (2)/0006 Second room",
+          "e-cjk": "photos/Odd Name/0008 \u4f5b\u50cf",
+          "e-many": "photos/Room/0050 Twelve",
+          "e-punct": "photos/Room/0044"
+        },
+        "photo_paths": {
+          "p-shared-active": "photos/Room/0042 Red lantern/01.jpg",
+          "p-other": "photos/room (2)/0006 Second room/01.jpg",
+          "p-cjk": "photos/Odd Name/0008 \u4f5b\u50cf/01.jpg",
+          "p-many-01": "photos/Room/0050 Twelve/01.jpg",
+          "p-many-02": "photos/Room/0050 Twelve/02.jpg",
+          "p-many-03": "photos/Room/0050 Twelve/03.jpg",
+          "p-many-04": "photos/Room/0050 Twelve/04.jpg",
+          "p-many-05": "photos/Room/0050 Twelve/05.jpg",
+          "p-many-06": "photos/Room/0050 Twelve/06.jpg",
+          "p-many-07": "photos/Room/0050 Twelve/07.jpg",
+          "p-many-08": "photos/Room/0050 Twelve/08.jpg",
+          "p-many-09": "photos/Room/0050 Twelve/09.jpg",
+          "p-many-10": "photos/Room/0050 Twelve/10.jpg",
+          "p-many-11": "photos/Room/0050 Twelve/11.jpg",
+          "p-many-12": "photos/Room/0050 Twelve/12.jpg",
+          "p-punct": "photos/Room/0044/01.jpg"
+        }
+      },
+      "trash": {
+        "photo_dirs": {
+          "e-shared-b": "trash/photos/Room/0042 Red lantern",
+          "e-dead": "trash/photos/Odd Name/0009 Deleted only"
+        },
+        "photo_paths": {
+          "p-shared-trash": "trash/photos/Room/0042 Red lantern/01.jpg",
+          "p-dead": "trash/photos/Odd Name/0009 Deleted only/01.jpg"
+        }
+      }
+    }
+  }
+}

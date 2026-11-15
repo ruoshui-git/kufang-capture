@@ -70,7 +70,7 @@ UTF-8 with a BOM, CRLF line endings, RFC 4180 quoting (a field is quoted when it
 - `quantity` is the raw decimal string; it is empty when not recorded, and an empty quantity is **not** zero.
 - `photo_count` is the number of the item's photos in the same set as the row (active or trash).
 - `entry_notes` and `starred_at` belong to this collection's entry (not shared). `starred_at` is empty when the entry is not starred.
-- `photo_dir` is the folder (relative to `capture-export/`, no trailing slash) holding the item's photos of the same set as the row, e.g. `photos/Temple 2 A04/0042 Red lantern`. Rows sharing an `item_id` in the same set have the same `photo_dir`, which may be under another collection's dir. It is empty when `photo_count` is 0.
+- `photo_dir` is the folder (relative to `capture-export/`, no trailing slash) holding the item's photos of the same set as the row, e.g. `photos/Temple 2 A04/0042 Red lantern`; in the trash set it starts with `trash/`, so it is always the exact parent of that set's `photos.path`. Rows sharing an `item_id` in the same set have the same `photo_dir`, which may be under another collection's dir. It is empty when `photo_count` is 0.
 
 ### photos.csv
 

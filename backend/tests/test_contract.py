@@ -762,12 +762,12 @@ def test_streamed_export_with_missing_original_passes_operator_verifier(tmp_path
     manifest = json.loads(zipfile.ZipFile(archive).read("capture-export/manifest.json"))
     assert manifest["source"] == "server"
     assert manifest["missing_originals"] == [
-        {"photo_id": "missing-photo", "path": "photos/e1/missing-photo.jpg"}
+        {"photo_id": "missing-photo", "path": "photos/Room A/0001/01.jpg"}
     ]
     client.close()
 
 
-def test_version_two_export_shared_and_trash_item_sets(tmp_path):
+def test_export_shared_and_trash_item_sets(tmp_path):
     from kufang_capture.db import connect
 
     client = make_client(tmp_path)
@@ -813,14 +813,14 @@ def test_version_two_export_shared_and_trash_item_sets(tmp_path):
 
     with zipfile.ZipFile(io.BytesIO(archive_bytes)) as archive:
         names = archive.namelist()
-        assert "capture-export/photos/i-shared/p-shared.jpg" not in names
-        assert "capture-export/trash/photos/i-trash/p-trash.jpg" not in names
+        assert "capture-export/photos/Room A/0001 Shared/01.jpg" not in names
+        assert "capture-export/trash/photos/Room B/0003 Only trash/01.jpg" not in names
         manifest = json.loads(archive.read("capture-export/manifest.json"))
         active_entries = json.loads(archive.read("capture-export/entries.json"))
         trash_entries = json.loads(archive.read("capture-export/trash/entries.json"))
         active_photos = json.loads(archive.read("capture-export/photos.json"))
         trash_photos = json.loads(archive.read("capture-export/trash/photos.json"))
-    assert manifest["format_version"] == 2
+    assert manifest["format_version"] == 3
     assert manifest["counts"] == {
         "collections": 2,
         "items": 1,
@@ -836,8 +836,9 @@ def test_version_two_export_shared_and_trash_item_sets(tmp_path):
     assert [photo["photo_id"] for photo in active_photos + trash_photos] == ["p-shared", "p-trash"]
     assert active_photos[0]["item_id"] == "i-shared"
     assert trash_photos[0]["item_id"] == "i-trash"
-    assert active_photos[0]["path"] == "photos/i-shared/p-shared.jpg"
-    assert trash_photos[0]["path"] == "trash/photos/i-trash/p-trash.jpg"
+    assert active_photos[0]["path"] == "photos/Room A/0001 Shared/01.jpg"
+    assert active_entries[0]["photo_dir"] == "photos/Room A/0001 Shared"
+    assert trash_photos[0]["path"] == "trash/photos/Room B/0003 Only trash/01.jpg"
     client.close()
 
 

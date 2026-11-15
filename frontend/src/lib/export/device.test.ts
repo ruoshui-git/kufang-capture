@@ -35,8 +35,10 @@ describe('device export', () => {
     expect(result.manifest.counts).toMatchObject({ collections: 1, entries: 1, photos: 1 })
     expect(result.manifest.missing_originals).toEqual([])
     const files = unzipSync(new Uint8Array(await readBlob(delivered!)))
-    const photoPath = Object.keys(files).find((p) => p.includes(`photos/${entry.id}/${photo!.id}`))
-    expect(photoPath).toBeDefined()
+    // Readable v3 path: collection name (sanitized), entry number, photo position.
+    const photoPath = 'capture-export/photos/Temple 2 A04/0001/01.jpg'
+    expect(Object.keys(files)).toContain(photoPath)
+    expect(photo).toBeDefined()
     expect(new TextDecoder().decode(files[photoPath!])).toBe('original-jpeg-bytes')
     expect(Object.keys(files).some((p) => p.includes(other.id))).toBe(false)
     expect((await repo.getCollection(room.id))?.last_exported_at).toBe(result.manifest.exported_at)
@@ -140,9 +142,7 @@ describe('device export', () => {
     }
     const selected = await exportFromDevice([b.id], {}, { repo, deliver })
     const selectedFiles = unzipSync(new Uint8Array(await readBlob(delivered!)))
-    expect(Object.keys(selectedFiles)).toContain(
-      `capture-export/photos/${sharedPhoto!.item_id}/${sharedPhoto!.id}.jpg`,
-    )
+    expect(Object.keys(selectedFiles)).toContain('capture-export/photos/Collection B/0001 Shared item/01.jpg')
     expect(selected.manifest.counts.items).toBe(1)
     await repo.deleteEntry(imported.id)
 
@@ -150,7 +150,10 @@ describe('device export', () => {
     mkdirSync('/tmp/codex-runs', { recursive: true })
     writeFileSync('/tmp/codex-runs/w5-export-sample.zip', new Uint8Array(await readBlob(delivered!)))
     const files = unzipSync(new Uint8Array(await readBlob(delivered!)))
-    expect(Object.keys(files).filter((path) => path.endsWith(`/${sharedPhoto!.id}.jpg`))).toHaveLength(1)
+    // The shared photo is stored once, under its first active entry (Collection A #0001).
+    expect(Object.keys(files).filter((path) => path.includes('Shared item/'))).toEqual([
+      'capture-export/photos/Collection A/0001 Shared item/01.jpg',
+    ])
     const activePhotos = JSON.parse(new TextDecoder().decode(files['capture-export/photos.json']))
     const trashPhotos = JSON.parse(new TextDecoder().decode(files['capture-export/trash/photos.json']))
     expect(activePhotos.map((photo: { photo_id: string }) => photo.photo_id)).toContain(sharedPhoto!.id)
@@ -189,8 +192,10 @@ describe('device export', () => {
       await exportFromDevice([t.room.id], {}, { repo: t.repo, deliver: t.deliver, fetchOriginal })
       expect(fetchOriginal).toHaveBeenCalledWith(t.photo.id)
       const files = unzipSync(new Uint8Array(await readBlob(t.zip()!)))
-      const path = Object.keys(files).find((p) => p.endsWith(`/${t.photo.id}.jpg`))
-      expect(new TextDecoder().decode(files[path!])).toBe('phone-original')
+      const photos = JSON.parse(new TextDecoder().decode(files['capture-export/photos.json']))
+      const path = photos.find((p: { photo_id: string }) => p.photo_id === t.photo.id)?.path
+      expect(path).toMatch(/^photos\/.+\/\d{4}[^/]*\/01\.jpg$/)
+      expect(new TextDecoder().decode(files[`capture-export/${path}`])).toBe('phone-original')
     })
 
     it('rejects server bytes that do not match the recorded hash', async () => {

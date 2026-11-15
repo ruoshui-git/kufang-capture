@@ -167,6 +167,41 @@ def v2_archive_files() -> dict[str, bytes]:
     return {f"capture-export/{name}": payload for name, payload in data.items()}
 
 
+def v3_archive_files() -> dict[str, bytes]:
+    stamp = "2026-11-08T07:00:00.000Z"
+    collection = dict(collection_id="C1", name="Room", folder="", description="", status="active",
+                      storage_mode="synced", next_sequence_number=2, entry_count=1, photo_count=2,
+                      created_at=stamp, updated_at=stamp, archived_at=None)
+    entry = dict(entry_id="E1", item_id="I1", collection_id="C1", sequence_number=1,
+                 sequence_label="#0001", title="Title", display_title="Title", quantity=None, unit="",
+                 count_detail="", notes="", entry_notes="entry note", expiration_date=None,
+                 dimensions="", review_status="draft", starred_at=None, photo_count=2,
+                 photo_dir="photos/Room/0001 Title", created_at=stamp, updated_at=stamp, deleted_at=None)
+    contents = {"P1": b"first", "P2": b"second"}
+    photos = [dict(photo_id=pid, item_id="I1", path=f"photos/Room/0001 Title/{index:02d}.jpg",
+                   original_filename=f"{pid}.jpg", mime_type="image/jpeg", byte_size=len(content),
+                   sha256=hashlib.sha256(content).hexdigest(), width=1, height=1, sort_order=index - 1,
+                   caption="", is_cover=index == 1, capture_source="native_camera", captured_at=stamp,
+                   created_at=stamp, deleted_at=None)
+              for index, (pid, content) in enumerate(contents.items(), 1)]
+    tables = {"collections": ([collection], verify_export.COLLECTIONS_V3),
+              "entries": ([entry], verify_export.ENTRIES_V3),
+              "photos": (photos, verify_export.PHOTOS_V3)}
+    data: dict[str, bytes] = {}
+    for table, (rows, headers) in tables.items():
+        data[f"{table}.csv"] = csv_bytes(headers, rows)
+        data[f"{table}.json"] = (json.dumps(rows) + "\n").encode()
+    data.update({f"photos/Room/0001 Title/{index:02d}.jpg": content
+                 for index, content in enumerate(contents.values(), 1)})
+    manifest = {"format": "kufang-capture-export", "format_version": 3, "include_trash": False,
+                "counts": {"collections": 1, "items": 1, "entries": 1, "photos": 2,
+                           "photo_bytes": sum(map(len, contents.values())), "trash_entries": 0, "trash_photos": 0},
+                "files": [{"path": name, "byte_size": len(payload), "sha256": hashlib.sha256(payload).hexdigest()}
+                          for name, payload in data.items()]}
+    data["manifest.json"] = (json.dumps(manifest) + "\n").encode()
+    return {f"capture-export/{name}": payload for name, payload in data.items()}
+
+
 class VerifyExportTests(unittest.TestCase):
     def setUp(self) -> None:
         self.temp = tempfile.TemporaryDirectory()
@@ -193,6 +228,38 @@ class VerifyExportTests(unittest.TestCase):
 
     def test_good_v2_archive_with_shared_and_deleted_items(self) -> None:
         self.assertEqual(verify_export.verify(self.write_archive(v2_archive_files())), [])
+
+    def test_good_v3_archive(self) -> None:
+        self.assertEqual(verify_export.verify(self.write_archive(v3_archive_files())), [])
+
+    def test_v3_case_insensitive_duplicate_path_is_reported(self) -> None:
+        files = v3_archive_files()
+        rows = json.loads(files["capture-export/photos.json"])
+        rows[1]["path"] = rows[0]["path"].upper()
+        update_v3_table(files, "photos", rows, verify_export.PHOTOS_V3)
+        rebuild_manifest(files)
+        problems = verify_export.verify(self.write_archive(files))
+        self.assertTrue(any("duplicate photo path case-insensitively" in p for p in problems))
+
+    def test_v3_wrong_photo_dir_is_reported(self) -> None:
+        files = v3_archive_files()
+        rows = json.loads(files["capture-export/entries.json"])
+        rows[0]["photo_dir"] = "photos/Room/wrong"
+        update_v3_table(files, "entries", rows, verify_export.ENTRIES_V3)
+        rebuild_manifest(files)
+        self.assertTrue(any("outside its active photo_dir" in p
+                            for p in verify_export.verify(self.write_archive(files))))
+
+    def test_v3_wrong_numbering_is_reported(self) -> None:
+        files = v3_archive_files()
+        rows = json.loads(files["capture-export/photos.json"])
+        rows[1]["path"] = "photos/Room/0001 Title/03.jpg"
+        update_v3_table(files, "photos", rows, verify_export.PHOTOS_V3)
+        files.pop("capture-export/photos/Room/0001 Title/02.jpg")
+        files["capture-export/photos/Room/0001 Title/03.jpg"] = b"second"
+        rebuild_manifest(files)
+        self.assertTrue(any("wrong filename numbering" in p
+                            for p in verify_export.verify(self.write_archive(files))))
 
     def test_v2_duplicate_photo_id_is_reported(self) -> None:
         files = v2_archive_files()
@@ -283,6 +350,11 @@ def rebuild_manifest(files: dict[str, bytes]) -> None:
         if name != "capture-export/manifest.json"
     ]
     files["capture-export/manifest.json"] = (json.dumps(manifest) + "\n").encode()
+
+
+def update_v3_table(files: dict[str, bytes], name: str, rows: list[dict[str, object]], headers: list[str]) -> None:
+    files[f"capture-export/{name}.json"] = (json.dumps(rows) + "\n").encode()
+    files[f"capture-export/{name}.csv"] = csv_bytes(headers, rows)
 
 
 if __name__ == "__main__":

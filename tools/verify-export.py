@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Validate a Kufang Capture export (format versions 1 and 2) using only the stdlib."""
+"""Validate a Kufang Capture export (format versions 1, 2 and 3) using only the stdlib."""
 
 from __future__ import annotations
 
@@ -8,13 +8,19 @@ import csv
 import hashlib
 import io
 import json
+import re
 import sys
 import zipfile
+import unicodedata
 from pathlib import Path
 from typing import Any
 
 COLLECTIONS = [
     "collection_id", "name", "description", "status", "storage_mode", "next_sequence_number",
+    "entry_count", "photo_count", "created_at", "updated_at", "archived_at",
+]
+COLLECTIONS_V3 = [
+    "collection_id", "name", "folder", "description", "status", "storage_mode", "next_sequence_number",
     "entry_count", "photo_count", "created_at", "updated_at", "archived_at",
 ]
 ENTRIES_V1 = [
@@ -27,6 +33,12 @@ ENTRIES_V2 = [
     "display_title", "quantity", "unit", "count_detail", "notes", "expiration_date", "dimensions",
     "review_status", "photo_count", "created_at", "updated_at", "deleted_at",
 ]
+ENTRIES_V3 = [
+    "entry_id", "item_id", "collection_id", "sequence_number", "sequence_label", "title",
+    "display_title", "quantity", "unit", "count_detail", "notes", "entry_notes", "expiration_date",
+    "dimensions", "review_status", "starred_at", "photo_count", "photo_dir", "created_at", "updated_at",
+    "deleted_at",
+]
 PHOTOS_V1 = [
     "photo_id", "entry_id", "collection_id", "path", "original_filename", "mime_type", "byte_size",
     "sha256", "width", "height", "sort_order", "caption", "is_cover", "capture_source", "captured_at",
@@ -37,6 +49,7 @@ PHOTOS_V2 = [
     "height", "sort_order", "caption", "is_cover", "capture_source", "captured_at", "created_at",
     "deleted_at",
 ]
+PHOTOS_V3 = PHOTOS_V2
 # Historical aliases keep the v1 fixture builders straightforward.
 ENTRIES = ENTRIES_V1
 PHOTOS = PHOTOS_V1
@@ -106,10 +119,13 @@ def verify(path: Path, originals: Path | None = None) -> list[str]:
         except (KeyError, json.JSONDecodeError, UnicodeDecodeError) as exc:
             return problems + [f"cannot read manifest.json ({exc})"]
         version = manifest.get("format_version")
-        if manifest.get("format") != "kufang-capture-export" or version not in (1, 2):
-            return problems + ["manifest format/version is not Kufang Capture version 1 or 2"]
-        v2 = version == 2
-        entry_headers, photo_headers = (ENTRIES_V2, PHOTOS_V2) if v2 else (ENTRIES_V1, PHOTOS_V1)
+        if manifest.get("format") != "kufang-capture-export" or version not in (1, 2, 3):
+            return problems + ["manifest format/version is not Kufang Capture version 1, 2 or 3"]
+        v2 = version in (2, 3)
+        v3 = version == 3
+        entry_headers = ENTRIES_V3 if v3 else ENTRIES_V2 if v2 else ENTRIES_V1
+        photo_headers = PHOTOS_V3 if v3 else PHOTOS_V2 if v2 else PHOTOS_V1
+        collection_headers = COLLECTIONS_V3 if v3 else COLLECTIONS
         trash = bool(manifest.get("include_trash"))
         missing_paths = {
             item.get("path") for item in manifest.get("missing_originals", [])
@@ -123,7 +139,7 @@ def verify(path: Path, originals: Path | None = None) -> list[str]:
         actual = set(names)
         for required in sorted(expected - actual):
             problems.append(f"missing required member {required}")
-        collections, _ = load_table(archive, "collections", COLLECTIONS, problems)
+        collections, _ = load_table(archive, "collections", collection_headers, problems)
         entries, _ = load_table(archive, "entries", entry_headers, problems)
         photos, _ = load_table(archive, "photos", photo_headers, problems)
         trash_entries: list[dict[str, str]] = []
@@ -150,6 +166,8 @@ def verify(path: Path, originals: Path | None = None) -> list[str]:
 
         photo_ids: set[str | None] = set()
         seen_paths: set[str] = set()
+        seen_v3_paths: set[str] = set()
+        v3_numbers: dict[tuple[bool, str], int] = {}
         active_entry_items = {row.get("item_id" if v2 else "entry_id") for row in entries}
         all_entry_items = {row.get("item_id" if v2 else "entry_id") for row in all_entries}
         for is_trash, rows in ((False, photos), (True, trash_photos)):
@@ -165,7 +183,7 @@ def verify(path: Path, originals: Path | None = None) -> list[str]:
                         problems.append(f"photo {photo_id}: item_id is dangling or not active")
                     if row.get("collection_id") is not None:
                         problems.append(f"photo {photo_id}: v2 photo has unexpected collection_id")
-                    expected_prefix = ("trash/" if is_trash else "") + f"photos/{owner}/"
+                    expected_prefix = "" if v3 else ("trash/" if is_trash else "") + f"photos/{owner}/"
                 else:
                     if owner not in item_ids_by_entry:
                         problems.append(f"photo {photo_id}: entry_id is dangling")
@@ -173,11 +191,28 @@ def verify(path: Path, originals: Path | None = None) -> list[str]:
                         problems.append(f"photo {photo_id}: collection_id is dangling")
                     expected_prefix = "trash/photos/" if is_trash else "photos/"
                 photo_path = row.get("path", "")
-                if not photo_path.startswith(expected_prefix) or ".." in Path(photo_path).parts:
+                if (expected_prefix and not photo_path.startswith(expected_prefix)) or ".." in Path(photo_path).parts:
                     problems.append(f"photo {photo_id}: path is outside its expected {expected_prefix} subtree")
                 if photo_path in seen_paths:
                     problems.append(f"duplicate photo path {photo_path}")
                 seen_paths.add(photo_path)
+                if v3:
+                    normalized_path = unicodedata.normalize("NFC", photo_path).casefold()
+                    if normalized_path in seen_v3_paths:
+                        problems.append(f"duplicate photo path case-insensitively: {photo_path}")
+                    seen_v3_paths.add(normalized_path)
+                    # The collection and entry components are checked against the entry photo_dir below.
+                    if not photo_path.startswith("trash/photos/" if is_trash else "photos/"):
+                        problems.append(f"photo {photo_id}: path is outside its expected photo subtree")
+                    if ".." in Path(photo_path).parts:
+                        problems.append(f"photo {photo_id}: path contains a parent traversal")
+                    key = (is_trash, str(owner))
+                    v3_numbers[key] = v3_numbers.get(key, 0) + 1
+                    suffix = Path(photo_path).suffix
+                    expected_name = f"{v3_numbers[key]:02d}{suffix}"
+                    if Path(photo_path).name != expected_name or not re.fullmatch(r"\.[A-Za-z0-9]{1,5}", suffix):
+                        problems.append(f"photo {photo_id}: wrong filename numbering; expected {expected_name}")
+
                 archive_path = f"capture-export/{photo_path}"
                 if photo_path in missing_paths:
                     if archive_path in actual:
@@ -217,6 +252,34 @@ def verify(path: Path, originals: Path | None = None) -> list[str]:
             owner = row.get("item_id" if v2 else "entry_id", "")
             if parse_int(row.get("photo_count", "-1"), f"entry {row.get('entry_id')} photo_count", problems) != trash_counts.get(owner, 0):
                 problems.append(f"entry {row.get('entry_id')}: trash photo_count mismatch")
+        if v3:
+            for is_trash, rows, photo_rows in (
+                (False, entries, photos),
+                (True, trash_entries, trash_photos),
+            ):
+                set_name = "trash" if is_trash else "active"
+                dirs_by_item: dict[str, str] = {}
+                for row in rows:
+                    item_id = str(row.get("item_id", ""))
+                    photo_count = parse_int(
+                        row.get("photo_count", "-1"), f"entry {row.get('entry_id')} photo_count", problems
+                    )
+                    photo_dir = row.get("photo_dir", "")
+                    if (photo_count == 0) != (photo_dir == ""):
+                        problems.append(f"entry {row.get('entry_id')}: {set_name} photo_dir/count mismatch")
+                    if photo_count:
+                        expected_root = "trash/photos/" if is_trash else "photos/"
+                        if not photo_dir.startswith(expected_root) or ".." in Path(photo_dir).parts:
+                            problems.append(f"entry {row.get('entry_id')}: {set_name} photo_dir is outside its subtree")
+                        previous = dirs_by_item.setdefault(item_id, photo_dir)
+                        if previous != photo_dir:
+                            problems.append(f"item {item_id}: {set_name} photo_dir disagrees across entries")
+                for photo in photo_rows:
+                    item_id = str(photo.get("item_id", ""))
+                    photo_path = photo.get("path", "")
+                    photo_dir = dirs_by_item.get(item_id)
+                    if not photo_dir or not photo_path.startswith(photo_dir + "/"):
+                        problems.append(f"photo {photo.get('photo_id')}: path is outside its {set_name} photo_dir")
         for row in collections:
             cid = row.get("collection_id", "")
             entry_count = sum(1 for entry in entries if entry.get("collection_id") == cid)
