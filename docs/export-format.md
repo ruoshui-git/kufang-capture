@@ -8,7 +8,7 @@ The device exporter (`frontend/src/lib/export/`) and the server exporter (`backe
 
 ## Archive
 
-- File name: `kufang-capture-<scope>-<YYYYMMDD-HHMMSS>Z.zip`. Scope is `all` or a slug of the single collection name, ASCII, max 40 chars.
+- File name: `kufang-capture-<scope>-<YYYYMMDD-HHMMSS>Z.zip`. Scope is `all`; a slug of the collection name (ASCII, max 40 chars) when one collection is selected; or `<n>-collections` (e.g. `3-collections`) when several are selected.
 - ZIP entries use method **STORE** (0), with no compression and no re-encoding. Names are UTF-8 (general-purpose bit 11). **ZIP64** records are used when any size or offset exceeds 0xFFFFFFFF, or when the entry count exceeds 0xFFFF. Each DOS timestamp is the entry's `exported_at` in UTC. Entries appear in the order listed below.
 - Every path is under one root directory, `capture-export/`.
 
