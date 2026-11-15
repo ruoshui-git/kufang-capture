@@ -451,6 +451,7 @@
   }
   .detail-title-row {
     display: flex;
+    min-width: 0;
     align-items: center;
     gap: var(--space-4);
   }
@@ -467,10 +468,13 @@
     gap: var(--space-3);
   }
   .also-in a {
+    min-width: 0;
     color: var(--color-ballpoint);
+    overflow-wrap: anywhere;
   }
   .title-input {
     min-width: 0;
+    max-width: 100%;
     flex: 1;
     border: 0;
     border-bottom: 1px solid var(--color-line);

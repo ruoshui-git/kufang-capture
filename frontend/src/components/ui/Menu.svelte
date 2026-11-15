@@ -1,5 +1,7 @@
 <script lang="ts">
+  import { onDestroy } from 'svelte'
   import type { Snippet } from 'svelte'
+  import { placeMenu } from './menuPlacement'
   let {
     children,
     label = 'More actions',
@@ -15,10 +17,23 @@
   } = $props()
   let open = $state(false)
   let element: HTMLDetailsElement | undefined = $state()
+  let popover: HTMLDivElement | undefined = $state()
+  let placement = $state({ left: 16, top: 16, opensUp: false })
+
+  function measure() {
+    const trigger = element?.querySelector('summary')
+    if (!trigger || !popover) return
+    const triggerBox = trigger.getBoundingClientRect()
+    const menuBox = popover.getBoundingClientRect()
+    placement = placeMenu(triggerBox, menuBox, { width: innerWidth, height: innerHeight })
+  }
 
   // An open menu closes on a tap anywhere else, on Escape, and once one of its items is chosen.
   $effect(() => {
     if (!open) return
+    const frame = requestAnimationFrame(measure)
+    window.addEventListener('resize', measure)
+    window.addEventListener('scroll', measure, true)
     const outside = (event: PointerEvent) => {
       if (element && !element.contains(event.target as Node)) open = false
     }
@@ -32,8 +47,13 @@
     return () => {
       document.removeEventListener('pointerdown', outside, true)
       document.removeEventListener('keydown', escape)
+      cancelAnimationFrame(frame)
+      window.removeEventListener('resize', measure)
+      window.removeEventListener('scroll', measure, true)
     }
   })
+
+  onDestroy(() => window.removeEventListener('resize', measure))
 
   function chosen(event: MouseEvent) {
     if ((event.target as Element | null)?.closest('[role="menuitem"], [role="menuitemradio"]')) open = false
@@ -45,7 +65,18 @@
     {triggerText ?? '⋯'}
   </summary>
   <!-- svelte-ignore a11y_click_events_have_key_events -->
-  <div class="menu-popover" role="menu" tabindex="-1" onclick={chosen}>{@render children()}</div>
+  <div
+    class="menu-popover"
+    class:opens-up={placement.opensUp}
+    style:left="{placement.left}px"
+    style:top="{placement.top}px"
+    bind:this={popover}
+    role="menu"
+    tabindex="-1"
+    onclick={chosen}
+  >
+    {@render children()}
+  </div>
 </details>
 
 <style>
@@ -70,10 +101,5 @@
     border-color: var(--color-ink);
     background: var(--color-ink);
     color: var(--color-floor);
-  }
-
-  .menu.filter-trigger .menu-popover {
-    right: auto;
-    left: 0;
   }
 </style>

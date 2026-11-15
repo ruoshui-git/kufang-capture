@@ -237,10 +237,13 @@
         aria-pressed="false"
         onclick={() => void repo.setEntryStarred(row.entry.id, true)}>☆</button
       >{/if}
-    {#if row.entry.review_status === 'needs_review'}<span class="badge needs-review">Needs review</span>{/if}
-    {#if row.entry.shared_with.length > 0}<span class="shared-tag"
-        >Shared · {row.entry.shared_with.length + 1} collections</span
-      >{/if}
+    <div class="row-badges">
+      {#if row.entry.review_status === 'needs_review'}<span class="badge needs-review">Needs review</span
+        >{/if}
+      {#if row.entry.shared_with.length > 0}<span class="shared-tag"
+          >Shared · {row.entry.shared_with.length + 1} collections</span
+        >{/if}
+    </div>
     <div class="menu-cell">
       <Menu label="Entry actions">
         <button
@@ -438,15 +441,38 @@
     grid-area: head;
     min-width: 0;
     display: grid;
-    grid-template-columns: auto minmax(0, 1fr) auto;
+    grid-template-columns: auto minmax(0, 1fr) auto auto;
+    grid-template-areas:
+      'tag title star menu'
+      '. badges badges .';
     align-items: center;
     gap: var(--space-3);
   }
+  .tag-link {
+    grid-area: tag;
+  }
+  .title {
+    grid-area: title;
+  }
+  .star-toggle {
+    grid-area: star;
+  }
+  .menu-cell {
+    grid-area: menu;
+  }
+  .row-badges {
+    grid-area: badges;
+    min-width: 0;
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: var(--space-2);
+  }
   .shared-tag {
-    grid-column: 2;
     color: var(--color-muted);
     font-size: var(--text-xs);
     line-height: var(--leading-tight);
+    overflow-wrap: anywhere;
   }
   .needs-review {
     color: var(--color-warn);
@@ -471,7 +497,6 @@
     font-size: var(--text-sm);
   }
   .tag-link {
-    grid-area: auto;
     border: 0;
     padding: 0;
     background: transparent;
@@ -659,10 +684,11 @@
 
   @container entry-list (min-width: 1130px) {
     .entry-row {
-      grid-template-columns: 76px minmax(120px, 1.5fr) 236px auto 72px 140px minmax(96px, 2fr) auto 44px;
+      grid-template-columns: 76px minmax(120px, 1.5fr) 44px 236px auto 72px 140px minmax(96px, 2fr) auto 44px;
       grid-template-areas:
-        'tag title thumbs actions quantity dimensions note details menu'
-        'status status status status status status status status status';
+        'tag title star thumbs actions quantity dimensions note details menu'
+        '. badges badges badges badges badges badges badges badges .'
+        'status status status status status status status status status status';
       gap: var(--space-1);
       padding: var(--space-2);
       border-radius: 0;
@@ -679,6 +705,9 @@
     .title {
       grid-area: title;
       min-width: 0;
+    }
+    .star-toggle {
+      grid-area: star;
     }
     :global(.thumb-strip),
     :global(.no-photos) {
@@ -706,6 +735,9 @@
     }
     .menu-cell {
       grid-area: menu;
+    }
+    .row-badges {
+      grid-area: badges;
     }
     .more-toggle,
     .extra {
