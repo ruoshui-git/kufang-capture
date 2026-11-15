@@ -84,6 +84,41 @@ describe('device export', () => {
     expect((await repo.getCollection(room.id))?.last_exported_at).toBe(result.manifest.exported_at)
   })
 
+  it('downloads the already-built ZIP on request and records the export', async () => {
+    const repo = repoFor()
+    const room = await repo.createCollection({ name: 'Big room', storage_mode: 'local_only' })
+    const deliver = vi
+      .fn()
+      .mockResolvedValueOnce('needs_tap' as const)
+      .mockResolvedValueOnce('download' as const)
+
+    const result = await exportFromDevice([room.id], {}, { repo, deliver })
+
+    expect(result.downloadAgain).toBeDefined()
+    expect((await repo.getCollection(room.id))?.last_exported_at).toBeNull()
+    expect(await result.downloadAgain!()).toBe('download')
+    expect(deliver).toHaveBeenLastCalledWith(expect.any(Blob), expect.stringMatching(/\.zip$/), {
+      forceDownload: true,
+    })
+    expect((await repo.getCollection(room.id))?.last_exported_at).toBe(result.manifest.exported_at)
+  })
+
+  it('records a download when a fresh-tap share refusal falls back to download', async () => {
+    const repo = repoFor()
+    const room = await repo.createCollection({ name: 'Big room', storage_mode: 'local_only' })
+    const deliver = vi.fn(async (_blob: Blob, _filename: string, opts?: { fromFreshTap?: boolean }) =>
+      opts?.fromFreshTap ? ('download' as const) : ('needs_tap' as const),
+    )
+
+    const result = await exportFromDevice([room.id], {}, { repo, deliver })
+
+    expect(await result.deliverAgain!()).toBe('download')
+    expect(deliver).toHaveBeenLastCalledWith(expect.any(Blob), expect.stringMatching(/\.zip$/), {
+      fromFreshTap: true,
+    })
+    expect((await repo.getCollection(room.id))?.last_exported_at).toBe(result.manifest.exported_at)
+  })
+
   it('exports shared items once and applies item-level trash rules', async () => {
     const repo = repoFor()
     const a = await repo.createCollection({ name: 'Collection A', storage_mode: 'local_only' })

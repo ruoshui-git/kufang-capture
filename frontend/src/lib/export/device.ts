@@ -14,8 +14,10 @@ export interface DeviceExportResult {
   filename: string
   manifest: Manifest
   byteSize: number
-  /** Present when `delivery` is `needs_tap`: call it from a fresh tap to share the ZIP already built. */
+  /** Present when `delivery` is `needs_tap`: call from a fresh tap to share the ZIP already built. */
   deliverAgain?: () => Promise<ExportDelivery>
+  /** Present when `delivery` is `needs_tap`: download the ZIP already built. */
+  downloadAgain?: () => Promise<ExportDelivery>
 }
 
 /** Downloads a server-held original. Resolves to the bytes, or rejects with a user-facing message. */
@@ -82,8 +84,8 @@ export async function exportFromDevice(
     },
   )
   // An export counts (for the Clear guard) only once the ZIP has actually left the app.
-  const deliverAndRecord = async (): Promise<ExportDelivery> => {
-    const delivery = await deliver(blob, filename)
+  const deliverAndRecord = async (fromFreshTap = false): Promise<ExportDelivery> => {
+    const delivery = await deliver(blob, filename, fromFreshTap ? { fromFreshTap: true } : undefined)
     if (delivery === 'shared' || delivery === 'download') {
       await repo.markExported(
         data.collections.map((c) => c.id),
@@ -98,6 +100,19 @@ export async function exportFromDevice(
     filename,
     manifest,
     byteSize: blob.size,
-    ...(delivery === 'needs_tap' ? { deliverAgain: deliverAndRecord } : {}),
+    ...(delivery === 'needs_tap'
+      ? {
+          deliverAgain: () => deliverAndRecord(true),
+          downloadAgain: async () => {
+            const result = await deliver(blob, filename, { forceDownload: true })
+            if (result === 'shared' || result === 'download')
+              await repo.markExported(
+                data.collections.map((c) => c.id),
+                exportedAt,
+              )
+            return result
+          },
+        }
+      : {}),
   }
 }

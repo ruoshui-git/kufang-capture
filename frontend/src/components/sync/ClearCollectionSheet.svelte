@@ -39,7 +39,11 @@
     }
   }
   // The ZIP built by Export ZIP now, kept when the share sheet needs a fresh tap (large exports).
-  let shareAgain = $state<{ deliver: () => Promise<ExportDelivery>; filename: string } | null>(null)
+  let shareAgain = $state<{
+    deliver: () => Promise<ExportDelivery>
+    download: () => Promise<ExportDelivery>
+    filename: string
+  } | null>(null)
   async function delivered(delivery: ExportDelivery, filename: string) {
     shareAgain = null
     if (delivery === 'shared' || delivery === 'download') {
@@ -54,8 +58,12 @@
     shareAgain = null
     try {
       const result = await exportFromDevice([item.collection.id])
-      if (result.delivery === 'needs_tap' && result.deliverAgain)
-        shareAgain = { deliver: result.deliverAgain, filename: result.filename }
+      if (result.delivery === 'needs_tap' && result.deliverAgain && result.downloadAgain)
+        shareAgain = {
+          deliver: result.deliverAgain,
+          download: result.downloadAgain,
+          filename: result.filename,
+        }
       else await delivered(result.delivery, result.filename)
     } catch (cause) {
       error = `The export failed.${cause instanceof Error && cause.message ? ` ${cause.message}` : ''}`
@@ -75,6 +83,18 @@
       exporting = false
     }
   }
+  async function downloadNow() {
+    const again = shareAgain
+    if (exporting || !again) return
+    exporting = true
+    try {
+      await delivered(await again.download(), again.filename)
+    } catch (cause) {
+      error = `The export failed.${cause instanceof Error && cause.message ? ` ${cause.message}` : ''}`
+    } finally {
+      exporting = false
+    }
+  }
 </script>
 
 <Sheet bind:open title="Clear from this device">
@@ -84,6 +104,7 @@
       from this device.
     </p>
     <p>Unsynced photos will be lost. Export a verified ZIP before clearing.</p>
+    <p>On iPhone, choose Save to Files in the share sheet. On Android, the ZIP is saved to Downloads.</p>
     {#if check}
       {#if check.shared_items > 0}<p>
           {check.shared_items} shared {check.shared_items === 1 ? 'item stays' : 'items stay'} in other collections.
@@ -94,7 +115,8 @@
         </ul>{/if}
       {#if shareAgain}
         <p role="status">ZIP ready. Tap Share ZIP to save it.</p>
-        <Button variant="quiet" disabled={exporting} onclick={() => void shareNow()}>Share ZIP</Button>
+        <Button disabled={exporting} onclick={() => void shareNow()}>Share ZIP</Button>
+        <Button variant="quiet" disabled={exporting} onclick={() => void downloadNow()}>Download ZIP</Button>
       {:else}
         <Button variant="quiet" disabled={exporting} onclick={() => void exportNow()}
           >{exporting ? 'Building ZIP…' : 'Export ZIP now'}</Button

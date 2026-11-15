@@ -54,12 +54,44 @@ describe('ClearCollectionSheet', () => {
       repo.checkClearCollection.mockResolvedValue({ allowed: true, reasons: [], shared_items: 0 })
       return 'shared'
     })
-    exportFromDevice.mockResolvedValue({ delivery: 'needs_tap', filename: 'room.zip', deliverAgain })
+    const downloadAgain = vi.fn(async () => 'download')
+    exportFromDevice.mockResolvedValue({
+      delivery: 'needs_tap',
+      filename: 'room.zip',
+      deliverAgain,
+      downloadAgain,
+    })
     render(ClearCollectionSheet, { props: { item, open: true } })
     await fireEvent.click(await screen.findByRole('button', { name: 'Export ZIP now' }))
+    expect(screen.getByRole('button', { name: 'Share ZIP' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Download ZIP' })).toBeInTheDocument()
     await fireEvent.click(await screen.findByRole('button', { name: 'Share ZIP' }))
     await waitFor(() => expect(deliverAgain).toHaveBeenCalledOnce())
     await waitFor(() => expect(screen.queryByText('Not exported')).not.toBeInTheDocument())
     expect(await screen.findByRole('button', { name: 'Export ZIP now' })).toBeEnabled()
+  })
+
+  it('records a prepared ZIP only after Download ZIP succeeds', async () => {
+    repo.checkClearCollection.mockResolvedValue({
+      allowed: false,
+      reasons: ['Not exported'],
+      shared_items: 0,
+    })
+    const downloadAgain = vi.fn(async () => {
+      repo.checkClearCollection.mockResolvedValue({ allowed: true, reasons: [], shared_items: 0 })
+      return 'download' as const
+    })
+    exportFromDevice.mockResolvedValue({
+      delivery: 'needs_tap',
+      filename: 'room.zip',
+      deliverAgain: vi.fn(),
+      downloadAgain,
+    })
+    render(ClearCollectionSheet, { props: { item, open: true } })
+    await fireEvent.click(await screen.findByRole('button', { name: 'Export ZIP now' }))
+    expect(await screen.findByText('Not exported')).toBeInTheDocument()
+    await fireEvent.click(screen.getByRole('button', { name: 'Download ZIP' }))
+    expect(downloadAgain).toHaveBeenCalledOnce()
+    await waitFor(() => expect(screen.queryByText('Not exported')).not.toBeInTheDocument())
   })
 })

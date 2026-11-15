@@ -71,6 +71,19 @@
       busy = false
     }
   }
+  async function downloadReady() {
+    const result = ready
+    if (busy || !result?.downloadAgain) return
+    busy = true
+    error = ''
+    try {
+      finish(result, await result.downloadAgain())
+    } catch (cause) {
+      failed(cause)
+    } finally {
+      busy = false
+    }
+  }
   $effect(() => {
     // A closed sheet drops a prepared ZIP so the next export reflects current data.
     if (!open) ready = null
@@ -81,13 +94,15 @@
   {#snippet children()}
     <p>
       This export is built on this device. Photos taken on another device are downloaded from the server while
-      the ZIP is built. On iPhone, choose Save to Files in the share sheet.
+      the ZIP is built. On iPhone, choose Save to Files in the share sheet. On Android, the ZIP is saved to
+      Downloads.
     </p>
     <label class="toggle"
       ><input type="checkbox" bind:checked={includeTrash} onchange={() => (ready = null)} /> Include Recently Deleted</label
     >
     {#if ready}
       <Button disabled={busy} onclick={() => void shareReady()}>Share ZIP</Button>
+      <Button variant="quiet" disabled={busy} onclick={() => void downloadReady()}>Download ZIP</Button>
     {:else}
       <Button disabled={busy} onclick={() => void exportZip()}>{busy ? 'Building ZIP…' : 'Export ZIP'}</Button
       >
