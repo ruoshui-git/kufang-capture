@@ -41,6 +41,8 @@ export interface Collection extends Versioned {
   id: Id
   name: string
   description: string
+  /** One-level folder the collection is filed under; '' = not in a folder. Display only. */
+  folder: string
   status: CollectionStatus
   storage_mode: StorageMode
   /** Next number to allocate. Monotonic; never decremented; deleted numbers are never reused. */
@@ -78,6 +80,12 @@ export type ItemField = (typeof ITEM_FIELDS)[number]
 /** Per-collection count fields stored on the Entry. */
 export const ENTRY_COUNT_FIELDS = ['quantity', 'unit', 'count_detail'] as const
 export type EntryCountField = (typeof ENTRY_COUNT_FIELDS)[number]
+/**
+ * Every EntryPatch field stored on this collection's Entry (never shared): the count fields plus
+ * entry_notes. updateEntry routes ITEM_FIELDS to the Item and these to the Entry.
+ */
+export const ENTRY_FIELDS = [...ENTRY_COUNT_FIELDS, 'entry_notes'] as const
+export type EntryField = (typeof ENTRY_FIELDS)[number]
 
 /**
  * An item's place in one collection: its number and its count there. Deleting an
@@ -97,6 +105,13 @@ export interface Entry extends Versioned {
   /** Short free text, e.g. "boxes". '' when unspecified. */
   unit: string
   count_detail: string
+  /**
+   * Notes that apply to this collection only (the shared Item.notes apply everywhere). '' when none.
+   * Blank for entries created by importEntries.
+   */
+  entry_notes: string
+  /** When the entry was starred in this collection; null = not starred. Per entry, not per item. */
+  starred_at: Timestamp | null
   /** Removed from this collection (soft delete). */
   deleted_at: Timestamp | null
 }
@@ -203,6 +218,8 @@ export const SETTING_KEYS = {
   syncCursor: 'sync_cursor',
   entrySort: 'entry_sort',
   captureMode: 'capture_mode',
+  /** string[] of folder names collapsed on the Collections screen ('' = the unfiled group). */
+  collapsedFolders: 'collapsed_folders',
 } as const
 
 /** Derived per-collection counts. Entries and quantities are never conflated. */
@@ -238,6 +255,16 @@ export interface EntryRow {
   recent_photos: Photo[]
   is_incomplete: boolean
   pending_sync: boolean
+  /**
+   * Latest of the entry's, its item's and its item's photos' updated_at (including deleted photos).
+   * Drives EntrySort 'last_edited'.
+   */
+  last_edited_at: Timestamp
+}
+
+/** Row of the cross-collection Starred view. */
+export interface StarredRow extends EntryRow {
+  collection: Pick<Collection, 'id' | 'name' | 'folder' | 'status'>
 }
 
 /** Photo order for previews: the cover first, then newest captured (ties broken by id). */

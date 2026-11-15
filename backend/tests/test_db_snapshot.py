@@ -11,7 +11,7 @@ def test_migrations_are_recorded_and_idempotent(tmp_path):
     run_migrations(data)
     with connect(data) as db:
         versions = {row[0] for row in db.execute("SELECT version FROM schema_migrations")}
-        assert versions == {"0001_initial.sql", "0002_sync.sql", "0003_items.sql"}
+        assert versions == {"0001_initial.sql", "0002_sync.sql", "0003_items.sql", "0004_folders_stars.sql"}
         assert db.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='meta'").fetchone()
         assert db.execute("PRAGMA foreign_keys").fetchone()[0] == 1
         assert db.execute("PRAGMA busy_timeout").fetchone()[0] == 5000

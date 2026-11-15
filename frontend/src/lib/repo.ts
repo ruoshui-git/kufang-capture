@@ -13,6 +13,7 @@ import type {
   Item,
   Photo,
   PhotoBlob,
+  StarredRow,
   StorageMode,
 } from './types'
 
@@ -21,11 +22,30 @@ export interface Watchable<T> {
   subscribe(next: (value: T) => void, error?: (err: unknown) => void): (() => void) | { unsubscribe(): void }
 }
 
-export type EntryFilter = 'all' | 'incomplete' | 'pending_sync' | 'deleted'
-export type EntrySort = 'newest' | 'oldest'
+/**
+ * - incomplete: missing photos or quantity, or review_status 'needs_review' (isIncomplete).
+ * - missing_quantity: quantity null. missing_title: title blank after trim. missing_photos: no active photo.
+ * - needs_review: review_status 'needs_review'. starred: starred_at set.
+ * All filters except 'deleted' list non-deleted entries only.
+ */
+export type EntryFilter =
+  | 'all'
+  | 'incomplete'
+  | 'missing_quantity'
+  | 'missing_title'
+  | 'missing_photos'
+  | 'needs_review'
+  | 'starred'
+  | 'pending_sync'
+  | 'deleted'
+/** newest/oldest: by sequence_number. last_edited: EntryRow.last_edited_at desc, ties by sequence_number desc. */
+export type EntrySort = 'newest' | 'oldest' | 'last_edited'
 
 export interface EntryQuery {
-  /** Matches sequence number ("42", "#0042"), title, notes, count_detail, unit; case-insensitive. */
+  /**
+   * Matches sequence number ("42", "#0042"), title, notes, entry_notes, count_detail, unit;
+   * case-insensitive.
+   */
   search: string
   filter: EntryFilter
   sort: EntrySort
@@ -43,6 +63,7 @@ export type EntryPatch = Partial<
     | 'quantity'
     | 'unit'
     | 'count_detail'
+    | 'entry_notes'
     | 'notes'
     | 'expiration_date'
     | 'dimensions'
@@ -53,6 +74,8 @@ export type EntryPatch = Partial<
 export interface NewCollectionInput {
   name: string
   description?: string
+  /** Defaults to ''. Trimmed. */
+  folder?: string
   storage_mode: StorageMode
 }
 
@@ -120,7 +143,7 @@ export interface Repo {
   createCollection(input: NewCollectionInput): Promise<Collection>
   updateCollection(
     id: Id,
-    patch: Partial<Pick<Collection, 'name' | 'description' | 'sort_order'>>,
+    patch: Partial<Pick<Collection, 'name' | 'description' | 'folder' | 'sort_order'>>,
   ): Promise<void>
   archiveCollection(id: Id): Promise<void>
   unarchiveCollection(id: Id): Promise<void>
@@ -166,6 +189,16 @@ export interface Repo {
   restoreEntry(id: Id): Promise<void>
   /** Neighbours in the given sort order among non-deleted entries. */
   getAdjacentEntryIds(entryId: Id, sort: EntrySort): Promise<{ prev: Id | null; next: Id | null }>
+  /**
+   * Star (starred_at = now) or unstar (null) this collection's entry only; other entries of the same
+   * item are untouched. A no-op when already in the requested state. Queued for sync like any entry field.
+   */
+  setEntryStarred(entryId: Id, starred: boolean): Promise<void>
+  /**
+   * Non-deleted starred entries across all collections (archived ones included), most recently
+   * starred first.
+   */
+  watchStarredRows(): Watchable<StarredRow[]>
 
   // Sharing items between collections
   /** Collections the target may import from: same storage mode, excluding the target. */
@@ -180,7 +213,7 @@ export interface Repo {
    * In ONE transaction: reject unless both collections exist and share a storage mode; for each
    * source entry, skip it if the target has an active entry for its item, restore the target's
    * deleted entry for the item if there is one, else create a new entry with the next sequence
-   * number, the same item_id, the source unit, and blank quantity/count_detail.
+   * number, the same item_id, the source unit, blank quantity/count_detail/entry_notes, and not starred.
    */
   importEntries(targetCollectionId: Id, sourceEntryIds: Id[]): Promise<ImportResult>
 

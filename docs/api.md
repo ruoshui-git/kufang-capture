@@ -22,6 +22,8 @@ All paths are under `/api`. JSON uses the snake_case field names from `frontend/
 
 **Schema 2 (shared items).** Records are `collection`, `item`, `entry` and `photo`. An `item` holds what is shared by every collection that has it: `title`, `notes`, `expiration_date`, `dimensions`, `review_status` and its photos. An `entry` is the item's place in one collection: `collection_id`, `item_id`, `sequence_number`, `quantity`, `unit`, `count_detail` and `deleted_at`. A photo belongs to an item (`item_id`); photo records have no `collection_id`. Data migrated from schema 1 keeps `item.id = entry.id`, and a never-shared entry created later also uses its own id as `item_id`.
 
+**Additive fields (migration 0004, still schema 2).** A `collection` has `folder` (string, at most 200 characters, `''` = no folder). An `entry` has `entry_notes` (string, at most 20 000 characters, notes for that collection only) and `starred_at` (nullable timestamp; a star belongs to the entry, not the item). They are optional on create and default to `''`, `''` and `null`, so a client built before them keeps syncing; pulled records always include them. Clients merge them like any other field.
+
 **Version guard.** `POST /api/sync/batch` requires `"schema": 2` in the body, and `GET /api/sync/changes` requires the query parameter `schema=2`. Without it, both answer `409 client_outdated` and write nothing. A schema-1 client keeps its outbox (items are cleared only on acknowledgment) and syncs again after it updates and migrates.
 
 The server keeps per-record integer `revision` (that is, the client's `server_revision`), `field_revisions` (`{field: revision}`), and a global, monotonically increasing change `seq` used as the pull cursor.

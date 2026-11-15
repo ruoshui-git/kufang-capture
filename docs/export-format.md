@@ -1,8 +1,10 @@
-# Export format (version 2)
+# Export format (version 3)
 
 The device exporter (`frontend/src/lib/export/`) and the server exporter (`backend/`) **must produce the same layout**. `tools/verify-export.py` validates any export. Changes to this file need a format_version bump.
 
 **Version 2 (shared items).** An item can appear in several collections, each time as its own entry with its own number and count. Photos belong to the item. Compared with version 1, `entries` gains `item_id`, and `photos` replaces `entry_id,collection_id` with `item_id`, stored under `photos/<item_id>/`. Data created before version 2 has `item_id = entry_id`, so its photo paths are unchanged. `tools/verify-export.py` still accepts version 1 archives.
+
+**Version 3 (readable paths).** Photo files are stored under folders named after the collection and the entry, e.g. `photos/Temple 2 A04/0042 Red lantern/01.jpg`, instead of `photos/<item_id>/<photo_id>.jpg`. Folder names are derived from the **current** names at export time, so renaming a collection or an entry only changes the paths of later exports. IDs stay the stable keys: every CSV/JSON row still carries `collection_id`, `entry_id`, `item_id` and `photo_id`, and the only references to paths are inside the same archive (`photos.path`, `entries.photo_dir`). New columns: `collections.folder`, `entries.entry_notes`, `entries.starred_at`, `entries.photo_dir`. `tools/verify-export.py` accepts versions 1, 2 and 3.
 
 ## Archive
 
@@ -16,12 +18,21 @@ capture-export/
   collections.csv   collections.json
   entries.csv       entries.json
   photos.csv        photos.json
-  photos/<item_id>/<photo_id>.<ext>
+  photos/<collection dir>/<entry dir>/<NN>.<ext>
   trash/                              # only when include_trash = true
     entries.csv  entries.json
     photos.csv   photos.json
-    photos/<item_id>/<photo_id>.<ext>
+    photos/<collection dir>/<entry dir>/<NN>.<ext>
 ```
+
+### Readable photo paths
+
+- **Home entry.** A photo is stored under exactly one entry of its item: the item's first entry in archive entry order (see Ordering) among the entries of the same set (active entries for the active set; for the trash set, the first active entry if the item has one, otherwise its first entry overall). All of the item's photos in one set therefore share one folder.
+- **Collection dir** = `sanitize(collection.name)`, falling back to `Collection` when the result is empty. When two collections in the archive produce the same dir (compared case-insensitively after NFC), the later ones in collection order get ` (2)`, ` (3)`, … appended (the suffix is added after truncation, so it is never cut off). The same collection dir is used in the active and the trash trees.
+- **Entry dir** = the 4-digit (or longer) zero-padded `sequence_number` of the home entry, followed by a space and `sanitize(title)` when the shared item title is non-blank, e.g. `0042` or `0042 Red lantern`. Entry dirs are unique within a collection dir because sequence numbers are.
+- **File name** = the photo's 1-based position among the item's photos in the same set, in photo order (see Ordering), zero-padded to at least 2 digits (`01`, `02`, … `100`), then `.` and the extension.
+- **sanitize(s)**: Unicode NFC; replace each control character (U+0000–U+001F, U+007F) and each of `/ \ : * ? " < > |` with a space; collapse runs of whitespace to one space; trim leading and trailing spaces and dots; truncate to 60 Unicode code points and trim trailing spaces and dots again; if the result, case-insensitively and ignoring any extension, is a Windows reserved device name (`CON`, `PRN`, `AUX`, `NUL`, `COM1`–`COM9`, `LPT1`–`LPT9`), append `_`. Non-ASCII letters (e.g. Chinese) are kept.
+- `tools/export-path-vectors.json` holds input/output vectors for `sanitize` and for full path assignment. The device exporter, the server exporter and the verifier all test against it.
 
 - **Active set**: an entry is active when `deleted_at` is null. A photo is active when its own `deleted_at` is null and its item has at least one active entry in the export.
 - **Trash set**: deleted entries; every photo of an item that has no active entry in the export; and deleted photos of items that do. It is excluded by default.
@@ -41,13 +52,15 @@ UTF-8 with a BOM, CRLF line endings, RFC 4180 quoting (a field is quoted when it
 
 ### collections.csv
 
-`collection_id,name,description,status,storage_mode,next_sequence_number,entry_count,photo_count,created_at,updated_at,archived_at`
+`collection_id,name,folder,description,status,storage_mode,next_sequence_number,entry_count,photo_count,created_at,updated_at,archived_at`
+
+`folder` is the collection's folder name, empty when it is not in a folder.
 
 `entry_count` and `photo_count` count the active set. A shared photo counts in each collection that has an active entry for its item.
 
 ### entries.csv
 
-`entry_id,item_id,collection_id,sequence_number,sequence_label,title,display_title,quantity,unit,count_detail,notes,expiration_date,dimensions,review_status,photo_count,created_at,updated_at,deleted_at`
+`entry_id,item_id,collection_id,sequence_number,sequence_label,title,display_title,quantity,unit,count_detail,notes,entry_notes,expiration_date,dimensions,review_status,starred_at,photo_count,photo_dir,created_at,updated_at,deleted_at`
 
 - `title`, `notes`, `expiration_date`, `dimensions` and `review_status` come from the shared item, so rows with the same `item_id` agree. `quantity`, `unit` and `count_detail` are this collection's count.
 - `updated_at` is the later of the entry's and the item's `updated_at`.
@@ -56,12 +69,14 @@ UTF-8 with a BOM, CRLF line endings, RFC 4180 quoting (a field is quoted when it
 - `display_title` is the title, or `Entry #0042` when no title is set.
 - `quantity` is the raw decimal string; it is empty when not recorded, and an empty quantity is **not** zero.
 - `photo_count` is the number of the item's photos in the same set as the row (active or trash).
+- `entry_notes` and `starred_at` belong to this collection's entry (not shared). `starred_at` is empty when the entry is not starred.
+- `photo_dir` is the folder (relative to `capture-export/`, no trailing slash) holding the item's photos of the same set as the row, e.g. `photos/Temple 2 A04/0042 Red lantern`. Rows sharing an `item_id` in the same set have the same `photo_dir`, which may be under another collection's dir. It is empty when `photo_count` is 0.
 
 ### photos.csv
 
 `photo_id,item_id,path,original_filename,mime_type,byte_size,sha256,width,height,sort_order,caption,is_cover,capture_source,captured_at,created_at,deleted_at`
 
-`path` is relative to `capture-export/`, e.g. `photos/<item_id>/<photo_id>.jpg`. `capture_source` is one of `native_camera`, `photo_library` or `camera_frame`. A `camera_frame` photo is an app-encoded video frame, not a native still.
+`path` is relative to `capture-export/`, e.g. `photos/Temple 2 A04/0042 Red lantern/01.jpg`. `capture_source` is one of `native_camera`, `photo_library` or `camera_frame`. A `camera_frame` photo is an app-encoded video frame, not a native still.
 
 The trash CSVs use the same columns. Their paths begin with `trash/photos/`.
 
@@ -74,7 +89,7 @@ Each JSON file is an array of objects with the same keys as its CSV, using real 
 ```json
 {
   "format": "kufang-capture-export",
-  "format_version": 2,
+  "format_version": 3,
   "exported_at": "2026-11-08T07:00:00.000Z",
   "source": "device",
   "app_version": "0.1.0+<git-sha>",
@@ -105,7 +120,8 @@ Each JSON file is an array of objects with the same keys as its CSV, using real 
 - the layout
 - the manifest counts and the file hashes
 - the CSV foreign keys: every `entries.collection_id` is in `collections`; every active `photos.item_id` is the `item_id` of an active entry; every trash `photos.item_id` is the `item_id` of some entry in either set; each `photo_id` appears once; rows sharing an `item_id` agree on the item fields
-- version 1 archives with the version 1 rules (`photos.entry_id` in `entries`)
+- version 3 path rules: every photo path is unique (case-insensitively), lies under `photo_dir` of each entry row of its item and set, and file names follow the `<NN>.<ext>` numbering
+- version 1 and 2 archives with their own rules (version 1: `photos.entry_id` in `entries`; version 2: `photos/<item_id>/<photo_id>.<ext>`)
 - that each photo's bytes match its sha256 and byte_size
 - that CSV and JSON agree
 - STORE-only compression
