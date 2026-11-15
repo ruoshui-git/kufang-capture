@@ -99,8 +99,15 @@ describe('Entry list', () => {
     await repo.createEntry(collectionId)
     render(EntryListPage, { props: { collectionId } })
     await screen.findAllByRole('textbox', { name: 'Entry title' })
-    await fireEvent.click(screen.getByText('Incomplete'))
-    await fireEvent.click(screen.getByRole('menuitem', { name: 'Any incomplete' }))
+    await fireEvent.click(screen.getByText('Incomplete ▾'))
+    const anyIncomplete = screen.getByRole('menuitemradio', { name: 'Any incomplete' })
+    expect(anyIncomplete).toHaveAttribute('aria-checked', 'false')
+    await fireEvent.click(anyIncomplete)
+    await fireEvent.click(screen.getByText('Incomplete ▾'))
+    expect(screen.getByRole('menuitemradio', { name: /Any incomplete/ })).toHaveAttribute(
+      'aria-checked',
+      'true',
+    )
     await waitFor(() => expect(screen.getAllByRole('textbox', { name: 'Entry title' })).toHaveLength(3))
     await fireEvent.input(screen.getByRole('textbox', { name: 'Search entries' }), {
       target: { value: '#0003' },

@@ -1,22 +1,27 @@
 <script lang="ts">
   import { repo } from '$lib/db'
-  import type { StarredRow } from '$lib/types'
+  import { entryDisplayTitle, formatSequence, type StarredRow } from '$lib/types'
+  import ThumbnailStrip from '../../components/entry/ThumbnailStrip.svelte'
+  import { navigate } from '../../app/router.svelte'
   let rows = $state<StarredRow[]>([])
   $effect(() => {
     const subscription = repo.watchStarredRows().subscribe((value) => (rows = value))
     return () => (typeof subscription === 'function' ? subscription() : subscription.unsubscribe())
   })
   const groups = $derived.by(() => {
-    const names = [...new Set(rows.map((row) => row.collection.id))]
-    return names.map((id) => ({
-      collection: rows.find((row) => row.collection.id === id)!.collection,
-      rows: rows.filter((row) => row.collection.id === id),
-    }))
+    const grouped = new Map<string, { collection: StarredRow['collection']; rows: StarredRow[] }>()
+    for (const row of rows) {
+      const group = grouped.get(row.collection.id) ?? { collection: row.collection, rows: [] }
+      group.rows.push(row)
+      grouped.set(row.collection.id, group)
+    }
+    return [...grouped.values()]
   })
 </script>
 
 <svelte:head><title>Starred — Kufang Capture</title></svelte:head>
 <section class="page">
+  <a class="starred-back" href="/">← Collections</a>
   <h1>Starred</h1>
   {#if !rows.length}
     <p>No starred entries yet. Use the star button on an entry to keep it here.</p>
@@ -25,11 +30,21 @@
       <section class="starred-group">
         <h2>
           {group.collection.name}{#if group.collection.folder}<small>{group.collection.folder}</small>{/if}
+          {#if group.collection.status === 'archived'}<small class="archived-note">Archived</small>{/if}
         </h2>
         {#each group.rows as row (row.entry.id)}
           <div class="starred-row">
+            <ThumbnailStrip
+              photos={row.recent_photos.slice(0, 1)}
+              total={row.photo_count}
+              onopen={() => navigate(`/c/${row.entry.collection_id}/e/${row.entry.id}`)}
+              onmore={() => navigate(`/c/${row.entry.collection_id}/e/${row.entry.id}`)}
+            />
             <a href="/c/{row.entry.collection_id}/e/{row.entry.id}"
-              >{row.entry.title.trim() || `Entry #${String(row.entry.sequence_number).padStart(4, '0')}`}</a
+              ><span class="sequence-label">{formatSequence(row.entry.sequence_number)}</span>
+              <span>{entryDisplayTitle(row.entry)}</span>
+              {#if row.entry.review_status === 'needs_review'}<span class="review-badge">Needs review</span
+                >{/if}</a
             ><button
               aria-label="Unstar entry"
               aria-pressed="true"
@@ -46,6 +61,13 @@
   .starred-group {
     margin-top: var(--space-5);
   }
+  .starred-back {
+    display: inline-block;
+    min-height: var(--size-touch);
+    padding: var(--space-2) 0;
+    color: var(--color-ballpoint);
+    text-decoration: none;
+  }
   .starred-group h2 {
     display: flex;
     align-items: baseline;
@@ -55,12 +77,45 @@
     color: var(--color-muted);
     font: var(--weight-regular) var(--text-sm) var(--font-body);
   }
+  .starred-group .archived-note {
+    border-radius: var(--radius-pill);
+    background: var(--color-sunken);
+    padding: var(--space-1) var(--space-3);
+  }
   .starred-row {
     display: flex;
-    justify-content: space-between;
     align-items: center;
+    gap: var(--space-3);
     min-height: var(--size-touch);
     border-bottom: var(--border);
+  }
+  .starred-row :global(.thumb-strip) {
+    flex: 0 0 var(--size-thumb);
+  }
+  .starred-row a {
+    display: flex;
+    flex: 1;
+    align-items: center;
+    gap: var(--space-3);
+    min-width: 0;
+    color: var(--color-ink);
+    text-decoration: none;
+  }
+  .sequence-label {
+    flex: none;
+    border-radius: var(--radius-md);
+    background: var(--color-tag);
+    color: var(--color-tag-ink);
+    padding: var(--space-2) var(--space-3);
+    font-size: var(--text-sm);
+    font-variant-numeric: tabular-nums;
+  }
+  .review-badge {
+    border-radius: var(--radius-pill);
+    background: var(--color-warn-soft);
+    color: var(--color-warn);
+    padding: var(--space-1) var(--space-3);
+    font-size: var(--text-xs);
   }
   .starred-row button {
     min-width: var(--size-touch);

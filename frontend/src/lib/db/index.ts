@@ -825,7 +825,18 @@ export function createRepo(options: RepoOptions = {}): Repo {
             (item.entity === 'item' && relevant.has(item.entity_id)) ||
             (item.entity === 'photo' && photoIds.has(item.entity_id)),
         )
-        const activePhotos = photos.filter((photo) => photo.deleted_at === null)
+        const photosByItem = new Map<Id, Photo[]>()
+        const activePhotosByItem = new Map<Id, Photo[]>()
+        for (const photo of photos) {
+          const allForItem = photosByItem.get(photo.item_id) ?? []
+          allForItem.push(photo)
+          photosByItem.set(photo.item_id, allForItem)
+          if (photo.deleted_at === null) {
+            const activeForItem = activePhotosByItem.get(photo.item_id) ?? []
+            activeForItem.push(photo)
+            activePhotosByItem.set(photo.item_id, activeForItem)
+          }
+        }
         const itemRows = await db.items.bulkGet([...new Set(entries.map((entry) => entry.item_id))])
         const itemById = new Map(itemRows.filter(Boolean).map((item) => [item!.id, item!]))
         const lastEdited = new Map<Id, string>()
@@ -833,7 +844,7 @@ export function createRepo(options: RepoOptions = {}): Repo {
           const stampValues = [
             entry.updated_at,
             itemById.get(entry.item_id)?.updated_at ?? entry.updated_at,
-            ...photos.filter((photo) => photo.item_id === entry.item_id).map((photo) => photo.updated_at),
+            ...(photosByItem.get(entry.item_id) ?? []).map((photo) => photo.updated_at),
           ]
           lastEdited.set(entry.id, stampValues.sort().at(-1) ?? entry.updated_at)
         }
@@ -853,8 +864,8 @@ export function createRepo(options: RepoOptions = {}): Repo {
         const views = await entryViews(sortedEntries)
         const rows: EntryRow[] = views
           .map((entry) => {
-            const entryPhotos = activePhotos.filter((photo) => photo.item_id === entry.item_id)
-            const allEntryPhotos = photos.filter((photo) => photo.item_id === entry.item_id)
+            const entryPhotos = activePhotosByItem.get(entry.item_id) ?? []
+            const allEntryPhotos = photosByItem.get(entry.item_id) ?? []
             const incomplete = isIncomplete(entry, entryPhotos.length > 0)
             const photoPending = allEntryPhotos.some((photo) =>
               ['pending', 'uploading', 'error'].includes(photo.upload_state),
@@ -1031,11 +1042,17 @@ export function createRepo(options: RepoOptions = {}): Repo {
         .where('item_id')
         .anyOf([...items.keys()])
         .toArray()
+      const photoUpdatesByItem = new Map<Id, string[]>()
+      for (const photo of photos) {
+        const updates = photoUpdatesByItem.get(photo.item_id) ?? []
+        updates.push(photo.updated_at)
+        photoUpdatesByItem.set(photo.item_id, updates)
+      }
       const edited = (row: Entry) =>
         [
           row.updated_at,
           items.get(row.item_id)?.updated_at ?? row.updated_at,
-          ...photos.filter((photo) => photo.item_id === row.item_id).map((photo) => photo.updated_at),
+          ...(photoUpdatesByItem.get(row.item_id) ?? []),
         ]
           .sort()
           .at(-1) ?? row.updated_at
@@ -1071,10 +1088,16 @@ export function createRepo(options: RepoOptions = {}): Repo {
         ])
         const collectionById = new Map(collections.map((collection) => [collection.id, collection]))
         const itemById = new Map(items.filter(Boolean).map((item) => [item!.id, item!]))
+        const photosByItem = new Map<Id, Photo[]>()
+        for (const photo of photos) {
+          const list = photosByItem.get(photo.item_id) ?? []
+          list.push(photo)
+          photosByItem.set(photo.item_id, list)
+        }
         return views.flatMap((entry) => {
           const collection = collectionById.get(entry.collection_id)
           if (!collection) return []
-          const ownPhotos = photos.filter((photo) => photo.item_id === entry.item_id)
+          const ownPhotos = photosByItem.get(entry.item_id) ?? []
           const active = ownPhotos.filter((photo) => photo.deleted_at === null).sort(byCoverThenNewest)
           const row: EntryRow = {
             entry,

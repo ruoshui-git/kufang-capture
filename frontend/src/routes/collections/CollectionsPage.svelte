@@ -276,7 +276,12 @@
     <form class="collection-form" onsubmit={save}>
       <TextField label="Name" bind:value={name} required placeholder="e.g. Temple 2 / A04" />
       <label class="field"
-        >Folder <input bind:value={folder} list="collection-folders" placeholder="Unfiled" /></label
+        >Folder <input
+          aria-label="Folder"
+          bind:value={folder}
+          list="collection-folders"
+          placeholder="Unfiled"
+        /></label
       >
       <datalist id="collection-folders"
         >{#each [...new Set(summaries

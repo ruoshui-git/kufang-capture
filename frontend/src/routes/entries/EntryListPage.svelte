@@ -190,6 +190,9 @@
             ? 'Needs review'
             : 'Incomplete',
   )
+  const incompleteFilterActive = $derived(
+    ['incomplete', 'missing_quantity', 'missing_title', 'missing_photos', 'needs_review'].includes(filter),
+  )
 </script>
 
 <svelte:head><title>{summary?.collection.name ?? 'Entries'} — Kufang Capture</title></svelte:head>
@@ -238,12 +241,47 @@
       <div class="filter-row">
         <div class="filters" role="group" aria-label="Entry filters">
           <button class:active={filter === 'all'} onclick={() => (filter = 'all')}>All</button>
-          <Menu label={incompleteLabel} triggerText={incompleteLabel}>
-            <button role="menuitem" onclick={() => (filter = 'incomplete')}>Any incomplete</button>
-            <button role="menuitem" onclick={() => (filter = 'missing_quantity')}>No quantity</button>
-            <button role="menuitem" onclick={() => (filter = 'missing_title')}>No title</button>
-            <button role="menuitem" onclick={() => (filter = 'missing_photos')}>No photos</button>
-            <button role="menuitem" onclick={() => (filter = 'needs_review')}>Needs review</button>
+          <Menu
+            label={incompleteLabel}
+            triggerText={`${incompleteLabel} ▾`}
+            variant="filter"
+            active={incompleteFilterActive}
+          >
+            <button
+              role="menuitemradio"
+              aria-checked={filter === 'incomplete'}
+              onclick={() => (filter = 'incomplete')}
+            >
+              {filter === 'incomplete' ? '✓ ' : ''}Any incomplete
+            </button>
+            <button
+              role="menuitemradio"
+              aria-checked={filter === 'missing_quantity'}
+              onclick={() => (filter = 'missing_quantity')}
+            >
+              {filter === 'missing_quantity' ? '✓ ' : ''}No quantity
+            </button>
+            <button
+              role="menuitemradio"
+              aria-checked={filter === 'missing_title'}
+              onclick={() => (filter = 'missing_title')}
+            >
+              {filter === 'missing_title' ? '✓ ' : ''}No title
+            </button>
+            <button
+              role="menuitemradio"
+              aria-checked={filter === 'missing_photos'}
+              onclick={() => (filter = 'missing_photos')}
+            >
+              {filter === 'missing_photos' ? '✓ ' : ''}No photos
+            </button>
+            <button
+              role="menuitemradio"
+              aria-checked={filter === 'needs_review'}
+              onclick={() => (filter = 'needs_review')}
+            >
+              {filter === 'needs_review' ? '✓ ' : ''}Needs review
+            </button>
           </Menu>
           <button class:active={filter === 'starred'} onclick={() => (filter = 'starred')}>Starred</button>
           <button class:active={filter === 'pending_sync'} onclick={() => (filter = 'pending_sync')}
@@ -255,25 +293,28 @@
         </div>
         <Menu label="Collection actions">
           <button
-            role="menuitem"
+            role="menuitemradio"
+            aria-checked={sort === 'newest'}
             onclick={() => {
               sort = 'newest'
               void repo.setSetting(SETTING_KEYS.entrySort, sort)
-            }}>Newest first</button
+            }}>{sort === 'newest' ? '✓ ' : ''}Newest first</button
           >
           <button
-            role="menuitem"
+            role="menuitemradio"
+            aria-checked={sort === 'oldest'}
             onclick={() => {
               sort = 'oldest'
               void repo.setSetting(SETTING_KEYS.entrySort, sort)
-            }}>Oldest first</button
+            }}>{sort === 'oldest' ? '✓ ' : ''}Oldest first</button
           >
           <button
-            role="menuitem"
+            role="menuitemradio"
+            aria-checked={sort === 'last_edited'}
             onclick={() => {
               sort = 'last_edited'
               void repo.setSetting(SETTING_KEYS.entrySort, sort)
-            }}>Last edited</button
+            }}>{sort === 'last_edited' ? '✓ ' : ''}Last edited</button
           >
           <button role="menuitem" onclick={() => (exportOpen = true)}>Export ZIP</button>
           <button role="menuitem" onclick={() => (importOpen = true)}>Import from another collection</button>
@@ -415,7 +456,7 @@
   .filters::-webkit-scrollbar {
     display: none;
   }
-  .filters button {
+  .filters > button {
     border: 1px solid var(--color-line);
     background: var(--color-card);
     color: var(--color-ink);
@@ -424,7 +465,7 @@
     white-space: nowrap;
     min-height: var(--size-touch);
   }
-  .filters button.active {
+  .filters > button.active {
     background: var(--color-ink);
     color: var(--color-floor);
   }

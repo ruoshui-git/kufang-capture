@@ -4,7 +4,15 @@
     children,
     label = 'More actions',
     triggerText,
-  }: { children: Snippet; label?: string; triggerText?: string } = $props()
+    variant = 'default',
+    active = false,
+  }: {
+    children: Snippet
+    label?: string
+    triggerText?: string
+    variant?: 'default' | 'filter'
+    active?: boolean
+  } = $props()
   let open = $state(false)
   let element: HTMLDetailsElement | undefined = $state()
 
@@ -28,12 +36,44 @@
   })
 
   function chosen(event: MouseEvent) {
-    if ((event.target as Element | null)?.closest('[role="menuitem"]')) open = false
+    if ((event.target as Element | null)?.closest('[role="menuitem"], [role="menuitemradio"]')) open = false
   }
 </script>
 
-<details class="menu" bind:this={element} bind:open>
-  <summary aria-label={label} title={label}>{triggerText ?? '⋯'}</summary>
+<details class="menu" class:filter-trigger={variant === 'filter'} bind:this={element} bind:open>
+  <summary class:active aria-label={label} title={label}>
+    {triggerText ?? '⋯'}
+  </summary>
   <!-- svelte-ignore a11y_click_events_have_key_events -->
   <div class="menu-popover" role="menu" tabindex="-1" onclick={chosen}>{@render children()}</div>
 </details>
+
+<style>
+  .menu.filter-trigger summary {
+    display: inline-flex;
+    width: auto;
+    min-width: var(--size-touch);
+    height: auto;
+    min-height: var(--size-touch);
+    align-items: center;
+    justify-content: center;
+    border-radius: var(--radius-pill);
+    padding: var(--space-3) var(--space-4);
+    background: var(--color-card);
+    color: var(--color-ink);
+    font-size: var(--text-md);
+    line-height: var(--leading-body);
+    white-space: nowrap;
+  }
+
+  .menu.filter-trigger summary.active {
+    border-color: var(--color-ink);
+    background: var(--color-ink);
+    color: var(--color-floor);
+  }
+
+  .menu.filter-trigger .menu-popover {
+    right: auto;
+    left: 0;
+  }
+</style>
