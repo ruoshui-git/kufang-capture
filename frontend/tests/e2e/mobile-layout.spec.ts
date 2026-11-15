@@ -19,6 +19,14 @@ async function checkMenu(page: Page, trigger: Locator, name: string) {
   await trigger.click()
   const menu = page.getByRole('menu').last()
   await expect(menu).toBeVisible()
+  // The menu follows scrolling (a tap can scroll the page to focus); probe it once it has settled.
+  await expect
+    .poll(async () => {
+      const first = JSON.stringify(await menu.boundingBox())
+      await page.waitForTimeout(50)
+      return first === JSON.stringify(await menu.boundingBox())
+    })
+    .toBe(true)
   const box = await menu.boundingBox()
   if (!box) throw new Error('Menu is not rendered')
   const viewport = page.viewportSize()!

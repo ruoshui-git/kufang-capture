@@ -31,6 +31,9 @@
   // An open menu closes on a tap anywhere else, on Escape, and once one of its items is chosen.
   $effect(() => {
     if (!open) return
+    // Effects run after the DOM update but before paint, so measuring now means the menu's first
+    // painted frame is already in place (no flash at the default spot). Re-measure once layout settles.
+    measure()
     const frame = requestAnimationFrame(measure)
     window.addEventListener('resize', measure)
     window.addEventListener('scroll', measure, true)
