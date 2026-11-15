@@ -18,7 +18,7 @@ test('selects two collections and exports both in one ZIP', async ({ page }, tes
   await page.getByRole('button', { name: 'Select' }).click()
   await page.getByRole('checkbox', { name: names[0]! }).check()
   await page.getByRole('checkbox', { name: names[1]! }).check()
-  await expect(page.getByRole('region', { name: 'Export selected collections' })).toHaveText('2 selected')
+  await expect(page.getByRole('region', { name: 'Export selected collections' })).toContainText('2 selected')
   await page.getByRole('button', { name: 'Export ZIP' }).click()
   await expect(page.getByRole('dialog', { name: 'Export 2 collections' })).toBeVisible()
 

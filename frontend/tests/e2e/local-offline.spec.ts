@@ -243,6 +243,8 @@ test('§9 #10 scale: generated Local Only sample rows render while scrolling', a
   await expect(collectionLink).toBeVisible()
   await collectionLink.click()
   await expect(page.getByText('300 entries')).toBeVisible({ timeout: 30_000 })
+  // The summary and the row list load separately; measure scrolling once rows are on screen.
+  await expect(page.locator('[data-entry-id]').first()).toBeVisible({ timeout: 30_000 })
   const metrics = await page.evaluate(async () => {
     const longTasks: number[] = []
     const frames: number[] = []

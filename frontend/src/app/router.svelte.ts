@@ -61,6 +61,8 @@ if (typeof window !== 'undefined') {
     if (!(target instanceof Element)) return
     const anchor = target.closest('a[href]')
     if (!(anchor instanceof HTMLAnchorElement) || anchor.target || anchor.origin !== location.origin) return
+    // Downloads (e.g. the export ZIP's blob: link, whose origin matches ours) are not navigation.
+    if (anchor.hasAttribute('download') || !/^https?:$/.test(anchor.protocol)) return
     event.preventDefault()
     navigate(anchor.pathname + anchor.search + anchor.hash)
   })
