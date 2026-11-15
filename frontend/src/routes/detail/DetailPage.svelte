@@ -14,7 +14,14 @@
   import PhotoViewer from '../../components/viewer/PhotoViewer.svelte'
 
   type EditableKey =
-    'title' | 'quantity' | 'unit' | 'count_detail' | 'notes' | 'expiration_date' | 'dimensions'
+    | 'title'
+    | 'quantity'
+    | 'unit'
+    | 'count_detail'
+    | 'notes'
+    | 'entry_notes'
+    | 'expiration_date'
+    | 'dimensions'
   let {
     collectionId,
     entryId,
@@ -34,12 +41,17 @@
   let adjacent = $state<{ prev: Id | null; next: Id | null }>({ prev: null, next: null })
   let captureMode = $state<CaptureMode>('native')
   let failure = $state('')
+  let showEntryNotes = $state(false)
+  let collectionName = $state('this collection')
   let syncPhase = $state('idle')
   const timers = new Map<EditableKey, ReturnType<typeof setTimeout>>()
 
   const displayedQuantity = $derived(draft.quantity ?? '')
 
   onMount(() => {
+    void repo.getCollection(collectionId).then((value) => {
+      if (value) collectionName = value.name
+    })
     let unsubscribeSync: (() => void) | undefined
     void import('$lib/sync').then(({ syncEngine }) => {
       const subscription = syncEngine.status.subscribe((value) => (syncPhase = value.phase))
@@ -59,6 +71,7 @@
         'unit',
         'count_detail',
         'notes',
+        'entry_notes',
         'expiration_date',
         'dimensions',
       ]
@@ -237,6 +250,14 @@
           onblur={() => void flushField('title')}
         />
       </div>
+      {#if entry.review_status === 'needs_review'}<span class="review-badge">Needs review</span>{/if}
+      <button
+        class="star-detail"
+        aria-label={entry.starred_at ? 'Unstar entry' : 'Star entry'}
+        aria-pressed={entry.starred_at !== null}
+        onclick={() => void repo.setEntryStarred(entryId, entry?.starred_at === null)}
+        >{entry.starred_at ? '★ Starred' : '☆ Star entry'}</button
+      >
       {#if entry.shared_with.length > 0}<p class="shared-hint">
           Title, notes and photos are shared across {entry.shared_with.length + 1} collections.
         </p>{/if}
@@ -354,6 +375,20 @@
               class="field-note">Changes apply across {entry.shared_with.length + 1} collections.</small
             >{/if}</label
         >
+        {#if entry.shared_with.length > 0 || entry.entry_notes || showEntryNotes}
+          <label class="field full-field"
+            >Notes for {collectionName}<textarea
+              data-field="entry_notes"
+              rows="3"
+              value={draft.entry_notes ?? ''}
+              oninput={(event) => setField('entry_notes', event.currentTarget.value)}
+              onblur={() => void flushField('entry_notes')}></textarea><small class="field-note"
+              >Only in this collection.</small
+            ></label
+          >
+        {:else}<button class="add-entry-note" onclick={() => (showEntryNotes = true)}
+            >Add note for this collection</button
+          >{/if}
       </div>
     {/if}
     <nav class="detail-navigation" aria-label="Entry navigation">
@@ -373,6 +408,24 @@
 <PhotoViewer bind:open={viewerOpen} {entryId} startPhotoId={viewerPhotoId} />
 
 <style>
+  .review-badge {
+    justify-self: start;
+    border-radius: var(--radius-pill);
+    padding: var(--space-1) var(--space-3);
+    color: var(--color-warn);
+    background: var(--color-warn-soft);
+    font-size: var(--text-sm);
+  }
+  .star-detail,
+  .add-entry-note {
+    justify-self: start;
+    min-height: var(--size-touch);
+    padding: 0 var(--space-3);
+    border: var(--border);
+    border-radius: var(--radius-md);
+    background: var(--color-card);
+    color: var(--color-ink);
+  }
   .detail-page {
     max-width: 900px;
     margin: 0 auto;

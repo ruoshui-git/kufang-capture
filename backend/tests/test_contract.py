@@ -297,6 +297,45 @@ def test_sync_conflicts_next_sequence_restore_purge_and_missing_parent(tmp_path)
     client.close()
 
 
+def test_folder_entry_notes_and_starred_sync_fields_are_additive_and_conflict_aware(tmp_path):
+    client = make_client(tmp_path)
+    created = client.post(
+        "/api/sync/batch", json={"mutations": [collection_mutation(), entry_mutation()]}, headers=HEADERS
+    ).json()["results"]
+    assert all(row["status"] == "applied" for row in created)
+    update_collection = {
+        "id": "m-folder",
+        "entity": "collection",
+        "entity_id": "c1",
+        "collection_id": "c1",
+        "op": "upsert",
+        "base_revision": 1,
+        "fields": {"folder": "North shelf"},
+    }
+    update_entry = {
+        "id": "m-entry-note",
+        "entity": "entry",
+        "entity_id": "e1",
+        "collection_id": "c1",
+        "op": "upsert",
+        "base_revision": 1,
+        "fields": {"entry_notes": "Only here", "starred_at": "2026-11-08T12:30:00.000Z"},
+    }
+    result = client.post(
+        "/api/sync/batch", json={"mutations": [update_collection, update_entry]}, headers=HEADERS
+    ).json()["results"]
+    assert result[0]["record"]["folder"] == "North shelf"
+    assert result[1]["record"]["entry_notes"] == "Only here"
+    assert result[1]["record"]["starred_at"] == "2026-11-08T12:30:00.000Z"
+    conflict = {**update_entry, "id": "m-entry-note-conflict", "fields": {"entry_notes": "stale"}}
+    conflicted = client.post("/api/sync/batch", json={"mutations": [conflict]}, headers=HEADERS).json()[
+        "results"
+    ][0]
+    assert conflicted["status"] == "conflict"
+    assert conflicted["conflicting_fields"] == ["entry_notes"]
+    assert client.get("/api/collections", headers=HEADERS).json()[0]["folder"] == "North shelf"
+
+
 def test_thousand_entries_sync_in_contract_sized_batches(tmp_path):
     client = make_client(tmp_path)
     client.post("/api/sync/batch", json={"mutations": [collection_mutation()]}, headers=HEADERS)

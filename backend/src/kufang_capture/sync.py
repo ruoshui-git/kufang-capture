@@ -10,6 +10,7 @@ from .db import connect, single_writer
 TABLES = {"collection": "collections", "item": "items", "entry": "entries", "photo": "photos"}
 COLLECTION_FIELDS = {
     "name": (str, 200),
+    "folder": (str, 200),
     "description": (str, 20_000),
     "status": ("enum", {"active", "archived"}),
     "storage_mode": ("enum", {"synced"}),
@@ -23,6 +24,8 @@ ENTRY_FIELDS = {
     "quantity": ("quantity", None),
     "unit": (str, 40),
     "count_detail": (str, 20_000),
+    "entry_notes": (str, 20_000),
+    "starred_at": ("nullable_timestamp", None),
     "deleted_at": ("nullable_timestamp", None),
 }
 ITEM_FIELDS = {
@@ -51,6 +54,7 @@ CREATE_FIELDS = {
     "collection": {
         "id",
         "name",
+        "folder",
         "description",
         "status",
         "storage_mode",
@@ -70,6 +74,8 @@ CREATE_FIELDS = {
         "quantity",
         "unit",
         "count_detail",
+        "entry_notes",
+        "starred_at",
         "deleted_at",
         "created_at",
         "updated_at",

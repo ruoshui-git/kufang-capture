@@ -70,6 +70,20 @@ async function setup() {
 }
 
 describe('entry detail', () => {
+  it('reveals and autosaves collection notes and toggles the entry star', async () => {
+    const { collection, entry } = await setup()
+    await fireEvent.click(screen.getByRole('button', { name: 'Add note for this collection' }))
+    const notes = await screen.findByLabelText(new RegExp(`Notes for ${collection.name}`))
+    await fireEvent.input(notes, { target: { value: 'Keep with this room.' } })
+    await fireEvent.blur(notes)
+    await waitFor(async () =>
+      expect((await repo.getEntry(entry.id))?.entry_notes).toBe('Keep with this room.'),
+    )
+    const star = screen.getByRole('button', { name: 'Star entry' })
+    await fireEvent.click(star)
+    await waitFor(async () => expect((await repo.getEntry(entry.id))?.starred_at).toEqual(expect.any(String)))
+  })
+
   it('shows shared placements and scope hints, and reports shared photo deletion', async () => {
     const collection = await repo.createCollection({ name: 'Shared target', storage_mode: 'local_only' })
     const entry = await repo.createEntry(collection.id)

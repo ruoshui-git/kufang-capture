@@ -99,7 +99,8 @@ describe('Entry list', () => {
     await repo.createEntry(collectionId)
     render(EntryListPage, { props: { collectionId } })
     await screen.findAllByRole('textbox', { name: 'Entry title' })
-    await fireEvent.click(screen.getByRole('button', { name: 'Incomplete' }))
+    await fireEvent.click(screen.getByText('Incomplete'))
+    await fireEvent.click(screen.getByRole('menuitem', { name: 'Any incomplete' }))
     await waitFor(() => expect(screen.getAllByRole('textbox', { name: 'Entry title' })).toHaveLength(3))
     await fireEvent.input(screen.getByRole('textbox', { name: 'Search entries' }), {
       target: { value: '#0003' },

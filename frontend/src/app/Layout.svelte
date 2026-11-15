@@ -8,6 +8,7 @@
   import type { CollectionSummary } from '$lib/types'
   import type { SyncStatus } from '$lib/sync/api'
   import SyncNowButton from '../components/sync/SyncNowButton.svelte'
+  import StarredPage from '../routes/starred/StarredPage.svelte'
   let { children, header, bottomBar }: { children: Snippet; header?: Snippet; bottomBar?: Snippet } = $props()
   let collections = $state<CollectionSummary[]>([])
   let signedIn = $state(false)
@@ -51,6 +52,7 @@
   {#if router.isDesktop}
     <aside class="rail" aria-label="Collections">
       <a class="rail-title" href="/">Collections</a>
+      <a href="/starred">★ Starred</a>
       {#each collections as item (item.collection.id)}
         <a class="rail-row" href="/c/{item.collection.id}"
           ><span class="rail-row-copy"
@@ -80,7 +82,9 @@
         {#if !signedIn}<a href="/login">Sign in</a>{:else}<SyncNowButton />{/if}
       </div>
     {/if}
-    <main>{@render children()}</main>
+    <main>
+      {#if router.route.name === 'starred'}<StarredPage />{:else}{@render children()}{/if}
+    </main>
     {#if bottomBar}<div class="bottom-action">{@render bottomBar()}</div>{/if}
   </div>
   <ToastHost />

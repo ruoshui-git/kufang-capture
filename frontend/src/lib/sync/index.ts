@@ -732,7 +732,13 @@ export function createSyncEngine(options: SyncEngineOptions = {}): SyncEngineWit
         if (!change.record) return
         if (change.entity === 'collection' && (old as Collection | undefined)?.storage_mode === 'local_only')
           return
-        const incoming = change.record
+        const incoming: ServerRecord = {
+          ...change.record,
+          ...(change.entity === 'collection' ? { folder: change.record.folder ?? '' } : {}),
+          ...(change.entity === 'entry'
+            ? { entry_notes: change.record.entry_notes ?? '', starred_at: change.record.starred_at ?? null }
+            : {}),
+        }
         const collectionId = change.entity === 'collection' ? change.id : String(incoming.collection_id ?? '')
         if (change.entity === 'item' || change.entity === 'photo') {
           const localEntries = await db.entries

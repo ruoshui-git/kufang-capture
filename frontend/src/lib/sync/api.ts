@@ -68,6 +68,7 @@ export interface AuthClient {
 export interface ServerCollection {
   id: Id
   name: string
+  folder: string
   status: 'active' | 'archived'
   entry_count: number
   photo_count: number

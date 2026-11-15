@@ -32,6 +32,33 @@ async function first<T>(watch: {
 }
 
 describe('Dexie repository', () => {
+  it('stores collection folders and per-entry stars/notes, filters them, and never queues local-only edits', async () => {
+    const name = `capture-organize-${++counter}`
+    const repo = createRepo({ databaseName: name })
+    const collection = await repo.createCollection({
+      name: 'Room',
+      folder: '  North shelf  ',
+      storage_mode: 'local_only',
+    })
+    expect(collection.folder).toBe('North shelf')
+    const entry = await repo.createEntry(collection.id, { title: '   ' })
+    await repo.updateEntry(entry.id, { entry_notes: 'Find behind the crate' })
+    await repo.setEntryStarred(entry.id, true)
+    expect((await repo.getEntry(entry.id))?.entry_notes).toBe('Find behind the crate')
+    expect((await first(repo.watchStarredRows()))[0]?.entry.id).toBe(entry.id)
+    const noTitle = await first(
+      repo.watchEntryRows(collection.id, { search: '', filter: 'missing_title', sort: 'newest' }),
+    )
+    expect(noTitle.map((row) => row.entry.id)).toContain(entry.id)
+    const search = await first(
+      repo.watchEntryRows(collection.id, { search: 'behind the crate', filter: 'all', sort: 'newest' }),
+    )
+    expect(search.map((row) => row.entry.id)).toContain(entry.id)
+    const db = getCaptureDb(name)
+    expect(await db.outbox.count()).toBe(0)
+    await db.delete()
+  })
+
   it('shares item fields across collections while keeping quantities local to each entry', async () => {
     const repo = isolatedRepo(async () => ({ width: 1, height: 1, thumbnail: new NodeBlob(['thumb']) }))
     const sourceCollection = await repo.createCollection({ name: 'Source', storage_mode: 'local_only' })

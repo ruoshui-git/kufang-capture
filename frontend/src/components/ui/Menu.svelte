@@ -1,6 +1,10 @@
 <script lang="ts">
   import type { Snippet } from 'svelte'
-  let { children, label = 'More actions' }: { children: Snippet; label?: string } = $props()
+  let {
+    children,
+    label = 'More actions',
+    triggerText,
+  }: { children: Snippet; label?: string; triggerText?: string } = $props()
   let open = $state(false)
   let element: HTMLDetailsElement | undefined = $state()
 
@@ -29,7 +33,7 @@
 </script>
 
 <details class="menu" bind:this={element} bind:open>
-  <summary aria-label={label} title={label}>⋯</summary>
+  <summary aria-label={label} title={label}>{triggerText ?? '⋯'}</summary>
   <!-- svelte-ignore a11y_click_events_have_key_events -->
   <div class="menu-popover" role="menu" tabindex="-1" onclick={chosen}>{@render children()}</div>
 </details>

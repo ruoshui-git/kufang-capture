@@ -24,6 +24,9 @@
   let editing = $state<CollectionSummary | null>(null)
   let name = $state('')
   let description = $state('')
+  let folder = $state('')
+  let collapsedFolders = $state<string[]>([])
+  let folderSettingsLoaded = false
   let storageMode = $state<StorageMode>('local_only')
   let saving = $state(false)
   let error = $state('')
@@ -59,11 +62,37 @@
   })
 
   const totalEntries = $derived(summaries.reduce((sum, item) => sum + item.entry_count, 0))
+  const groups = $derived.by(() => {
+    const names = [
+      ...new Set(summaries.map((item) => (item.collection.folder ?? '').trim()).filter(Boolean)),
+    ].sort((a, b) => a.localeCompare(b))
+    const result = names.map((name) => ({
+      name,
+      items: summaries.filter((item) => (item.collection.folder ?? '').trim() === name),
+    }))
+    const unfiled = summaries.filter((item) => !(item.collection.folder ?? '').trim())
+    if (unfiled.length) result.push({ name: '', items: unfiled })
+    return result
+  })
+  onMount(() => {
+    void repo.getSetting<string[]>(SETTING_KEYS.collapsedFolders, []).then((value) => {
+      if (!folderSettingsLoaded) collapsedFolders = value
+      folderSettingsLoaded = true
+    })
+  })
+  async function toggleFolder(name: string) {
+    folderSettingsLoaded = true
+    collapsedFolders = collapsedFolders.includes(name)
+      ? collapsedFolders.filter((item) => item !== name)
+      : [...collapsedFolders, name]
+    await repo.setSetting(SETTING_KEYS.collapsedFolders, collapsedFolders)
+  }
 
   async function openNew() {
     editing = null
     name = ''
     description = ''
+    folder = ''
     storageMode = await repo.getSetting<StorageMode>(SETTING_KEYS.lastStorageMode, 'local_only')
     error = ''
     sheetOpen = true
@@ -72,6 +101,7 @@
     editing = item
     name = item.collection.name
     description = item.collection.description
+    folder = item.collection.folder
     storageMode = item.collection.storage_mode
     error = ''
     sheetOpen = true
@@ -86,12 +116,14 @@
         await repo.updateCollection(editing.collection.id, {
           name: name.trim(),
           description: description.trim(),
+          folder: folder.trim(),
         })
         showToast({ message: 'Collection updated' })
       } else {
         const created = await repo.createCollection({
           name: name.trim(),
           description: description.trim(),
+          folder: folder.trim(),
           storage_mode: storageMode,
         })
         await repo.setSetting(SETTING_KEYS.lastStorageMode, storageMode)
@@ -141,6 +173,7 @@
       </div>
     </div>
     <div class="page-heading-actions">
+      <a class="button quiet" href="/starred">★ Starred</a>
       <a class="button quiet icon-link" href="/settings" aria-label="Settings" title="Settings"
         ><SettingsIcon size={20} aria-hidden="true" /></a
       >
@@ -161,72 +194,95 @@
       are offline.</EmptyState
     >
   {:else}
-    <div class="collection-grid">
-      {#each summaries as item (item.collection.id)}
-        <article class="collection-card">
-          <a class="collection-open" href="/c/{item.collection.id}" aria-label="Open {item.collection.name}">
-            <span class="collection-title-row">
-              <span class="collection-title">{item.collection.name}</span>
-            </span>
-            <span class="collection-meta">
-              <span class="stat-chip">{item.entry_count} {item.entry_count === 1 ? 'entry' : 'entries'}</span>
-              <span class="stat-chip">{item.photo_count} {item.photo_count === 1 ? 'photo' : 'photos'}</span>
-              <span class="stat-chip" class:incomplete={item.incomplete_count > 0}>
-                {item.incomplete_count} incomplete
-              </span>
-            </span>
-            <span class="collection-updated">Updated {relativeTime(item.last_activity_at)}</span>
-          </a>
-          <button
-            class="status-trigger"
-            type="button"
-            aria-label="Show sync conflicts"
-            onclick={() => void openConflicts()}
-            ><SyncStatusChip
-              collectionId={item.collection.id}
-              mode={item.collection.storage_mode}
-              pendingCount={item.pending_sync_count}
-              pendingBytes={item.pending_upload_bytes}
-            /></button
-          >
-          <div class="collection-card-menu">
-            <Menu label={`Actions for ${item.collection.name}`}>
-              <button role="menuitem" onclick={() => openEdit(item)}>Rename / Edit</button>
-              <button role="menuitem" onclick={() => toggleArchive(item)}>
-                {item.collection.status === 'archived' ? 'Unarchive' : 'Archive'}
-              </button>
-              <button
-                role="menuitem"
-                onclick={() => {
-                  selected = item
-                  exportOpen = true
-                }}>Export ZIP</button
+    {#each groups as group (group.name)}
+      {#if group.name}<button
+          class="folder-heading"
+          aria-expanded={!collapsedFolders.includes(group.name)}
+          onclick={() => void toggleFolder(group.name)}>{group.name} <span>{group.items.length}</span></button
+        >{/if}
+      {#if !group.name || !collapsedFolders.includes(group.name)}<div class="collection-grid">
+          {#each group.items as item (item.collection.id)}
+            <article class="collection-card">
+              <a
+                class="collection-open"
+                href="/c/{item.collection.id}"
+                aria-label="Open {item.collection.name}"
               >
+                <span class="collection-title-row">
+                  <span class="collection-title">{item.collection.name}</span>
+                </span>
+                <span class="collection-meta">
+                  <span class="stat-chip"
+                    >{item.entry_count} {item.entry_count === 1 ? 'entry' : 'entries'}</span
+                  >
+                  <span class="stat-chip"
+                    >{item.photo_count} {item.photo_count === 1 ? 'photo' : 'photos'}</span
+                  >
+                  <span class="stat-chip" class:incomplete={item.incomplete_count > 0}>
+                    {item.incomplete_count} incomplete
+                  </span>
+                </span>
+                <span class="collection-updated">Updated {relativeTime(item.last_activity_at)}</span>
+              </a>
               <button
-                role="menuitem"
-                onclick={() => {
-                  selected = item
-                  storageOpen = true
-                }}>Change storage mode…</button
+                class="status-trigger"
+                type="button"
+                aria-label="Show sync conflicts"
+                onclick={() => void openConflicts()}
+                ><SyncStatusChip
+                  collectionId={item.collection.id}
+                  mode={item.collection.storage_mode}
+                  pendingCount={item.pending_sync_count}
+                  pendingBytes={item.pending_upload_bytes}
+                /></button
               >
-              <button
-                role="menuitem"
-                onclick={() => {
-                  selected = item
-                  clearOpen = true
-                }}>Clear from this device…</button
-              >
-            </Menu>
-          </div>
-        </article>
-      {/each}
-    </div>
+              <div class="collection-card-menu">
+                <Menu label={`Actions for ${item.collection.name}`}>
+                  <button role="menuitem" onclick={() => openEdit(item)}>Rename / Edit</button>
+                  <button role="menuitem" onclick={() => toggleArchive(item)}>
+                    {item.collection.status === 'archived' ? 'Unarchive' : 'Archive'}
+                  </button>
+                  <button
+                    role="menuitem"
+                    onclick={() => {
+                      selected = item
+                      exportOpen = true
+                    }}>Export ZIP</button
+                  >
+                  <button
+                    role="menuitem"
+                    onclick={() => {
+                      selected = item
+                      storageOpen = true
+                    }}>Change storage mode…</button
+                  >
+                  <button
+                    role="menuitem"
+                    onclick={() => {
+                      selected = item
+                      clearOpen = true
+                    }}>Clear from this device…</button
+                  >
+                </Menu>
+              </div>
+            </article>
+          {/each}
+        </div>{/if}
+    {/each}
   {/if}
 </section>
 <Sheet bind:open={sheetOpen} title={editing ? 'Edit collection' : 'New collection'}>
   {#snippet children()}
     <form class="collection-form" onsubmit={save}>
       <TextField label="Name" bind:value={name} required placeholder="e.g. Temple 2 / A04" />
+      <label class="field"
+        >Folder <input bind:value={folder} list="collection-folders" placeholder="Unfiled" /></label
+      >
+      <datalist id="collection-folders"
+        >{#each [...new Set(summaries
+              .map((item) => item.collection.folder ?? '')
+              .filter(Boolean))] as existing}<option value={existing}></option>{/each}</datalist
+      >
       <label class="field"
         >Description <textarea bind:value={description} rows="3" placeholder="Optional details"
         ></textarea></label
@@ -273,6 +329,18 @@
 {#if conflictOpen && ConflictSheetView}<ConflictSheetView bind:open={conflictOpen} />{/if}
 
 <style>
+  .folder-heading {
+    width: 100%;
+    min-height: var(--size-touch);
+    margin: var(--space-4) 0 var(--space-3);
+    padding: 0 var(--space-3);
+    border: 0;
+    background: transparent;
+    color: var(--color-ink);
+    text-align: left;
+    font-size: var(--text-xl);
+    font-weight: var(--weight-medium);
+  }
   .status-trigger {
     position: absolute;
     top: var(--space-5);

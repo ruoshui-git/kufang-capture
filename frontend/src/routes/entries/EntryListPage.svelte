@@ -179,6 +179,17 @@
     [...new Set(unitRows.map(({ entry }) => entry.unit.trim()).filter(Boolean))].slice(0, 12),
   )
   const visibleRows = $derived(rows.slice(0, limit))
+  const incompleteLabel = $derived(
+    filter === 'missing_quantity'
+      ? 'No quantity'
+      : filter === 'missing_title'
+        ? 'No title'
+        : filter === 'missing_photos'
+          ? 'No photos'
+          : filter === 'needs_review'
+            ? 'Needs review'
+            : 'Incomplete',
+  )
 </script>
 
 <svelte:head><title>{summary?.collection.name ?? 'Entries'} — Kufang Capture</title></svelte:head>
@@ -209,7 +220,11 @@
             ><Chip>{summary.incomplete_count} incomplete</Chip></button
           >
         {/if}
-        {#if summary.needs_review_count > 0}<Chip>{summary.needs_review_count} needs review</Chip>{/if}
+        {#if summary.needs_review_count > 0}<button
+            class="summary-filter"
+            onclick={() => (filter = 'needs_review')}
+            ><Chip>{summary.needs_review_count} needs review</Chip></button
+          >{/if}
       </div>
       {#if summary.quantity_by_unit.length > 0}
         <div class="quantity-chips" aria-label="Quantities by unit">
@@ -222,11 +237,21 @@
     <div class="toolbar">
       <div class="filter-row">
         <div class="filters" role="group" aria-label="Entry filters">
-          {#each [['all', 'All'], ['incomplete', 'Incomplete'], ['pending_sync', 'Pending sync'], ['deleted', 'Recently Deleted']] as item}
-            <button class:active={filter === item[0]} onclick={() => (filter = item[0] as EntryFilter)}
-              >{item[1]}</button
-            >
-          {/each}
+          <button class:active={filter === 'all'} onclick={() => (filter = 'all')}>All</button>
+          <Menu label={incompleteLabel} triggerText={incompleteLabel}>
+            <button role="menuitem" onclick={() => (filter = 'incomplete')}>Any incomplete</button>
+            <button role="menuitem" onclick={() => (filter = 'missing_quantity')}>No quantity</button>
+            <button role="menuitem" onclick={() => (filter = 'missing_title')}>No title</button>
+            <button role="menuitem" onclick={() => (filter = 'missing_photos')}>No photos</button>
+            <button role="menuitem" onclick={() => (filter = 'needs_review')}>Needs review</button>
+          </Menu>
+          <button class:active={filter === 'starred'} onclick={() => (filter = 'starred')}>Starred</button>
+          <button class:active={filter === 'pending_sync'} onclick={() => (filter = 'pending_sync')}
+            >Pending sync</button
+          >
+          <button class:active={filter === 'deleted'} onclick={() => (filter = 'deleted')}
+            >Recently Deleted</button
+          >
         </div>
         <Menu label="Collection actions">
           <button
@@ -242,6 +267,13 @@
               sort = 'oldest'
               void repo.setSetting(SETTING_KEYS.entrySort, sort)
             }}>Oldest first</button
+          >
+          <button
+            role="menuitem"
+            onclick={() => {
+              sort = 'last_edited'
+              void repo.setSetting(SETTING_KEYS.entrySort, sort)
+            }}>Last edited</button
           >
           <button role="menuitem" onclick={() => (exportOpen = true)}>Export ZIP</button>
           <button role="menuitem" onclick={() => (importOpen = true)}>Import from another collection</button>

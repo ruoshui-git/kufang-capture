@@ -221,3 +221,160 @@ describe('v3 to v4 migration', () => {
     await db.delete()
   })
 })
+
+describe('v4 to v5 migration', () => {
+  it('preserves existing collections, entries, items, photos and blobs while adding defaults', async () => {
+    const name = `capture-v4-migration-${crypto.randomUUID()}`
+    const old = new Dexie(name)
+    old.version(4).stores({
+      collections: 'id, status, storage_mode, updated_at',
+      items: 'id, updated_at',
+      entries:
+        'id, [collection_id+sequence_number], [collection_id+deleted_at], [collection_id+updated_at], collection_id, item_id, [collection_id+item_id]',
+      photos: 'id, item_id, [item_id+sort_order], [item_id+deleted_at], [item_id+captured_at]',
+      photoBlobs: 'photo_id',
+      outbox:
+        'id, [collection_id+entity_id], [collection_id+entity+entity_id], [entity+entity_id], next_attempt_at, collection_id',
+      settings: 'key',
+      conflicts: 'id, collection_id, [entity+entity_id], created_at',
+    })
+    await old.open()
+    await old.table('collections').put({
+      id: 'c',
+      name: 'Room',
+      description: '',
+      status: 'active',
+      storage_mode: 'local_only',
+      next_sequence_number: 2,
+      sort_order: null,
+      sync_consented_at: null,
+      last_exported_at: null,
+      archived_at: null,
+      created_at: now,
+      updated_at: now,
+      revision: 1,
+      server_revision: null,
+      sync_state: 'local_only',
+    })
+    await old.table('items').put({
+      id: 'i',
+      title: 'Crate',
+      notes: 'shared',
+      expiration_date: null,
+      dimensions: '',
+      review_status: 'draft',
+      created_at: now,
+      updated_at: now,
+      revision: 1,
+      server_revision: null,
+      sync_state: 'local_only',
+    })
+    await old.table('entries').put({
+      id: 'e',
+      collection_id: 'c',
+      item_id: 'i',
+      sequence_number: 1,
+      quantity: '3',
+      unit: 'boxes',
+      count_detail: '',
+      deleted_at: null,
+      created_at: now,
+      updated_at: now,
+      revision: 1,
+      server_revision: null,
+      sync_state: 'local_only',
+    })
+    await old.table('photos').put({
+      id: 'p',
+      item_id: 'i',
+      sort_order: 0,
+      original_filename: 'p.jpg',
+      mime_type: 'image/jpeg',
+      byte_size: 3,
+      width: null,
+      height: null,
+      sha256: 'a'.repeat(64),
+      crc32: 1,
+      captured_at: now,
+      capture_source: 'photo_library',
+      caption: '',
+      is_cover: true,
+      deleted_at: null,
+      upload_state: 'not_needed',
+      server_storage_key: null,
+      created_at: now,
+      updated_at: now,
+      revision: 1,
+      server_revision: null,
+      sync_state: 'local_only',
+    })
+    await old
+      .table('photoBlobs')
+      .put({ photo_id: 'p', original: new NodeBlob([new Uint8Array([1, 2, 3])]), thumbnail: null })
+    // Realistic v4 data: a never-shared entry whose item_id is its own id, and a second entry of item 'i'.
+    await old.table('items').put({
+      id: 'e2',
+      title: 'Lantern',
+      notes: 'own item',
+      expiration_date: '2027-01-01',
+      dimensions: '10 cm',
+      review_status: 'needs_review',
+      created_at: now,
+      updated_at: now,
+      revision: 3,
+      server_revision: 2,
+      sync_state: 'synced',
+    })
+    await old.table('entries').put({
+      id: 'e2',
+      collection_id: 'c',
+      item_id: 'e2',
+      sequence_number: 2,
+      quantity: null,
+      unit: '',
+      count_detail: '',
+      deleted_at: null,
+      created_at: now,
+      updated_at: now,
+      revision: 3,
+      server_revision: 2,
+      sync_state: 'synced',
+    })
+    await old.table('entries').put({
+      id: 'e3',
+      collection_id: 'c',
+      item_id: 'i',
+      sequence_number: 3,
+      quantity: '1',
+      unit: 'box',
+      count_detail: '',
+      deleted_at: null,
+      created_at: now,
+      updated_at: now,
+      revision: 1,
+      server_revision: null,
+      sync_state: 'local_only',
+    })
+    old.close()
+    createRepo({ databaseName: name })
+    const db = getCaptureDb(name)
+    expect(await db.items.get('e2')).toMatchObject({
+      title: 'Lantern',
+      notes: 'own item',
+      expiration_date: '2027-01-01',
+      dimensions: '10 cm',
+      review_status: 'needs_review',
+      revision: 3,
+      server_revision: 2,
+    })
+    expect(await db.entries.get('e3')).toMatchObject({ item_id: 'i', entry_notes: '', starred_at: null })
+    expect(await db.items.count()).toBe(2)
+    expect(await db.outbox.count()).toBe(0)
+    expect(await db.collections.get('c')).toMatchObject({ name: 'Room', folder: '' })
+    expect(await db.entries.get('e')).toMatchObject({ quantity: '3', entry_notes: '', starred_at: null })
+    expect(await db.items.get('i')).toMatchObject({ title: 'Crate', notes: 'shared' })
+    expect(await db.photos.get('p')).toMatchObject({ item_id: 'i', original_filename: 'p.jpg' })
+    expect((await readPhotoBlob('p', name))?.original.size).toBe(3)
+    await db.delete()
+  })
+})

@@ -25,6 +25,26 @@ async function first<T>(watch: {
 }
 
 describe('entry row inline editing', () => {
+  it('shows needs-review badge and toggles the per-entry star accessibly', async () => {
+    const collection = await repo.createCollection({
+      name: `Review ${Date.now()}`,
+      storage_mode: 'local_only',
+    })
+    const entry = await repo.createEntry(collection.id)
+    await repo.updateEntry(entry.id, { review_status: 'needs_review' })
+    const [row] = await first(
+      repo.watchEntryRows(collection.id, { search: '', filter: 'all', sort: 'newest' }),
+    )
+    render(EntryRow, {
+      props: { row: row!, units: [], ondetails: () => {}, onviewer: () => {}, ondelete: () => {} },
+    })
+    expect(screen.getByText('Needs review')).toBeInTheDocument()
+    const star = screen.getByRole('button', { name: 'Star entry' })
+    expect(star).toHaveAttribute('aria-pressed', 'false')
+    await fireEvent.click(star)
+    expect(await repo.getEntry(entry.id)).toMatchObject({ starred_at: expect.any(String) })
+  })
+
   it('shows a compact shared collections tag', async () => {
     const collection = await repo.createCollection({
       name: `Shared ${Date.now()}`,

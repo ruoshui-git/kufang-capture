@@ -299,6 +299,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     {
                         "id": collection["id"],
                         "name": collection["name"],
+                        "folder": collection["folder"],
                         "status": collection["status"],
                         "updated_at": collection["updated_at"],
                         "entry_count": counts,

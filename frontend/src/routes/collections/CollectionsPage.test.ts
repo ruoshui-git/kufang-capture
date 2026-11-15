@@ -77,11 +77,38 @@ describe('Collections page', () => {
       expect(fakeRepo.createCollection).toHaveBeenCalledWith({
         name: 'New room',
         description: '',
+        folder: '',
         storage_mode: 'synced',
       }),
     )
     expect(fakeRepo.setSetting).toHaveBeenCalledWith('last_storage_mode', 'synced')
     expect(fakeRepo.requestPersistentStorage).toHaveBeenCalledOnce()
     expect(navigateSpy).toHaveBeenCalledWith('/c/created-room')
+  })
+  it('groups folders alphabetically and persists collapsed folder state', async () => {
+    const base = sample as unknown as Record<string, unknown>
+    const collection = base.collection as Record<string, unknown>
+    const north = { ...base, collection: { ...collection, folder: 'North' } }
+    const archive = {
+      ...base,
+      collection: { ...collection, id: 'room-two', name: 'A03', folder: 'Archive' },
+    }
+    fakeRepo.getSetting.mockResolvedValueOnce([])
+    fakeRepo.watchCollectionSummaries.mockReturnValue({
+      subscribe: (next: (value: unknown[]) => void) => {
+        next([north, archive])
+        return () => {}
+      },
+    })
+    render(CollectionsPage)
+    const headings = screen
+      .getAllByRole('button')
+      .filter((button) => /Archive|North/.test(button.textContent ?? ''))
+    expect(headings[0]).toHaveTextContent('Archive')
+    expect(headings[1]).toHaveTextContent('North')
+    expect(document.querySelectorAll('.collection-open')).toHaveLength(2)
+    await fireEvent.click(headings[1]!)
+    expect(fakeRepo.setSetting).toHaveBeenCalledWith('collapsed_folders', ['North'])
+    await waitFor(() => expect(document.querySelectorAll('.collection-open')).toHaveLength(1))
   })
 })

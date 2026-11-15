@@ -35,6 +35,7 @@
   let countDetail = $state(initialEntry.count_detail)
   let expirationDate = $state(initialEntry.expiration_date ?? '')
   let dimensions = $state(initialEntry.dimensions)
+  let entryNotes = $state(initialEntry.entry_notes)
   let expanded = $state(false)
   let dirty = $state({
     title: false,
@@ -98,6 +99,7 @@
       expirationDate = entry.expiration_date ?? ''
     if (dirty.dimensions && acknowledged.dimensions === entry.dimensions) dirty.dimensions = false
     if (!dirty.dimensions && dimensions !== entry.dimensions) dimensions = entry.dimensions
+    if (entryNotes !== entry.entry_notes) entryNotes = entry.entry_notes
   })
   onDestroy(() => void autosave.dispose())
   onMount(() => {
@@ -224,11 +226,28 @@
       }}
       onblur={() => void flushDrafts()}
     />
+    {#if row.entry.starred_at}<button
+        class="star-toggle"
+        aria-label="Unstar entry"
+        aria-pressed="true"
+        onclick={() => void repo.setEntryStarred(row.entry.id, false)}>★</button
+      >{:else}<button
+        class="star-toggle"
+        aria-label="Star entry"
+        aria-pressed="false"
+        onclick={() => void repo.setEntryStarred(row.entry.id, true)}>☆</button
+      >{/if}
+    {#if row.entry.review_status === 'needs_review'}<span class="badge needs-review">Needs review</span>{/if}
     {#if row.entry.shared_with.length > 0}<span class="shared-tag"
         >Shared · {row.entry.shared_with.length + 1} collections</span
       >{/if}
     <div class="menu-cell">
       <Menu label="Entry actions">
+        <button
+          role="menuitem"
+          onclick={() => void repo.setEntryStarred(row.entry.id, row.entry.starred_at === null)}
+          >{row.entry.starred_at ? 'Unstar entry' : 'Star entry'}</button
+        >
         <button
           role="menuitem"
           onclick={() =>
@@ -258,6 +277,7 @@
     </button>
   </div>
 
+  {#if entryNotes}<p class="entry-note-preview">{entryNotes}</p>{/if}
   <div class="fields">
     <div class="quantity-wrap">
       <input
@@ -427,6 +447,28 @@
     color: var(--color-muted);
     font-size: var(--text-xs);
     line-height: var(--leading-tight);
+  }
+  .needs-review {
+    color: var(--color-warn);
+    background: var(--color-warn-soft);
+    border-radius: var(--radius-pill);
+    padding: var(--space-1) var(--space-3);
+    font-size: var(--text-xs);
+  }
+  .star-toggle {
+    min-width: var(--size-touch);
+    min-height: var(--size-touch);
+    border: 0;
+    background: transparent;
+    color: var(--color-warn);
+  }
+  .entry-note-preview {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    color: var(--color-muted);
+    margin: 0;
+    font-size: var(--text-sm);
   }
   .tag-link {
     grid-area: auto;

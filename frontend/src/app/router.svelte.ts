@@ -1,5 +1,6 @@
 export type Route =
   | { name: 'collections' }
+  | { name: 'starred' }
   | { name: 'entries'; collectionId: string }
   | { name: 'detail'; collectionId: string; entryId: string }
   | { name: 'settings' }
@@ -11,6 +12,7 @@ export type Route =
 function match(path: string): Route {
   const clean = path.replace(/\/$/, '') || '/'
   if (clean === '/') return { name: 'collections' }
+  if (clean === '/starred') return { name: 'starred' }
   if (clean === '/settings') return { name: 'settings' }
   if (clean === '/diagnostics') return { name: 'diagnostics' }
   if (clean === '/login') return { name: 'login' }

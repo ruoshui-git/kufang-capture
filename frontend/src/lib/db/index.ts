@@ -25,7 +25,7 @@ import type {
   Setting,
   StorageMode,
 } from '../types'
-import { ITEM_FIELDS, byCoverThenNewest, formatSequence } from '../types'
+import { ENTRY_FIELDS, ITEM_FIELDS, byCoverThenNewest, formatSequence } from '../types'
 import { createId } from '../ids'
 import { addDecimals, isIncomplete, normalizeUnit } from '../summary'
 import {
@@ -218,6 +218,23 @@ class CaptureDb extends Dexie {
             fields: conflict.fields.filter((key: string) => shared.includes(key)),
           })
         }
+      })
+    this.version(5)
+      .stores({})
+      .upgrade(async (tx) => {
+        await tx
+          .table('collections')
+          .toCollection()
+          .modify((row: Record<string, unknown>) => {
+            row.folder ??= ''
+          })
+        await tx
+          .table('entries')
+          .toCollection()
+          .modify((row: Record<string, unknown>) => {
+            row.entry_notes ??= ''
+            row.starred_at ??= null
+          })
       })
   }
 }
@@ -600,6 +617,7 @@ export function createRepo(options: RepoOptions = {}): Repo {
         id: createId(),
         name: input.name.trim(),
         description: input.description ?? '',
+        folder: (input.folder ?? '').trim().slice(0, 200),
         status: 'active',
         storage_mode: input.storage_mode,
         next_sequence_number: 1,
@@ -624,15 +642,19 @@ export function createRepo(options: RepoOptions = {}): Repo {
         const current = await db.collections.get(id)
         if (!current) throw new Error('Collection not found')
         const at = stamp()
+        const cleanPatch = {
+          ...patch,
+          ...(patch.folder === undefined ? {} : { folder: patch.folder.trim().slice(0, 200) }),
+        }
         const saved = {
           ...current,
-          ...patch,
+          ...cleanPatch,
           updated_at: at,
           revision: current.revision + 1,
           sync_state: current.storage_mode === 'local_only' ? ('local_only' as const) : ('pending' as const),
         }
         await db.collections.put(saved)
-        await enqueue(saved, 'collection', saved, 'upsert', patch)
+        await enqueue(saved, 'collection', saved, 'upsert', cleanPatch)
       }),
     archiveCollection: async (id) => {
       const current = await db.collections.get(id)
@@ -804,14 +826,28 @@ export function createRepo(options: RepoOptions = {}): Repo {
             (item.entity === 'photo' && photoIds.has(item.entity_id)),
         )
         const activePhotos = photos.filter((photo) => photo.deleted_at === null)
+        const itemRows = await db.items.bulkGet([...new Set(entries.map((entry) => entry.item_id))])
+        const itemById = new Map(itemRows.filter(Boolean).map((item) => [item!.id, item!]))
+        const lastEdited = new Map<Id, string>()
+        for (const entry of entries) {
+          const stampValues = [
+            entry.updated_at,
+            itemById.get(entry.item_id)?.updated_at ?? entry.updated_at,
+            ...photos.filter((photo) => photo.item_id === entry.item_id).map((photo) => photo.updated_at),
+          ]
+          lastEdited.set(entry.id, stampValues.sort().at(-1) ?? entry.updated_at)
+        }
         const sortedEntries = entries
           .filter((entry) =>
             query.filter === 'deleted' ? entry.deleted_at !== null : entry.deleted_at === null,
           )
           .sort((a, b) =>
-            query.sort === 'newest'
-              ? b.sequence_number - a.sequence_number
-              : a.sequence_number - b.sequence_number,
+            query.sort === 'last_edited'
+              ? (lastEdited.get(b.id) ?? '').localeCompare(lastEdited.get(a.id) ?? '') ||
+                b.sequence_number - a.sequence_number
+              : query.sort === 'newest'
+                ? b.sequence_number - a.sequence_number
+                : a.sequence_number - b.sequence_number,
           )
         const term = query.search.trim().toLocaleLowerCase()
         const views = await entryViews(sortedEntries)
@@ -836,6 +872,7 @@ export function createRepo(options: RepoOptions = {}): Repo {
               recent_photos: entryPhotos.sort(byCoverThenNewest).slice(0, 3),
               is_incomplete: incomplete,
               pending_sync: queued || photoPending,
+              last_edited_at: lastEdited.get(entry.id) ?? entry.updated_at,
             }
           })
           .filter((row) =>
@@ -843,7 +880,17 @@ export function createRepo(options: RepoOptions = {}): Repo {
               ? row.is_incomplete
               : query.filter === 'pending_sync'
                 ? row.pending_sync
-                : true,
+                : query.filter === 'missing_quantity'
+                  ? row.entry.quantity === null
+                  : query.filter === 'missing_title'
+                    ? !row.entry.title.trim()
+                    : query.filter === 'missing_photos'
+                      ? row.photo_count === 0
+                      : query.filter === 'needs_review'
+                        ? row.entry.review_status === 'needs_review'
+                        : query.filter === 'starred'
+                          ? row.entry.starred_at !== null
+                          : true,
           )
         return !term
           ? rows
@@ -853,6 +900,7 @@ export function createRepo(options: RepoOptions = {}): Repo {
                 formatSequence(entry.sequence_number),
                 entry.title,
                 entry.notes,
+                entry.entry_notes,
                 entry.count_detail,
                 entry.unit,
               ].some((value) => value.toLocaleLowerCase().includes(term)),
@@ -898,6 +946,8 @@ export function createRepo(options: RepoOptions = {}): Repo {
             quantity: init.quantity ?? null,
             unit,
             count_detail: init.count_detail ?? '',
+            entry_notes: init.entry_notes ?? '',
+            starred_at: null,
             deleted_at: null,
             created_at: at,
             updated_at: at,
@@ -932,7 +982,7 @@ export function createRepo(options: RepoOptions = {}): Repo {
           ITEM_FIELDS.flatMap((field) => (field in patch ? [[field, patch[field]]] : [])),
         )
         const entryPatch = Object.fromEntries(
-          ['quantity', 'unit', 'count_detail'].flatMap((field) =>
+          ENTRY_FIELDS.flatMap((field) =>
             field in patch ? [[field, patch[field as keyof typeof patch]]] : [],
           ),
         )
@@ -969,14 +1019,94 @@ export function createRepo(options: RepoOptions = {}): Repo {
     getAdjacentEntryIds: async (entryId, sort) => {
       const entry = await db.entries.get(entryId)
       if (!entry) return { prev: null, next: null }
-      const rows = (await db.entries.where('collection_id').equals(entry.collection_id).toArray())
-        .filter((row) => row.deleted_at === null)
-        .sort((a, b) =>
-          sort === 'newest' ? b.sequence_number - a.sequence_number : a.sequence_number - b.sequence_number,
-        )
+      const entries = (await db.entries.where('collection_id').equals(entry.collection_id).toArray()).filter(
+        (row) => row.deleted_at === null,
+      )
+      const items = new Map(
+        (await db.items.bulkGet([...new Set(entries.map((row) => row.item_id))]))
+          .filter(Boolean)
+          .map((item) => [item!.id, item!]),
+      )
+      const photos = await db.photos
+        .where('item_id')
+        .anyOf([...items.keys()])
+        .toArray()
+      const edited = (row: Entry) =>
+        [
+          row.updated_at,
+          items.get(row.item_id)?.updated_at ?? row.updated_at,
+          ...photos.filter((photo) => photo.item_id === row.item_id).map((photo) => photo.updated_at),
+        ]
+          .sort()
+          .at(-1) ?? row.updated_at
+      const rows = entries.sort((a, b) =>
+        sort === 'last_edited'
+          ? edited(b).localeCompare(edited(a)) || b.sequence_number - a.sequence_number
+          : sort === 'newest'
+            ? b.sequence_number - a.sequence_number
+            : a.sequence_number - b.sequence_number,
+      )
       const i = rows.findIndex((row) => row.id === entryId)
       return { prev: rows[i - 1]?.id ?? null, next: rows[i + 1]?.id ?? null }
     },
+    setEntryStarred: async (entryId, starred) => {
+      await db.transaction('rw', db.collections, db.entries, db.outbox, async () => {
+        const entry = await db.entries.get(entryId)
+        if (!entry || (entry.starred_at !== null) === starred) return
+        const starredAt = starred ? stamp() : null
+        await saveEntry({ ...entry, starred_at: starredAt }, { starred_at: starredAt })
+      })
+    },
+    watchStarredRows: () =>
+      liveQuery(async () => {
+        const entries = (await db.entries.toArray())
+          .filter((entry) => entry.deleted_at === null && entry.starred_at !== null)
+          .sort((a, b) => b.starred_at!.localeCompare(a.starred_at!) || b.sequence_number - a.sequence_number)
+        const [views, collections, photos, outbox, items] = await Promise.all([
+          entryViews(entries),
+          db.collections.toArray(),
+          db.photos.toArray(),
+          db.outbox.toArray(),
+          db.items.bulkGet([...new Set(entries.map((entry) => entry.item_id))]),
+        ])
+        const collectionById = new Map(collections.map((collection) => [collection.id, collection]))
+        const itemById = new Map(items.filter(Boolean).map((item) => [item!.id, item!]))
+        return views.flatMap((entry) => {
+          const collection = collectionById.get(entry.collection_id)
+          if (!collection) return []
+          const ownPhotos = photos.filter((photo) => photo.item_id === entry.item_id)
+          const active = ownPhotos.filter((photo) => photo.deleted_at === null).sort(byCoverThenNewest)
+          const row: EntryRow = {
+            entry,
+            photo_count: active.length,
+            recent_photos: active.slice(0, 3),
+            is_incomplete: isIncomplete(entry, active.length > 0),
+            pending_sync:
+              outbox.some(
+                (mutation) => mutation.entity_id === entry.id || mutation.entity_id === entry.item_id,
+              ) || ownPhotos.some((photo) => ['pending', 'uploading', 'error'].includes(photo.upload_state)),
+            last_edited_at:
+              [
+                entry.updated_at,
+                itemById.get(entry.item_id)?.updated_at ?? entry.updated_at,
+                ...ownPhotos.map((photo) => photo.updated_at),
+              ]
+                .sort()
+                .at(-1) ?? entry.updated_at,
+          }
+          return [
+            {
+              ...row,
+              collection: {
+                id: collection.id,
+                name: collection.name,
+                folder: collection.folder,
+                status: collection.status,
+              },
+            },
+          ]
+        })
+      }) as Watchable<import('../types').StarredRow[]>,
     checkStorageMode: async (id, mode) => {
       const collection = await db.collections.get(id)
       if (!collection) throw new Error('Collection not found')
@@ -1021,14 +1151,16 @@ export function createRepo(options: RepoOptions = {}): Repo {
         const active = entries
           .filter((entry) => entry.deleted_at === null)
           .sort((a, b) => b.sequence_number - a.sequence_number)
-        const [targetEntries, photos, views] = await Promise.all([
+        const [targetEntries, photos, views, itemRecords] = await Promise.all([
           db.entries.where('collection_id').equals(targetId).toArray(),
           db.photos
             .where('item_id')
             .anyOf([...new Set(active.map((entry) => entry.item_id))])
             .toArray(),
           entryViews(active),
+          db.items.bulkGet([...new Set(active.map((entry) => entry.item_id))]),
         ])
+        const itemUpdates = new Map(itemRecords.filter(Boolean).map((item) => [item!.id, item!.updated_at]))
         return Promise.all(
           views.map(async (item) => {
             const entry = item
@@ -1044,6 +1176,16 @@ export function createRepo(options: RepoOptions = {}): Repo {
               recent_photos: related.slice(0, 3),
               is_incomplete: isIncomplete(item, related.length > 0),
               pending_sync: false,
+              last_edited_at:
+                [
+                  entry.updated_at,
+                  itemUpdates.get(entry.item_id) ?? entry.updated_at,
+                  ...photos
+                    .filter((photo) => photo.item_id === entry.item_id)
+                    .map((photo) => photo.updated_at),
+                ]
+                  .sort()
+                  .at(-1) ?? entry.updated_at,
               already_here,
             }
             return row
@@ -1057,6 +1199,7 @@ export function createRepo(options: RepoOptions = {}): Repo {
                 formatSequence(row.entry.sequence_number),
                 row.entry.title,
                 row.entry.notes,
+                row.entry.entry_notes,
                 row.entry.count_detail,
                 row.entry.unit,
               ].some((value) => value.toLocaleLowerCase().includes(term)),
@@ -1110,6 +1253,8 @@ export function createRepo(options: RepoOptions = {}): Repo {
                 quantity: null,
                 unit: source.unit,
                 count_detail: '',
+                entry_notes: '',
+                starred_at: null,
                 deleted_at: null,
                 created_at: at,
                 updated_at: at,
