@@ -73,6 +73,10 @@ No forced Item Group, manufacturer, model, barcode, price, cost, valuation, or E
 
 An entry can be **imported** into another collection of the same storage mode (Local Only with Local Only, Synced with Synced). The two entries then share one **Item**: photos, title, notes, expiration date, dimensions and review status are edited once and appear everywhere. Quantity, unit, count detail, sequence number and deletion stay per collection. All collections are equal: deleting an entry removes the item from that collection only, and the item lives while any collection still has it. A collection cannot switch storage mode while it shares items with a collection in the other mode. Contracts: `frontend/src/lib/types.ts` (`Item`, `Entry`, `EntryView`), `docs/api.md` (schema 2), `docs/export-format.md` (version 2).
 
+### Merging and splitting collections (owner decision 2026-11-19)
+
+A room counted in several batches can be consolidated. **Merge** (Collections → Select, two or more) keeps one collection and moves every active entry of the others into it, then archives them. **Move entries…** (entry list menu) moves selected entries into an existing collection of the same storage mode or a new one (split). A move shares the item (photos and item fields follow), copies quantity, unit, count detail and star, gives the entry the target's next sequence number and writes `Moved from "<source>" #0012` into its collection notes; the source entry is soft-deleted and keeps its number. If the target already has the item, its entry is kept, the source count is appended to its notes and differing counts mark the item Needs review. One IndexedDB transaction; synced collections queue ordinary entity changes, so the API and export format are unchanged.
+
 ### Photo
 
 Each Item (and so every entry that shares it) has a one-to-many relationship with photos.

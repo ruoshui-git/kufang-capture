@@ -18,6 +18,7 @@
   import StorageModeSheet from '../../components/sync/StorageModeSheet.svelte'
   import ClearCollectionSheet from '../../components/sync/ClearCollectionSheet.svelte'
   import ExportSheet from '../../components/sync/ExportSheet.svelte'
+  import MergeCollectionsSheet from '../../components/collection/MergeCollectionsSheet.svelte'
 
   let summaries = $state<CollectionSummary[]>([])
   let includeArchived = $state(false)
@@ -35,6 +36,7 @@
   let storageOpen = $state(false)
   let clearOpen = $state(false)
   let exportOpen = $state(false)
+  let mergeOpen = $state(false)
   let selectionMode = $state(false)
   let selectedIds = $state<Id[]>([])
   let selectButton = $state<HTMLButtonElement>()
@@ -398,10 +400,16 @@
   <div class="selection-bar" role="region" aria-label="Export selected collections">
     <span aria-live="polite">{selectedIds.length} selected</span>
     <div class="selection-actions">
+      <Button variant="quiet" disabled={selectedIds.length < 2} onclick={() => (mergeOpen = true)}
+        >Merge…</Button
+      >
       <Button disabled={selectedIds.length === 0} onclick={openSelectedExport}>Export ZIP</Button>
       <Button variant="quiet" onclick={leaveSelection}>Cancel</Button>
     </div>
   </div>
+{/if}
+{#if mergeOpen && selectedInDisplayOrder.length >= 2}
+  <MergeCollectionsSheet bind:open={mergeOpen} selected={selectedInDisplayOrder} />
 {/if}
 <Sheet bind:open={sheetOpen} title={editing ? 'Edit collection' : 'New collection'}>
   {#snippet children()}

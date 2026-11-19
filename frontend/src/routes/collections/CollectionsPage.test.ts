@@ -11,6 +11,7 @@ const { fakeRepo, navigateSpy, exportFromDevice } = vi.hoisted(() => ({
     requestPersistentStorage: vi.fn(),
     archiveCollection: vi.fn(),
     unarchiveCollection: vi.fn(),
+    mergeCollections: vi.fn(),
   },
   navigateSpy: vi.fn(),
   exportFromDevice: vi.fn(),
@@ -190,5 +191,29 @@ describe('Collections page', () => {
     await fireEvent.click(screen.getByRole('button', { name: 'Select' }))
     await fireEvent.keyDown(window, { key: 'Escape' })
     expect(screen.queryByRole('region', { name: 'Export selected collections' })).not.toBeInTheDocument()
+  })
+  it('offers Merge in selection mode and opens the merge sheet for selected collections', async () => {
+    const base = sample as unknown as Record<string, unknown>
+    const collection = base.collection as Record<string, unknown>
+    const first = {
+      ...base,
+      collection: { ...collection, id: 'room-a', name: 'Room A', created_at: '2026-01-01' },
+    }
+    const second = {
+      ...base,
+      collection: { ...collection, id: 'room-b', name: 'Room B', created_at: '2026-02-01' },
+    }
+    fakeRepo.watchCollectionSummaries.mockReturnValue({
+      subscribe: (next: (value: unknown[]) => void) => (next([first, second]), () => {}),
+    })
+    render(CollectionsPage)
+    await fireEvent.click(screen.getByRole('button', { name: 'Select' }))
+    await fireEvent.click(screen.getByRole('checkbox', { name: 'Room A' }))
+    await fireEvent.click(screen.getByRole('checkbox', { name: 'Room B' }))
+    const merge = screen.getByRole('button', { name: 'Merge…' })
+    expect(merge).toBeEnabled()
+    await fireEvent.click(merge)
+    expect(screen.getByRole('dialog', { name: 'Merge collections' })).toBeInTheDocument()
+    expect(screen.getByRole('radio', { name: /Room A/ })).toBeChecked()
   })
 })

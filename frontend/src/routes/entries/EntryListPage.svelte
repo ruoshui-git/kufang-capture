@@ -18,6 +18,7 @@
   import SyncNowButton from '../../components/sync/SyncNowButton.svelte'
   import ExportSheet from '../../components/sync/ExportSheet.svelte'
   import ImportEntriesSheet from '../../components/entry/ImportEntriesSheet.svelte'
+  import MoveEntriesSheet from '../../components/entry/MoveEntriesSheet.svelte'
 
   let { collectionId, detailEntryId }: { collectionId: string; detailEntryId?: string } = $props()
   let summary = $state<CollectionSummary | undefined>()
@@ -37,6 +38,7 @@
   let listElement = $state<HTMLDivElement>()
   let exportOpen = $state(false)
   let importOpen = $state(false)
+  let moveOpen = $state(false)
   let conflictOpen = $state(false)
   let ConflictSheetView: typeof import('../../components/sync/ConflictSheet.svelte').default | null =
     $state(null)
@@ -318,6 +320,7 @@
           >
           <button role="menuitem" onclick={() => (exportOpen = true)}>Export ZIP</button>
           <button role="menuitem" onclick={() => (importOpen = true)}>Import from another collection</button>
+          <button role="menuitem" onclick={() => (moveOpen = true)}>Move entries…</button>
         </Menu>
       </div>
       <div class="search-row">
@@ -370,6 +373,13 @@
 {#if summary}<ImportEntriesSheet
     bind:open={importOpen}
     targetCollectionId={collectionId}
+    storageMode={summary.collection.storage_mode}
+  />{/if}
+{#if summary}<MoveEntriesSheet
+    bind:open={moveOpen}
+    {collectionId}
+    sourceName={summary.collection.name}
+    folder={summary.collection.folder}
     storageMode={summary.collection.storage_mode}
   />{/if}
 {#if conflictOpen && ConflictSheetView}<ConflictSheetView bind:open={conflictOpen} />{/if}

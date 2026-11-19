@@ -467,6 +467,129 @@ export function createRepo(options: RepoOptions = {}): Repo {
     })
   }
   const entryView = async (entry: Entry): Promise<EntryView> => (await entryViews([entry]))[0]!
+  const moveEntriesInTransaction = async (
+    targetId: Id,
+    sourceIds: Id[],
+  ): Promise<import('../repo').MoveResult> => {
+    const target = await db.collections.get(targetId)
+    if (!target) throw new Error('Collection not found')
+    const created: EntryView[] = []
+    const restored: EntryView[] = []
+    const merged_into_existing: EntryView[] = []
+    for (const sourceId of sourceIds) {
+      const source = await db.entries.get(sourceId)
+      if (!source || source.deleted_at !== null || source.collection_id === targetId) continue
+      const sourceCollection = await db.collections.get(source.collection_id)
+      if (!sourceCollection || sourceCollection.storage_mode !== target.storage_mode)
+        throw new Error('Collections must use the same storage mode to share items.')
+      const candidates = await db.entries
+        .where('[collection_id+item_id]')
+        .equals([targetId, source.item_id])
+        .toArray()
+      const active = candidates.find((row) => row.deleted_at === null)
+      const deleted = candidates.find((row) => row.deleted_at !== null)
+      const at = stamp()
+      const provenance = `Moved from "${sourceCollection.name}" ${formatSequence(source.sequence_number)}`
+      const sourceCount = [
+        source.quantity === null || source.quantity === ''
+          ? source.unit.trim()
+          : `${source.quantity}${source.unit ? ` ${source.unit}` : ''}`,
+        source.count_detail.trim(),
+      ]
+        .filter(Boolean)
+        .join('; ')
+      const entryNotes = [provenance, source.entry_notes.trim()].filter(Boolean).join('\n')
+      let movedTarget: Entry
+      if (active) {
+        const activeItem = await db.items.get(active.item_id)
+        const countsDiffer =
+          active.quantity !== source.quantity ||
+          active.unit !== source.unit ||
+          active.count_detail !== source.count_detail
+        const note = sourceCount ? `${provenance}: ${sourceCount}` : provenance
+        movedTarget = {
+          ...active,
+          entry_notes: [active.entry_notes.trim(), note].filter(Boolean).join('\n'),
+          updated_at: at,
+          revision: active.revision + 1,
+          sync_state: target.storage_mode === 'local_only' ? 'local_only' : 'pending',
+        }
+        await db.entries.put(movedTarget)
+        await enqueue(target, 'entry', movedTarget, 'upsert', { entry_notes: movedTarget.entry_notes })
+        if (countsDiffer && activeItem && activeItem.review_status !== 'needs_review') {
+          const item = {
+            ...activeItem,
+            review_status: 'needs_review' as const,
+            updated_at: at,
+            revision: activeItem.revision + 1,
+            sync_state: target.storage_mode === 'local_only' ? ('local_only' as const) : ('pending' as const),
+          }
+          await db.items.put(item)
+          await enqueue(target, 'item', item, 'upsert', { review_status: 'needs_review' })
+        }
+        merged_into_existing.push(await entryView(movedTarget))
+      } else if (deleted) {
+        movedTarget = {
+          ...deleted,
+          deleted_at: null,
+          quantity: source.quantity,
+          unit: source.unit,
+          count_detail: source.count_detail,
+          starred_at: source.starred_at,
+          entry_notes: entryNotes,
+          updated_at: at,
+          revision: deleted.revision + 1,
+          sync_state: target.storage_mode === 'local_only' ? 'local_only' : 'pending',
+        }
+        await db.entries.put(movedTarget)
+        await enqueue(target, 'entry', movedTarget, 'restore', {
+          deleted_at: null,
+          quantity: source.quantity,
+          unit: source.unit,
+          count_detail: source.count_detail,
+          starred_at: source.starred_at,
+          entry_notes: entryNotes,
+        })
+        restored.push(await entryView(movedTarget))
+      } else {
+        movedTarget = {
+          id: createId(),
+          collection_id: targetId,
+          item_id: source.item_id,
+          sequence_number: target.next_sequence_number,
+          quantity: source.quantity,
+          unit: source.unit,
+          count_detail: source.count_detail,
+          entry_notes: entryNotes,
+          starred_at: source.starred_at,
+          deleted_at: null,
+          created_at: at,
+          updated_at: at,
+          revision: 1,
+          server_revision: null,
+          sync_state: target.storage_mode === 'local_only' ? 'local_only' : 'pending',
+        }
+        target.next_sequence_number += 1
+        await db.entries.add(movedTarget)
+        await enqueue(target, 'entry', movedTarget, 'upsert', { ...movedTarget })
+        created.push(await entryView(movedTarget))
+      }
+      await saveEntry({ ...source, deleted_at: at }, { deleted_at: at }, 'delete')
+      const updatedTarget: Collection = {
+        ...target,
+        updated_at: at,
+        revision: target.revision + 1,
+        sync_state: target.storage_mode === 'local_only' ? 'local_only' : 'pending',
+      }
+      await db.collections.put(updatedTarget)
+      if (!active && !deleted)
+        await enqueue(updatedTarget, 'collection', updatedTarget, 'upsert', {
+          next_sequence_number: updatedTarget.next_sequence_number,
+        })
+      Object.assign(target, updatedTarget)
+    }
+    return { created, restored, merged_into_existing }
+  }
   const itemContext = async (itemId: Id) => {
     const entry = await db.entries.where('item_id').equals(itemId).first()
     const collection = entry ? await db.collections.get(entry.collection_id) : undefined
@@ -1302,6 +1425,89 @@ export function createRepo(options: RepoOptions = {}): Repo {
               })
           }
           return { created, restored, skipped }
+        },
+      ),
+    moveEntries: async (targetId, sourceIds) =>
+      db.transaction(
+        'rw',
+        [db.collections, db.entries, db.items, db.photos, db.outbox, db.conflicts, db.settings],
+        async () => await moveEntriesInTransaction(targetId, sourceIds),
+      ),
+    splitEntries: async (sourceIds, input) =>
+      db.transaction(
+        'rw',
+        [db.collections, db.entries, db.items, db.photos, db.outbox, db.conflicts, db.settings],
+        async () => {
+          const first = sourceIds.map((id) => id).find(Boolean)
+          const source = first ? await db.entries.get(first) : undefined
+          if (!source) throw new Error('Select at least one active entry')
+          const sourceCollection = await db.collections.get(source.collection_id)
+          if (!sourceCollection) throw new Error('Collection not found')
+          if (!input.name.trim()) throw new Error('Collection name is required')
+          const at = stamp()
+          const collection: Collection = {
+            id: createId(),
+            name: input.name.trim(),
+            description: input.description ?? '',
+            folder: (input.folder ?? '').trim().slice(0, 200),
+            status: 'active',
+            storage_mode: sourceCollection.storage_mode,
+            next_sequence_number: 1,
+            sort_order: null,
+            sync_consented_at: null,
+            last_exported_at: null,
+            archived_at: null,
+            created_at: at,
+            updated_at: at,
+            revision: 1,
+            server_revision: null,
+            sync_state: sourceCollection.storage_mode === 'local_only' ? 'local_only' : 'pending',
+          }
+          await db.collections.add(collection)
+          await enqueue(collection, 'collection', collection, 'upsert', { ...collection })
+          const result = await moveEntriesInTransaction(collection.id, sourceIds)
+          return { collection, result }
+        },
+      ),
+    mergeCollections: async (targetId, sourceCollectionIds) =>
+      db.transaction(
+        'rw',
+        [db.collections, db.entries, db.items, db.photos, db.outbox, db.conflicts, db.settings],
+        async () => {
+          const target = await db.collections.get(targetId)
+          if (!target) throw new Error('Collection not found')
+          const sources = await Promise.all(sourceCollectionIds.map((id) => db.collections.get(id)))
+          if (sources.some((source) => !source || source.id === targetId))
+            throw new Error('Source collections must exist and cannot be the target.')
+          if (sources.some((source) => source!.storage_mode !== target.storage_mode))
+            throw new Error('Collections must use the same storage mode to share items.')
+          const entryIds: Id[] = []
+          for (const source of sources) {
+            const entries = await db.entries.where('collection_id').equals(source!.id).toArray()
+            entryIds.push(
+              ...entries
+                .filter((entry) => entry.deleted_at === null)
+                .sort((a, b) => a.sequence_number - b.sequence_number)
+                .map((entry) => entry.id),
+            )
+          }
+          const result = await moveEntriesInTransaction(targetId, entryIds)
+          for (const source of sources) {
+            const current = await db.collections.get(source!.id)
+            if (!current) continue
+            const at = stamp()
+            const archived: Collection = {
+              ...current,
+              status: 'archived',
+              archived_at: at,
+              updated_at: at,
+              revision: current.revision + 1,
+              sync_state: current.storage_mode === 'local_only' ? 'local_only' : 'pending',
+            }
+            await db.collections.put(archived)
+            await enqueue(archived, 'collection', archived, 'upsert', { status: 'archived', archived_at: at })
+          }
+          return result
         },
       ),
     addPhotos: async (entryId, incoming) => {

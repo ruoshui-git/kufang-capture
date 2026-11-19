@@ -129,6 +129,15 @@ export interface ImportResult {
   skipped: Id[]
 }
 
+export interface MoveResult {
+  /** Entries newly created in the target, in move order. */
+  created: EntryView[]
+  /** Deleted target entries for the same item that were restored with the source's counts. */
+  restored: EntryView[]
+  /** Target entries that already had the item active; the source counts were noted and the item marked needs_review. */
+  merged_into_existing: EntryView[]
+}
+
 export interface StorageEstimate {
   usage: number | null
   quota: number | null
@@ -216,6 +225,15 @@ export interface Repo {
    * number, the same item_id, the source unit, blank quantity/count_detail/entry_notes, and not starred.
    */
   importEntries(targetCollectionId: Id, sourceEntryIds: Id[]): Promise<ImportResult>
+  /** In ONE transaction, move active entries into the target with counts and provenance preserved. */
+  moveEntries(targetCollectionId: Id, sourceEntryIds: Id[]): Promise<MoveResult>
+  /** Create a collection in the source's storage mode and move entries into it, in ONE transaction. */
+  splitEntries(
+    sourceEntryIds: Id[],
+    input: Omit<NewCollectionInput, 'storage_mode'>,
+  ): Promise<{ collection: Collection; result: MoveResult }>
+  /** Move every active entry of each source collection, then archive those collections atomically. */
+  mergeCollections(targetCollectionId: Id, sourceCollectionIds: Id[]): Promise<MoveResult>
 
   // Photos (attached to the entry's item, so shared by every collection that has it)
   /**

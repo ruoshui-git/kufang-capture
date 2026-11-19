@@ -68,6 +68,14 @@ describe('Entry list', () => {
     expect(shared.navigate).not.toHaveBeenCalled()
   })
 
+  it('opens Move entries from the collection actions menu', async () => {
+    render(EntryListPage, { props: { collectionId } })
+    await fireEvent.click(screen.getByLabelText('Collection actions'))
+    await fireEvent.click(screen.getByRole('menuitem', { name: 'Move entries…' }))
+    expect(await screen.findByRole('dialog', { name: 'Move entries' })).toBeInTheDocument()
+    expect(screen.getByLabelText('New collection name')).toHaveValue('Test room (split)')
+  })
+
   it('keeps a focused draft through a live update and persists it after debounce', async () => {
     const entry = await repo.createEntry(collectionId)
     render(EntryListPage, { props: { collectionId } })

@@ -1,0 +1,55 @@
+import { mkdirSync } from 'node:fs'
+import { expect, test } from '@playwright/test'
+
+async function addRoomEntry(page: import('@playwright/test').Page, title: string) {
+  const previousCount = await page.locator('[data-entry-id]').count()
+  await page
+    .getByRole('button', { name: /New Entry/ })
+    .first()
+    .click()
+  await expect(page.locator('[data-entry-id]')).toHaveCount(previousCount + 1)
+  await page.getByLabel('Entry title').last().fill(title)
+}
+
+test('merges local collections and splits selected entries into a new collection', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 })
+  await page.goto('/')
+  await page.getByRole('button', { name: 'New collection' }).click()
+  await page.getByLabel('Name').fill('Room A')
+  await page.getByRole('radio', { name: /Local Only/ }).check()
+  await page.getByRole('button', { name: 'Create collection' }).click()
+  await expect(page.getByRole('heading', { name: 'Room A' })).toBeVisible()
+  await addRoomEntry(page, 'Candles')
+  await addRoomEntry(page, 'Incense')
+
+  await page.goto('/')
+  await page.getByRole('button', { name: 'New collection' }).click()
+  await page.getByLabel('Name').fill('Room B')
+  await page.getByRole('radio', { name: /Local Only/ }).check()
+  await page.getByRole('button', { name: 'Create collection' }).click()
+  await expect(page.getByRole('heading', { name: 'Room B' })).toBeVisible()
+  await addRoomEntry(page, 'Lamps')
+
+  await page.goto('/')
+  await page.getByRole('button', { name: 'Select' }).click()
+  await page.getByRole('checkbox', { name: 'Room A' }).click()
+  await page.getByRole('checkbox', { name: 'Room B' }).click()
+  await page.getByRole('button', { name: 'Merge…' }).click()
+  await expect(page.getByRole('dialog', { name: 'Merge collections' })).toBeVisible()
+  mkdirSync('/tmp/codex-runs/merge-split-shots', { recursive: true })
+  await page.screenshot({ path: '/tmp/codex-runs/merge-split-shots/merge-390.png', fullPage: true })
+  await page.getByRole('button', { name: 'Merge collections' }).click()
+  await expect(page.getByText('Merged 2 collections into "Room A". The others are archived.')).toBeVisible()
+  await page.getByRole('button', { name: 'Cancel selection' }).click()
+  await page.getByRole('link', { name: 'Open Room A' }).click()
+  await expect(page.getByRole('heading', { name: 'Room A' })).toBeVisible()
+  await page.getByLabel('Collection actions').click()
+  await page.getByRole('menuitem', { name: 'Move entries…' }).click()
+  await expect(page.getByRole('dialog', { name: 'Move entries' })).toBeVisible()
+  await page.screenshot({ path: '/tmp/codex-runs/merge-split-shots/move-390.png', fullPage: true })
+  await page.getByRole('checkbox', { name: /Candles/ }).check()
+  await page.getByRole('button', { name: 'Move 1' }).click()
+  await expect(page.getByText('Moved 1 entry')).toBeVisible()
+  await page.goto('/')
+  await expect(page.getByRole('link', { name: 'Open Room A (split)' })).toBeVisible()
+})
