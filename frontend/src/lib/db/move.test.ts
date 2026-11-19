@@ -46,6 +46,7 @@ describe('moving entries', () => {
       entry_notes: 'Moved from "Batch B" #0001\nTop shelf',
     })
     expect((await repo.getEntry(source.id))?.deleted_at).not.toBeNull()
+    expect((await repo.getEntry(source.id))?.entry_notes).toBe('Top shelf\nMoved to "Room A" #0001')
     expect((await repo.getEntry(source.id))?.sequence_number).toBe(1)
     expect((await repo.getCollection(targetCollection.id))?.next_sequence_number).toBe(2)
     expect((await first(repo.watchPhotos(result.created[0]!.id))).map((item) => item.id)).toContain(photo.id)
@@ -73,6 +74,13 @@ describe('moving entries', () => {
       quantity: '9',
       entry_notes: 'Moved from "Source" #0001',
     })
+    await repo.undoMove(result.undo)
+    expect(await repo.getEntry(source.id)).toMatchObject({ deleted_at: null, entry_notes: '' })
+    expect(await repo.getEntry(target.id)).toMatchObject({
+      deleted_at: expect.any(String),
+      quantity: '2',
+      entry_notes: 'Old note',
+    })
   })
 
   it('silently skips deleted source entries and entries already in the target collection', async () => {
@@ -82,7 +90,9 @@ describe('moving entries', () => {
     await repo.deleteEntry(source.id)
     const active = await repo.createEntry(collection.id)
     const result = await repo.moveEntries(collection.id, [source.id, active.id])
-    expect(result).toEqual({ created: [], restored: [], merged_into_existing: [] })
+    expect(result.created).toEqual([])
+    expect(result.restored).toEqual([])
+    expect(result.merged_into_existing).toEqual([])
     expect((await repo.getEntry(active.id))?.deleted_at).toBeNull()
   })
 
@@ -111,6 +121,9 @@ describe('moving entries', () => {
     )
     expect(result.merged_into_existing[0]?.review_status).toBe('needs_review')
     expect(result.created).toHaveLength(0)
+    await repo.undoMove(result.undo)
+    expect(await repo.getEntry(duplicate.created[0]!.id)).toMatchObject({ deleted_at: null })
+    expect(await repo.getEntry(targetEntry.id)).toMatchObject({ entry_notes: '', review_status: 'draft' })
   })
 
   it('rejects storage mismatch and split and merge operate atomically in the requested order', async () => {
@@ -146,10 +159,35 @@ describe('moving entries', () => {
     const entry = await repo.createEntry(source.id, { quantity: '4', unit: 'packs' })
     const db = getCaptureDb(name)
     await db.outbox.clear()
-    const created = (await repo.moveEntries(target.id, [entry.id])).created[0]!
+    const result = await repo.moveEntries(target.id, [entry.id])
+    const created = result.created[0]!
     expect(await db.outbox.where('collection_id').equals(source.id).count()).toBeGreaterThan(0)
     expect(await db.outbox.where('collection_id').equals(target.id).count()).toBeGreaterThan(0)
     expect(created.quantity).toBe('4')
+    await repo.undoMove(result.undo)
+    expect(await db.outbox.where('collection_id').equals(source.id).count()).toBeGreaterThan(0)
+    expect((await repo.getEntry(entry.id))?.deleted_at).toBeNull()
     await db.delete()
+  })
+
+  it('undoes a move, keeps the allocated number consumed, and rejects stale undo', async () => {
+    const { repo } = repoFor()
+    const sourceCollection = await repo.createCollection({ name: 'A', storage_mode: 'local_only' })
+    const targetCollection = await repo.createCollection({ name: 'B', storage_mode: 'local_only' })
+    const source = await repo.createEntry(sourceCollection.id, { entry_notes: 'Before' })
+    const result = await repo.moveEntries(targetCollection.id, [source.id])
+    await repo.undoMove(result.undo)
+    expect(await repo.getEntry(source.id)).toMatchObject({
+      deleted_at: null,
+      sequence_number: 1,
+      entry_notes: 'Before',
+    })
+    expect((await repo.getEntry(result.created[0]!.id))?.deleted_at).not.toBeNull()
+    expect((await repo.createEntry(targetCollection.id)).sequence_number).toBe(2)
+    const another = await repo.moveEntries(targetCollection.id, [source.id])
+    await repo.updateEntry(source.id, { entry_notes: 'Changed after move' })
+    await expect(repo.undoMove(another.undo)).rejects.toThrow(
+      "This move can't be undone because the entry changed since.",
+    )
   })
 })

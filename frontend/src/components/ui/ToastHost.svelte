@@ -11,7 +11,13 @@
             toast.action?.()
             dismissToast(toast.id)
           }}>{toast.actionLabel ?? 'Undo'}</button
-        >{/if}<button
+        >{/if}{#each toast.actions ?? [] as action}<button
+          type="button"
+          onclick={() => {
+            void action.action()
+            dismissToast(toast.id)
+          }}>{action.label}</button
+        >{/each}<button
         type="button"
         class="toast-close"
         aria-label="Dismiss notification"

@@ -15,6 +15,7 @@ import type {
   PhotoBlob,
   StarredRow,
   StorageMode,
+  Entry as EntryRecord,
 } from './types'
 
 /** Svelte-store-compatible observable (Dexie liveQuery satisfies this). */
@@ -136,6 +137,16 @@ export interface MoveResult {
   restored: EntryView[]
   /** Target entries that already had the item active; the source counts were noted and the item marked needs_review. */
   merged_into_existing: EntryView[]
+  undo: MoveUndo
+}
+
+export interface MoveUndo {
+  entries: EntryRecord[]
+  items: Item[]
+  collections: Collection[]
+  /** Revisions immediately after the move; used to reject stale undo snapshots. */
+  moved_revisions: { entries: Record<Id, number>; items: Record<Id, number>; collections: Record<Id, number> }
+  created_entry_ids: Id[]
 }
 
 export interface StorageEstimate {
@@ -227,6 +238,7 @@ export interface Repo {
   importEntries(targetCollectionId: Id, sourceEntryIds: Id[]): Promise<ImportResult>
   /** In ONE transaction, move active entries into the target with counts and provenance preserved. */
   moveEntries(targetCollectionId: Id, sourceEntryIds: Id[]): Promise<MoveResult>
+  undoMove(undo: MoveUndo): Promise<void>
   /** Create a collection in the source's storage mode and move entries into it, in ONE transaction. */
   splitEntries(
     sourceEntryIds: Id[],

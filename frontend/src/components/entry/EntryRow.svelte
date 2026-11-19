@@ -12,6 +12,7 @@
   import ThumbnailStrip from './ThumbnailStrip.svelte'
   import CameraSheet from '../camera/CameraSheet.svelte'
   import { createEntryAutosave, normalizeQuantityInput } from '$lib/entries/autosave'
+  import MoveToSheet from './MoveToSheet.svelte'
 
   let {
     row,
@@ -69,6 +70,7 @@
   let syncPhase = $state('idle')
   let mode = $state<CaptureMode>('native')
   let cameraOpen = $state(false)
+  let moveOpen = $state(false)
   let autosaveEntryId = initialEntry.id
   let autosave = $state.raw(createEntryAutosave(repo, initialEntry.id))
 
@@ -246,6 +248,7 @@
     </div>
     <div class="menu-cell">
       <Menu label="Entry actions">
+        <button role="menuitem" onclick={() => (moveOpen = true)}>Move to…</button>
         <button
           role="menuitem"
           onclick={() => void repo.setEntryStarred(row.entry.id, row.entry.starred_at === null)}
@@ -417,6 +420,7 @@
     </div>
   {/if}
   <CameraSheet bind:open={cameraOpen} entryId={row.entry.id} />
+  <MoveToSheet bind:open={moveOpen} entryId={row.entry.id} beforemove={() => autosave.flush()} />
 </article>
 
 <style>

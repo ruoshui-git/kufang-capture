@@ -21,9 +21,12 @@
 <section class="trash" aria-label="Recently Deleted">
   <h2>Deleted entries</h2>
   {#each rows as row (row.entry.id)}<div class="trash-row">
-      <span>{formatSequence(row.entry.sequence_number)} — {row.entry.title || 'Untitled entry'}</span><button
-        onclick={() => void repo.restoreEntry(row.entry.id)}>Restore</button
-      >
+      <span
+        >{formatSequence(row.entry.sequence_number)} — {row.entry.title ||
+          'Untitled entry'}{#if row.entry.entry_notes.match(/^Moved to .+$/m)}<small
+            >{row.entry.entry_notes.match(/^Moved to .+$/m)?.[0]}</small
+          >{/if}</span
+      ><button onclick={() => void repo.restoreEntry(row.entry.id)}>Restore</button>
     </div>{/each}
   <h2>Deleted photos</h2>
   {#each photos as photo (photo.id)}<div class="trash-row">
@@ -60,5 +63,10 @@
     background: transparent;
     color: var(--color-ballpoint);
     padding: var(--space-2) var(--space-4);
+  }
+  .trash-row small {
+    display: block;
+    margin-top: var(--space-2);
+    color: var(--color-muted);
   }
 </style>

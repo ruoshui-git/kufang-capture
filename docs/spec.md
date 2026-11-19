@@ -77,6 +77,8 @@ An entry can be **imported** into another collection of the same storage mode (L
 
 A room counted in several batches can be consolidated. **Merge** (Collections → Select, two or more) keeps one collection and moves every active entry of the others into it, then archives them. **Move entries…** (entry list menu) moves selected entries into an existing collection of the same storage mode or a new one (split). A move shares the item (photos and item fields follow), copies quantity, unit, count detail and star, gives the entry the target's next sequence number and writes `Moved from "<source>" #0012` into its collection notes; the source entry is soft-deleted and keeps its number. If the target already has the item, its entry is kept, the source count is appended to its notes and differing counts mark the item Needs review. One IndexedDB transaction; synced collections queue ordinary entity changes, so the API and export format are unchanged.
 
+**Move to…** (owner decision 2026-11-19) moves one entry from its row menu or detail screen: recent destinations first, one tap moves it, and the toast offers Undo and Open. Undo writes back the pre-move records (the source entry returns with its old number; the target number is never reused) and is refused if anything changed since. Every move also notes `Moved to "<target>" #0043` on the soft-deleted source entry, and its detail screen links to the new placement. Partial-quantity moves are intentionally not supported.
+
 ### Photo
 
 Each Item (and so every entry that shares it) has a one-to-many relationship with photos.

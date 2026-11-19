@@ -220,6 +220,7 @@ export const SETTING_KEYS = {
   captureMode: 'capture_mode',
   /** string[] of folder names collapsed on the Collections screen ('' = the unfiled group). */
   collapsedFolders: 'collapsed_folders',
+  recentMoveTargets: 'recent_move_targets',
 } as const
 
 /** Derived per-collection counts. Entries and quantities are never conflated. */

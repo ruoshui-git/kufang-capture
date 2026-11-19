@@ -4,6 +4,7 @@ export type ToastInput = {
   action?: () => void
   duration?: number
   persistent?: boolean
+  actions?: { label: string; action: () => void | Promise<void> }[]
 }
 export type ToastItem = ToastInput & { id: number }
 let nextId = 1

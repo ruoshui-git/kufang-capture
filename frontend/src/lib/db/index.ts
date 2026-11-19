@@ -476,6 +476,10 @@ export function createRepo(options: RepoOptions = {}): Repo {
     const created: EntryView[] = []
     const restored: EntryView[] = []
     const merged_into_existing: EntryView[] = []
+    const beforeEntries = new Map<Id, Entry>()
+    const beforeItems = new Map<Id, Item>()
+    const beforeCollections = new Map<Id, Collection>()
+    const createdEntryIds: Id[] = []
     for (const sourceId of sourceIds) {
       const source = await db.entries.get(sourceId)
       if (!source || source.deleted_at !== null || source.collection_id === targetId) continue
@@ -489,6 +493,9 @@ export function createRepo(options: RepoOptions = {}): Repo {
       const active = candidates.find((row) => row.deleted_at === null)
       const deleted = candidates.find((row) => row.deleted_at !== null)
       const at = stamp()
+      beforeEntries.set(source.id, source)
+      beforeCollections.set(sourceCollection.id, sourceCollection)
+      if (!beforeCollections.has(target.id)) beforeCollections.set(target.id, target)
       const provenance = `Moved from "${sourceCollection.name}" ${formatSequence(source.sequence_number)}`
       const sourceCount = [
         source.quantity === null || source.quantity === ''
@@ -501,6 +508,7 @@ export function createRepo(options: RepoOptions = {}): Repo {
       const entryNotes = [provenance, source.entry_notes.trim()].filter(Boolean).join('\n')
       let movedTarget: Entry
       if (active) {
+        beforeEntries.set(active.id, active)
         const activeItem = await db.items.get(active.item_id)
         const countsDiffer =
           active.quantity !== source.quantity ||
@@ -517,6 +525,7 @@ export function createRepo(options: RepoOptions = {}): Repo {
         await db.entries.put(movedTarget)
         await enqueue(target, 'entry', movedTarget, 'upsert', { entry_notes: movedTarget.entry_notes })
         if (countsDiffer && activeItem && activeItem.review_status !== 'needs_review') {
+          beforeItems.set(activeItem.id, activeItem)
           const item = {
             ...activeItem,
             review_status: 'needs_review' as const,
@@ -529,6 +538,7 @@ export function createRepo(options: RepoOptions = {}): Repo {
         }
         merged_into_existing.push(await entryView(movedTarget))
       } else if (deleted) {
+        beforeEntries.set(deleted.id, deleted)
         movedTarget = {
           ...deleted,
           deleted_at: null,
@@ -571,10 +581,21 @@ export function createRepo(options: RepoOptions = {}): Repo {
         }
         target.next_sequence_number += 1
         await db.entries.add(movedTarget)
+        createdEntryIds.push(movedTarget.id)
         await enqueue(target, 'entry', movedTarget, 'upsert', { ...movedTarget })
         created.push(await entryView(movedTarget))
       }
-      await saveEntry({ ...source, deleted_at: at }, { deleted_at: at }, 'delete')
+      const sourceNotes = [
+        source.entry_notes.trim(),
+        `Moved to "${target.name}" ${formatSequence(movedTarget.sequence_number)}`,
+      ]
+        .filter(Boolean)
+        .join('\n')
+      await saveEntry(
+        { ...source, deleted_at: at, entry_notes: sourceNotes },
+        { deleted_at: at, entry_notes: sourceNotes },
+        'delete',
+      )
       const updatedTarget: Collection = {
         ...target,
         updated_at: at,
@@ -588,7 +609,28 @@ export function createRepo(options: RepoOptions = {}): Repo {
         })
       Object.assign(target, updatedTarget)
     }
-    return { created, restored, merged_into_existing }
+    const moved_revisions = {
+      entries: {} as Record<Id, number>,
+      items: {} as Record<Id, number>,
+      collections: {} as Record<Id, number>,
+    }
+    for (const id of beforeEntries.keys()) moved_revisions.entries[id] = (await db.entries.get(id))!.revision
+    for (const id of createdEntryIds) moved_revisions.entries[id] = (await db.entries.get(id))!.revision
+    for (const id of beforeItems.keys()) moved_revisions.items[id] = (await db.items.get(id))!.revision
+    for (const id of beforeCollections.keys())
+      moved_revisions.collections[id] = (await db.collections.get(id))!.revision
+    return {
+      created,
+      restored,
+      merged_into_existing,
+      undo: {
+        entries: [...beforeEntries.values()],
+        items: [...beforeItems.values()],
+        collections: [...beforeCollections.values()],
+        moved_revisions,
+        created_entry_ids: createdEntryIds,
+      },
+    }
   }
   const itemContext = async (itemId: Id) => {
     const entry = await db.entries.where('item_id').equals(itemId).first()
@@ -1433,6 +1475,94 @@ export function createRepo(options: RepoOptions = {}): Repo {
         [db.collections, db.entries, db.items, db.photos, db.outbox, db.conflicts, db.settings],
         async () => await moveEntriesInTransaction(targetId, sourceIds),
       ),
+    undoMove: async (undo) =>
+      db.transaction(
+        'rw',
+        [db.collections, db.entries, db.items, db.photos, db.outbox, db.conflicts, db.settings],
+        async () => {
+          for (const [id, revision] of Object.entries(undo.moved_revisions.entries))
+            if ((await db.entries.get(id))?.revision !== revision)
+              throw new Error("This move can't be undone because the entry changed since.")
+          for (const [id, revision] of Object.entries(undo.moved_revisions.items))
+            if ((await db.items.get(id))?.revision !== revision)
+              throw new Error("This move can't be undone because the entry changed since.")
+          for (const [id, revision] of Object.entries(undo.moved_revisions.collections))
+            if ((await db.collections.get(id))?.revision !== revision)
+              throw new Error("This move can't be undone because the entry changed since.")
+          const at = stamp()
+          for (const prior of undo.entries) {
+            const current = await db.entries.get(prior.id)
+            if (!current) continue
+            const collection = await db.collections.get(prior.collection_id)
+            if (!collection) continue
+            const saved = {
+              ...prior,
+              deleted_at: undo.created_entry_ids.includes(prior.id) ? at : prior.deleted_at,
+              updated_at: at,
+              revision: current.revision + 1,
+              sync_state:
+                collection.storage_mode === 'local_only' ? ('local_only' as const) : ('pending' as const),
+            }
+            await db.entries.put(saved)
+            const operation =
+              undo.created_entry_ids.includes(prior.id) ||
+              (current.deleted_at === null && prior.deleted_at !== null)
+                ? 'delete'
+                : current.deleted_at !== null && prior.deleted_at === null
+                  ? 'restore'
+                  : 'upsert'
+            await enqueue(collection, 'entry', saved, operation, { ...saved })
+          }
+          for (const id of undo.created_entry_ids) {
+            const current = await db.entries.get(id)
+            if (!current) continue
+            const collection = await db.collections.get(current.collection_id)
+            if (!collection) continue
+            const saved = {
+              ...current,
+              deleted_at: at,
+              updated_at: at,
+              revision: current.revision + 1,
+              sync_state:
+                collection.storage_mode === 'local_only' ? ('local_only' as const) : ('pending' as const),
+            }
+            await db.entries.put(saved)
+            await enqueue(collection, 'entry', saved, 'delete', { deleted_at: at })
+          }
+          for (const prior of undo.items) {
+            const current = await db.items.get(prior.id)
+            if (!current) continue
+            const saved = {
+              ...prior,
+              updated_at: at,
+              revision: current.revision + 1,
+              sync_state: prior.sync_state === 'local_only' ? ('local_only' as const) : ('pending' as const),
+            }
+            await db.items.put(saved)
+            const context = await itemContext(prior.id)
+            if (context.collection)
+              await enqueue(context.collection, 'item', saved, 'upsert', {
+                review_status: saved.review_status,
+              })
+          }
+          for (const prior of undo.collections) {
+            const current = await db.collections.get(prior.id)
+            if (!current) continue
+            const saved = {
+              ...prior,
+              next_sequence_number: current.next_sequence_number,
+              updated_at: at,
+              revision: current.revision + 1,
+              sync_state:
+                prior.storage_mode === 'local_only' ? ('local_only' as const) : ('pending' as const),
+            }
+            await db.collections.put(saved)
+            await enqueue(saved, 'collection', saved, 'upsert', {
+              next_sequence_number: saved.next_sequence_number,
+            })
+          }
+        },
+      ),
     splitEntries: async (sourceIds, input) =>
       db.transaction(
         'rw',
@@ -1506,6 +1636,7 @@ export function createRepo(options: RepoOptions = {}): Repo {
             }
             await db.collections.put(archived)
             await enqueue(archived, 'collection', archived, 'upsert', { status: 'archived', archived_at: at })
+            result.undo.moved_revisions.collections[source!.id] = archived.revision
           }
           return result
         },

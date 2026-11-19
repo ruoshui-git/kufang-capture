@@ -26,6 +26,31 @@ describe('Toast host', () => {
     expect(undo).toHaveBeenCalledOnce()
     await waitFor(() => expect(screen.queryByText('Deleted')).not.toBeInTheDocument())
   })
+
+  it('shows and runs multiple toast actions', async () => {
+    const undo = vi.fn()
+    const open = vi.fn()
+    render(ToastHost)
+    showToast({
+      message: 'Moved',
+      actions: [
+        { label: 'Undo', action: undo },
+        { label: 'Open', action: open },
+      ],
+    })
+    await fireEvent.click(await screen.findByRole('button', { name: 'Undo' }))
+    expect(undo).toHaveBeenCalledOnce()
+    expect(toasts.items).toHaveLength(0)
+    showToast({
+      message: 'Moved',
+      actions: [
+        { label: 'Undo', action: undo },
+        { label: 'Open', action: open },
+      ],
+    })
+    await fireEvent.click(await screen.findByRole('button', { name: 'Open' }))
+    expect(open).toHaveBeenCalledOnce()
+  })
   it('dismisses a toast after its default eight second timeout', () => {
     vi.useFakeTimers()
     showToast({ message: 'Saved' })

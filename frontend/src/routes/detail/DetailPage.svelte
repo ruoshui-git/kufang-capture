@@ -12,6 +12,7 @@
   import CameraSheet from '../../components/camera/CameraSheet.svelte'
   import PhotoGrid from '../../components/gallery/PhotoGrid.svelte'
   import PhotoViewer from '../../components/viewer/PhotoViewer.svelte'
+  import MoveToSheet from '../../components/entry/MoveToSheet.svelte'
 
   type EditableKey =
     | 'title'
@@ -35,6 +36,7 @@
   let invalidQuantity = $state(false)
   let photos = $state<Photo[]>([])
   let cameraOpen = $state(false)
+  let moveOpen = $state(false)
   let viewerOpen = $state(false)
   let viewerPhotoId = $state<Id | null>(null)
   let sort = $state<EntrySort>('newest')
@@ -272,6 +274,22 @@
         onclick={() => void repo.setEntryStarred(entryId, entry?.starred_at === null)}
         >{entry.starred_at ? '★ Starred' : '☆ Star entry'}</button
       >
+      {#if !entry.deleted_at}<Button variant="quiet" onclick={() => (moveOpen = true)}>Move to…</Button>{/if}
+      {#if entry.deleted_at && entry.shared_with.length}
+        {@const moved = entry.entry_notes.match(/^Moved to "(.+)" (#[0-9]+)$/m)}
+        {@const placement =
+          entry.shared_with.find(
+            (item) =>
+              moved && item.collection_name === moved[1] && formatSequence(item.sequence_number) === moved[2],
+          ) ?? entry.shared_with[0]}
+        {#if placement}<div class="deleted-notice" role="status">
+            {#if moved}Moved to "{placement.collection_name}" as {formatSequence(
+                placement.sequence_number,
+              )}{:else}Removed from this collection. Also in "{placement.collection_name}" {formatSequence(
+                placement.sequence_number,
+              )}{/if}<a href="/c/{placement.collection_id}/e/{placement.entry_id}">Open</a>
+          </div>{/if}
+      {/if}
       {#if entry.shared_with.length > 0}<p class="shared-hint">
           Title, notes and photos are shared across {entry.shared_with.length + 1} collections.
         </p>{/if}
@@ -303,7 +321,11 @@
 
     {#if entry.deleted_at}
       <div class="deleted-notice" role="status">
-        <span>This entry was deleted.</span><Button
+        <span
+          >{entry.shared_with.length
+            ? 'Removed from this collection. Restoring keeps it in both.'
+            : 'This entry was deleted.'}</span
+        ><Button
           onclick={async () => {
             await repo.restoreEntry(entryId)
           }}>Restore</Button
@@ -430,6 +452,7 @@
 {/if}
 {#if entry}<CameraSheet bind:open={cameraOpen} entryId={entry.id} />{/if}
 <PhotoViewer bind:open={viewerOpen} {entryId} startPhotoId={viewerPhotoId} />
+<MoveToSheet bind:open={moveOpen} {entryId} onmoved={backToList} beforemove={flushAll} />
 
 <style>
   .review-badge {
