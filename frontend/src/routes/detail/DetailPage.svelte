@@ -43,10 +43,18 @@
   let failure = $state('')
   let showEntryNotes = $state(false)
   let collectionName = $state('this collection')
+  let dimensionsField: HTMLTextAreaElement | undefined = $state()
   let syncPhase = $state('idle')
   const timers = new Map<EditableKey, ReturnType<typeof setTimeout>>()
 
   const displayedQuantity = $derived(draft.quantity ?? '')
+
+  $effect(() => {
+    draft.dimensions
+    if (!dimensionsField) return
+    dimensionsField.style.height = 'auto'
+    dimensionsField.style.height = `${dimensionsField.scrollHeight}px`
+  })
 
   onMount(() => {
     void repo.getCollection(collectionId).then((value) => {
@@ -347,14 +355,24 @@
             onblur={() => void flushField('expiration_date')}
           /><small class="field-note">Leave blank if unknown</small></label
         >
-        <label class="field"
-          >Dimensions<input
+        <label class="field full-field"
+          >Dimensions<textarea
+            class="dimensions-field"
             data-field="dimensions"
+            bind:this={dimensionsField}
+            rows="1"
             placeholder="e.g. 30 × 20 × 15 cm"
             value={draft.dimensions ?? ''}
-            oninput={(event) => setField('dimensions', event.currentTarget.value)}
-            onblur={() => void flushField('dimensions')}
-          /></label
+            oninput={(event) => {
+              const field = event.currentTarget
+              const value = field.value.replace(/[\r\n]+/g, ' ')
+              if (value !== field.value) field.value = value
+              setField('dimensions', value)
+            }}
+            onkeydown={(event) => {
+              if (event.key === 'Enter') event.preventDefault()
+            }}
+            onblur={() => void flushField('dimensions')}></textarea></label
         >
         <label class="field full-field"
           >Count detail<textarea
@@ -534,6 +552,12 @@
   }
   .field textarea {
     resize: vertical;
+  }
+  .field textarea.dimensions-field {
+    field-sizing: content;
+    min-height: var(--size-touch);
+    overflow-wrap: anywhere;
+    resize: none;
   }
   /* iOS gives date inputs an intrinsic width that ignores the grid column unless the native look is dropped. */
   .field input[type='date'] {

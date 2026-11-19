@@ -70,6 +70,27 @@ async function setup() {
 }
 
 describe('entry detail', () => {
+  it('shows wrapping full-width dimensions and saves a single line', async () => {
+    const { entry } = await setup()
+    const dimensions = screen.getByLabelText('Dimensions') as HTMLTextAreaElement
+    expect(dimensions.tagName).toBe('TEXTAREA')
+    expect(dimensions).toHaveAttribute('rows', '1')
+    expect(dimensions.closest('label')).toHaveClass('full-field')
+    expect(dimensions).toHaveClass('dimensions-field')
+
+    await fireEvent.input(dimensions, { target: { value: 'Outer carton 60 × 40 cm\ninner box 20 × 15 cm' } })
+    expect(dimensions.value).toBe('Outer carton 60 × 40 cm inner box 20 × 15 cm')
+    const enter = await fireEvent.keyDown(dimensions, { key: 'Enter' })
+    expect(enter).toBe(false)
+    expect(dimensions.value).not.toContain('\n')
+    await fireEvent.blur(dimensions)
+    await waitFor(async () =>
+      expect((await repo.getEntry(entry.id))?.dimensions).toBe(
+        'Outer carton 60 × 40 cm inner box 20 × 15 cm',
+      ),
+    )
+  })
+
   it('reveals and autosaves collection notes and toggles the entry star', async () => {
     const { collection, entry } = await setup()
     await fireEvent.click(screen.getByRole('button', { name: 'Add note for this collection' }))
