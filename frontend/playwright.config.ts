@@ -37,6 +37,14 @@ export default defineConfig({
       name: 'desktop-chromium',
       use: { ...devices['Desktop Chrome'], viewport: { width: 1440, height: 900 } },
     },
+    {
+      name: 'android-chromium',
+      use: {
+        ...devices['Pixel 7'],
+        permissions: ['camera'],
+        launchOptions: { args: ['--use-fake-device-for-media-stream', '--use-fake-ui-for-media-stream'] },
+      },
+    },
     { name: 'iphone-webkit', use: { ...iphone, browserName: 'webkit' } },
   ],
   webServer: process.env.E2E_BASE_URL

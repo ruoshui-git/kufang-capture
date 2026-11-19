@@ -22,7 +22,7 @@ test('§9 #1 offline launch: shell and IndexedDB survive reload and persistent-c
   browserName,
   baseURL,
 }) => {
-  on(['iphone-chromium', 'iphone-webkit'])
+  on(['iphone-chromium', 'android-chromium', 'iphone-webkit'])
   await openLocalCollection(page, 'Offline launch room')
   await addEntry(page)
   await expect(page.locator('[data-entry-id]')).toHaveCount(1)
@@ -67,7 +67,7 @@ test('§9 #1 offline launch: shell and IndexedDB survive reload and persistent-c
 test('§9 #2/#3 list-only counting: edit #0003, append row photos, retain place and linkage', async ({
   page,
 }) => {
-  on(['iphone-chromium', 'desktop-chromium', 'iphone-webkit'])
+  on(['iphone-chromium', 'android-chromium', 'desktop-chromium', 'iphone-webkit'])
   await openLocalCollection(page)
   const expectedPhotos: string[] = []
   for (let number = 1; number <= 15; number += 1) {
@@ -109,7 +109,7 @@ test('§9 #2/#3 list-only counting: edit #0003, append row photos, retain place 
 test('§9 #4 fast camera: five rapid frame captures persist and diagnostics reports capabilities', async ({
   page,
 }) => {
-  on(['iphone-chromium'])
+  on(['iphone-chromium', 'android-chromium'])
   await openLocalCollection(page, 'Fast camera room')
   await addEntry(page)
   const fakeTrackHasZoom = await page.evaluate(async () => {
@@ -166,7 +166,7 @@ test('§9 #6 offline durability: entries and photo originals survive offline per
   browserName,
   baseURL,
 }) => {
-  on(['iphone-chromium', 'desktop-chromium', 'iphone-webkit'])
+  on(['iphone-chromium', 'android-chromium', 'desktop-chromium', 'iphone-webkit'])
   const engine = browserName === 'webkit' ? webkit : chromium
   const userDir = await mkdtemp(join(tmpdir(), 'kc-offline-durable-'))
   const context = await engine.launchPersistentContext(userDir, {
@@ -215,7 +215,7 @@ test('§9 #6 offline durability: entries and photo originals survive offline per
 })
 
 test('§9 #7 Local Only: entry and photo identifiers never appear in API requests', async ({ page }) => {
-  on(['iphone-chromium', 'desktop-chromium', 'iphone-webkit'])
+  on(['iphone-chromium', 'android-chromium', 'desktop-chromium', 'iphone-webkit'])
   await openLocalCollection(page, 'Request audit room')
   const audit = assertNoLocalOnlyRequests(page)
   await addEntry(page)
@@ -232,7 +232,7 @@ test('§9 #7 Local Only: entry and photo identifiers never appear in API request
 })
 
 test('§9 #10 scale: generated Local Only sample rows render while scrolling', async ({ page }) => {
-  on(['iphone-chromium'])
+  on(['iphone-chromium', 'android-chromium'])
   await page.goto('/diagnostics')
   await page.getByRole('button', { name: 'Generate 300 sample entries' }).click()
   await expect(page.getByRole('status').filter({ hasText: 'Created Test data' })).toBeVisible({
@@ -278,7 +278,7 @@ test('§9 #10 scale: generated Local Only sample rows render while scrolling', a
 test('§9 #11 summary and recovery: quantities stay per unit and sequence numbers are not reused', async ({
   page,
 }) => {
-  on(['iphone-chromium'])
+  on(['iphone-chromium', 'android-chromium'])
   await openLocalCollection(page, 'Recovery room')
   for (const [number, quantity, unit] of [
     [1, '5', 'boxes'],
@@ -356,7 +356,7 @@ test('§9 #11 summary and recovery: quantities stay per unit and sequence number
 })
 
 test('§9 #12 export: verifier accepts ZIP and original photo bytes match', async ({ page }, testInfo) => {
-  on(['iphone-chromium'])
+  on(['iphone-chromium', 'android-chromium'])
   await openLocalCollection(page, 'Export room')
   for (let sequence = 1; sequence <= 15; sequence += 1) await addEntry(page)
   const newestPhoto = await addPhoto(page, 15, 9915)
@@ -388,7 +388,7 @@ test('§9 #12 export: verifier accepts ZIP and original photo bytes match', asyn
 test('§9 #16 archive and clear: guard blocks before export and exact-name confirmation clears only target', async ({
   page,
 }) => {
-  on(['iphone-chromium'])
+  on(['iphone-chromium', 'android-chromium'])
   await openLocalCollection(page, 'Clear target')
   await addEntry(page)
   await page.goto('/')

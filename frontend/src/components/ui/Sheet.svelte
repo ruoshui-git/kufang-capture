@@ -1,6 +1,7 @@
 <script lang="ts">
   import type { Snippet } from 'svelte'
   import { tick } from 'svelte'
+  import { openOverlay } from '$lib/ui/overlayHistory'
   let {
     open = $bindable(false),
     title,
@@ -8,12 +9,21 @@
     onclose,
   }: { open?: boolean; title: string; children: Snippet; onclose?: () => void } = $props()
   let dialog: HTMLDialogElement
+  let unregisterOverlay: (() => void) | undefined
   $effect(() => {
     if (open && dialog && !dialog.open) {
+      unregisterOverlay = openOverlay(() => {
+        open = false
+        onclose?.()
+      })
       if (typeof dialog.showModal === 'function') dialog.showModal()
       else dialog.setAttribute('open', '')
       tick().then(() => dialog.querySelector<HTMLElement>('input, button, [tabindex="0"]')?.focus())
-    } else if (!open && dialog?.open) dialog.close()
+    } else if (!open && dialog?.open) {
+      unregisterOverlay?.()
+      unregisterOverlay = undefined
+      dialog.close()
+    }
   })
   function handleKeydown(event: KeyboardEvent) {
     if (event.key === 'Escape') {
@@ -39,6 +49,8 @@
     }
   }
   function close() {
+    unregisterOverlay?.()
+    unregisterOverlay = undefined
     open = false
     onclose?.()
   }

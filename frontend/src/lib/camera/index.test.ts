@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { pickPhotos } from './index'
+import { consumeInterruptedCamera, pickPhotos } from './index'
 
 afterEach(() => {
   document.body.innerHTML = ''
@@ -7,6 +7,17 @@ afterEach(() => {
 })
 
 describe('system photo picker', () => {
+  it('records camera launches and reports only a recent interrupted launch once', async () => {
+    vi.spyOn(HTMLInputElement.prototype, 'click').mockImplementation(() => {})
+    const pending = pickPhotos('camera', 'entry-1')
+    expect(sessionStorage.getItem('kufang-camera-pending')).toContain('entry-1')
+    expect(consumeInterruptedCamera()).toBe(true)
+    expect(consumeInterruptedCamera()).toBe(false)
+    document.querySelector('input')!.dispatchEvent(new Event('cancel'))
+    await pending
+    expect(sessionStorage.getItem('kufang-camera-pending')).toBeNull()
+  })
+
   it('returns the original File object and configures the camera input synchronously', async () => {
     const file = new File(['original bytes'], 'label.jpg', {
       type: 'image/jpeg',

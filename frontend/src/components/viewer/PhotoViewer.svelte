@@ -3,6 +3,7 @@
   import { repo } from '$lib/db'
   import type { Id, Photo } from '$lib/types'
   import { originalUrl, thumbnailUrl } from '$lib/photos'
+  import { openOverlay } from '$lib/ui/overlayHistory'
 
   let {
     open = $bindable(false),
@@ -22,10 +23,12 @@
   let previousTap = 0
   let savedFocus: HTMLElement | null = null
   let subscription: (() => void) | { unsubscribe(): void } | undefined
+  let unregisterOverlay: (() => void) | undefined
   const current = $derived(photos[index])
 
   $effect(() => {
     if (open) {
+      unregisterOverlay = openOverlay(() => (open = false))
       savedFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null
       if (!subscription) {
         subscription = repo.watchPhotos(entryId).subscribe((items) => {
@@ -38,6 +41,8 @@
       void loadImage()
       queueMicrotask(() => initialFocus?.focus())
     } else {
+      unregisterOverlay?.()
+      unregisterOverlay = undefined
       if (subscription) {
         if (typeof subscription === 'function') subscription()
         else subscription.unsubscribe()
@@ -75,6 +80,8 @@
     resetZoom()
   }
   function close() {
+    unregisterOverlay?.()
+    unregisterOverlay = undefined
     open = false
   }
   function resetZoom() {

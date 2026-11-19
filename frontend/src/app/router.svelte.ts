@@ -1,3 +1,5 @@
+import { dismissOverlaysForNavigation, handleOverlayPop, hasPendingOverlayPop } from '$lib/ui/overlayHistory'
+
 export type Route =
   | { name: 'collections' }
   | { name: 'starred' }
@@ -39,13 +41,24 @@ export const router = $state({
   isDesktop: media?.matches ?? false,
 })
 const scrollPositions = new Map<string, number>()
+let deferredNavigation: { path: string; replace: boolean } | undefined
 
 function update() {
   router.route = match(window.location.pathname)
 }
 
+function onPopState() {
+  const consumed = handleOverlayPop()
+  update()
+  if (consumed && deferredNavigation) {
+    const pending = deferredNavigation
+    deferredNavigation = undefined
+    requestNavigation(pending.path, pending.replace)
+  }
+}
+
 if (typeof window !== 'undefined') {
-  window.addEventListener('popstate', update)
+  window.addEventListener('popstate', onPopState)
   media?.addEventListener('change', (event) => (router.isDesktop = event.matches))
   document.addEventListener('click', (event) => {
     if (
@@ -69,7 +82,23 @@ if (typeof window !== 'undefined') {
 }
 
 export function navigate(path: string, options: { replace?: boolean } = {}) {
-  if (options.replace) history.replaceState(null, '', path)
+  requestNavigation(path, options.replace ?? false)
+}
+
+function requestNavigation(path: string, replace: boolean) {
+  if (hasPendingOverlayPop()) {
+    deferredNavigation = { path, replace }
+    return
+  }
+  if (dismissOverlaysForNavigation()) {
+    deferredNavigation = { path, replace }
+    return
+  }
+  applyNavigation(path, replace)
+}
+
+function applyNavigation(path: string, replace: boolean) {
+  if (replace) history.replaceState(null, '', path)
   else history.pushState(null, '', path)
   update()
   window.scrollTo({ top: 0 })

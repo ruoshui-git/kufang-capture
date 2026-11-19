@@ -52,7 +52,7 @@ async function checkMenu(page: Page, trigger: Locator, name: string) {
 }
 
 test('phone layouts keep actions visible and every menu inside the viewport', async ({ page }, info) => {
-  test.skip(!['iphone-chromium', 'desktop-chromium'].includes(info.project.name))
+  test.skip(!['iphone-chromium', 'android-chromium', 'desktop-chromium'].includes(info.project.name))
   const desktop = info.project.name === 'desktop-chromium'
   const suffix = Date.now()
   const source = `Long storeroom collection name ${suffix}`

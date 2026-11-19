@@ -99,7 +99,7 @@
   <section class="settings-card" aria-labelledby="export-heading">
     <h2 id="export-heading">Device export</h2>
     {#if localDataNeedsExport}<p class="export-reminder">
-        Local Only data lives only on this iPhone. Export a ZIP to Files regularly.
+        Local Only data lives only on this device. Export a ZIP regularly.
       </p>{:else}<p>Export a ZIP of this device's collections. This works offline.</p>{/if}
     <Button variant="quiet" onclick={() => (exportOpen = true)}>Export all data</Button>
   </section>
@@ -113,7 +113,9 @@
           checked={captureMode === 'native'}
           onchange={() => chooseMode('native')}
         /><span
-          ><strong>System camera</strong><small>Best quality, opens iOS Camera for each photo</small></span
+          ><strong>System camera</strong><small
+            >Best quality, opens the phone's camera app for each photo</small
+          ></span
         ></label
       >
       <label class="choice"

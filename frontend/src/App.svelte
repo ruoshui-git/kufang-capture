@@ -13,7 +13,13 @@
   import LoginPage from './routes/login/LoginPage.svelte'
   import ServerPage from './routes/server/ServerPage.svelte'
   import { installKeyboardShortcuts } from './app/shortcuts'
+  import { consumeInterruptedCamera } from '$lib/camera'
   onMount(() => {
+    if (consumeInterruptedCamera())
+      showToast({
+        message:
+          "The browser restarted while the camera was open, so that photo wasn't saved. Take it again. If this keeps happening, switch to the in-app camera in Settings.",
+      })
     void import('$lib/sync').then(({ syncEngine }) => syncEngine.start())
     const updateSW = registerSW({
       immediate: true,

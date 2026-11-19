@@ -177,7 +177,7 @@ describe('Entry list', () => {
     await screen.findByRole('textbox', { name: 'Entry title' })
     await fireEvent.click(screen.getByRole('button', { name: /Add Photo/ }))
     await waitFor(() => expect(screen.getByText('1 photo')).toBeInTheDocument())
-    expect(shared.pickPhotos).toHaveBeenCalledWith('camera')
+    expect(shared.pickPhotos).toHaveBeenCalledWith('camera', expect.any(String))
     // The header chip can update before the row; wait for the row's own thumbnail.
     await fireEvent.click(await screen.findByRole('button', { name: 'Open photo' }))
     expect(screen.getByRole('dialog', { name: 'Photo viewer' })).toBeInTheDocument()

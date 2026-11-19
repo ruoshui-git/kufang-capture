@@ -167,7 +167,7 @@
   }
   async function capture(kind: 'camera' | 'library') {
     // Keep the picker invocation in the click call stack for iOS.
-    const picked = pickPhotos(kind)
+    const picked = pickPhotos(kind, row.entry.id)
     try {
       const photos = await picked
       if (photos.length) await repo.addPhotos(row.entry.id, photos)

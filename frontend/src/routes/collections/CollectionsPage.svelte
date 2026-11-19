@@ -437,7 +437,7 @@
           <legend>Storage</legend>
           <label class="choice"
             ><input type="radio" name="storage-mode" value="local_only" bind:group={storageMode} /><span
-              ><strong>Local Only</strong><small>Stays on this iPhone; export ZIPs to back up</small></span
+              ><strong>Local Only</strong><small>Stays on this device; export ZIPs to back up</small></span
             ></label
           >
           <label class="choice"

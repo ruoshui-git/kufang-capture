@@ -110,7 +110,11 @@
     const onPageHide = () => {
       void flushAll()
     }
+    const onVisibilityChange = () => {
+      if (document.visibilityState === 'hidden') void flushAll()
+    }
     window.addEventListener('pagehide', onPageHide)
+    document.addEventListener('visibilitychange', onVisibilityChange)
     const onKey = (event: KeyboardEvent) => {
       if (event.key === 'Escape' && variant === 'panel' && !viewerOpen) navigate(`/c/${collectionId}`)
       if (event.altKey && event.key === 'ArrowLeft' && adjacent.prev)
@@ -121,6 +125,7 @@
     window.addEventListener('keydown', onKey)
     return () => {
       window.removeEventListener('pagehide', onPageHide)
+      document.removeEventListener('visibilitychange', onVisibilityChange)
       window.removeEventListener('keydown', onKey)
       unsubscribeSync?.()
       if (typeof entrySubscription === 'function') entrySubscription()
@@ -202,8 +207,9 @@
   }
   async function add(kind: 'camera' | 'library') {
     try {
+      void flushAll()
       // Invoke synchronously from the click handler to preserve the browser's user activation.
-      const selection = pickPhotos(kind)
+      const selection = pickPhotos(kind, entryId)
       const incoming = await selection
       if (incoming.length) await repo.addPhotos(entryId, incoming)
     } catch (cause) {

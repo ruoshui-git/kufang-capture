@@ -162,6 +162,22 @@ describe('entry detail', () => {
     })
   })
 
+  it('flushes pending drafts when the document becomes hidden', async () => {
+    const { entry } = await setup()
+    await fireEvent.input(screen.getByLabelText('Entry title'), { target: { value: 'Saved before camera' } })
+    Object.defineProperty(document, 'visibilityState', { configurable: true, value: 'hidden' })
+    document.dispatchEvent(new Event('visibilitychange'))
+    await waitFor(async () => expect((await repo.getEntry(entry.id))?.title).toBe('Saved before camera'))
+    Object.defineProperty(document, 'visibilityState', { configurable: true, value: 'visible' })
+  })
+
+  it('starts flushing pending drafts before opening the native photo picker', async () => {
+    const { entry } = await setup()
+    await fireEvent.input(screen.getByLabelText('Entry title'), { target: { value: 'Before camera' } })
+    await fireEvent.click(screen.getByRole('button', { name: 'Add Photo' }))
+    await waitFor(async () => expect((await repo.getEntry(entry.id))?.title).toBe('Before camera'))
+  })
+
   it('does not write invalid quantities and keeps exactly one cover when changed', async () => {
     const { entry } = await setup()
     await fireEvent.input(screen.getByLabelText('Quantity'), { target: { value: '12 boxes' } })

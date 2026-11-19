@@ -214,7 +214,7 @@
 
   async function useSystemCamera() {
     try {
-      const photos = await pickPhotos('camera')
+      const photos = await pickPhotos('camera', entryId)
       if (photos.length) {
         queuedCount++
         void repo
