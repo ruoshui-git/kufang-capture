@@ -18,7 +18,8 @@
       })
       if (typeof dialog.showModal === 'function') dialog.showModal()
       else dialog.setAttribute('open', '')
-      tick().then(() => dialog.querySelector<HTMLElement>('input, button, [tabindex="0"]')?.focus())
+      // The sheet may be unmounted before the tick (e.g. closed right after opening).
+      tick().then(() => dialog?.querySelector<HTMLElement>('input, button, [tabindex="0"]')?.focus())
     } else if (!open && dialog?.open) {
       unregisterOverlay?.()
       unregisterOverlay = undefined
