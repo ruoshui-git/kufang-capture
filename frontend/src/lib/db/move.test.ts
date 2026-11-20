@@ -22,6 +22,124 @@ const first = <T>(watch: { subscribe(next: (value: T) => void): (() => void) | {
   })
 
 describe('moving entries', () => {
+  it('moves a partial decimal count, keeps the source active, and undo restores both records', async () => {
+    const { repo } = repoFor()
+    const sourceCollection = await repo.createCollection({ name: 'A', storage_mode: 'local_only' })
+    const targetCollection = await repo.createCollection({ name: 'B', storage_mode: 'local_only' })
+    const source = await repo.createEntry(sourceCollection.id, {
+      quantity: '10',
+      unit: 'boxes',
+      count_detail: 'old detail',
+      entry_notes: 'Shelf 1',
+    })
+    const result = await repo.moveEntryPart(targetCollection.id, source.id, '2.5')
+    expect(result.created[0]).toMatchObject({
+      quantity: '2.5',
+      unit: 'boxes',
+      count_detail: '',
+      entry_notes: 'Moved from "A" #0001: 2.5 boxes\nShelf 1',
+    })
+    expect(await repo.getEntry(source.id)).toMatchObject({
+      quantity: '7.5',
+      count_detail: 'old detail',
+      deleted_at: null,
+      entry_notes: 'Shelf 1\nMoved 2.5 boxes to "B" #0001',
+    })
+    await repo.undoMove(result.undo)
+    expect(await repo.getEntry(source.id)).toMatchObject({ quantity: '10', entry_notes: 'Shelf 1' })
+    expect(await repo.getEntry(result.created[0]!.id)).toMatchObject({ deleted_at: expect.any(String) })
+  })
+
+  it('rejects invalid partial amounts without changing source, target, or sequence', async () => {
+    const { repo } = repoFor()
+    const sourceCollection = await repo.createCollection({ name: 'A', storage_mode: 'local_only' })
+    const targetCollection = await repo.createCollection({ name: 'B', storage_mode: 'local_only' })
+    const blank = await repo.createEntry(sourceCollection.id)
+    const source = await repo.createEntry(sourceCollection.id, { quantity: '10' })
+    for (const [entry, amount] of [
+      [blank, '1'],
+      [source, '0'],
+      [source, '-1'],
+      [source, '10'],
+      [source, '11'],
+      [source, 'bad'],
+    ] as const) {
+      const before = await repo.getEntry(entry.id)
+      const sequence = (await repo.getCollection(targetCollection.id))!.next_sequence_number
+      await expect(repo.moveEntryPart(targetCollection.id, entry.id, amount)).rejects.toThrow()
+      expect(await repo.getEntry(entry.id)).toEqual(before)
+      expect((await repo.getCollection(targetCollection.id))!.next_sequence_number).toBe(sequence)
+    }
+  })
+
+  it('adds a partial count to a matching active target and marks a different unit for review', async () => {
+    const { repo } = repoFor()
+    const sourceCollection = await repo.createCollection({ name: 'A', storage_mode: 'local_only' })
+    const secondCollection = await repo.createCollection({ name: 'C', storage_mode: 'local_only' })
+    const targetCollection = await repo.createCollection({ name: 'B', storage_mode: 'local_only' })
+    const source = await repo.createEntry(sourceCollection.id, {
+      title: 'Shared',
+      quantity: '10',
+      unit: 'boxes',
+    })
+    const second = (await repo.importEntries(secondCollection.id, [source.id])).created[0]!
+    await repo.updateEntry(second.id, { quantity: '10', unit: 'pieces' })
+    const target = (await repo.importEntries(targetCollection.id, [source.id])).created[0]!
+    await repo.updateEntry(target.id, { quantity: '2', unit: 'Boxes' })
+    const summed = await repo.moveEntryPart(targetCollection.id, source.id, '2.5')
+    expect(summed.merged_into_existing[0]).toMatchObject({
+      quantity: '4.5',
+      entry_notes: 'Already here: 2 Boxes\nMoved from "A" #0001: 2.5 boxes',
+    })
+    const mismatch = await repo.moveEntryPart(targetCollection.id, second.id, '1')
+    expect(mismatch.merged_into_existing[0]).toMatchObject({
+      quantity: '4.5',
+      review_status: 'needs_review',
+      entry_notes: 'Already here: 2 Boxes\nMoved from "A" #0001: 2.5 boxes\nMoved from "C" #0001: 1 pieces',
+    })
+  })
+
+  it('restores a deleted target using only the moved count and refuses stale partial undo', async () => {
+    const { repo } = repoFor()
+    const sourceCollection = await repo.createCollection({ name: 'A', storage_mode: 'local_only' })
+    const targetCollection = await repo.createCollection({ name: 'B', storage_mode: 'local_only' })
+    const source = await repo.createEntry(sourceCollection.id, {
+      title: 'Item',
+      quantity: '12',
+      unit: 'boxes',
+      count_detail: 'whole source detail',
+    })
+    const target = (await repo.importEntries(targetCollection.id, [source.id])).created[0]!
+    await repo.deleteEntry(target.id)
+    const result = await repo.moveEntryPart(targetCollection.id, source.id, '5')
+    expect(result.restored[0]).toMatchObject({
+      id: target.id,
+      quantity: '5',
+      count_detail: '',
+      entry_notes: 'Moved from "A" #0001: 5 boxes',
+    })
+    await repo.updateEntry(source.id, { entry_notes: 'Edited after partial move' })
+    await expect(repo.undoMove(result.undo)).rejects.toThrow('changed since')
+  })
+
+  it('queues synced partial changes for both source and target', async () => {
+    const { name, repo } = repoFor()
+    const sourceCollection = await repo.createCollection({ name: 'A', storage_mode: 'synced' })
+    const targetCollection = await repo.createCollection({ name: 'B', storage_mode: 'synced' })
+    const source = await repo.createEntry(sourceCollection.id, { quantity: '12', unit: 'boxes' })
+    const db = getCaptureDb(name)
+    await db.outbox.clear()
+    const result = await repo.moveEntryPart(targetCollection.id, source.id, '5')
+    expect(await db.outbox.where('collection_id').equals(sourceCollection.id).count()).toBeGreaterThan(0)
+    expect(await db.outbox.where('collection_id').equals(targetCollection.id).count()).toBeGreaterThan(0)
+    expect(await repo.getEntry(source.id)).toMatchObject({
+      quantity: '7',
+      entry_notes: 'Moved 5 boxes to "B" #0001',
+    })
+    expect(result.created[0]).toMatchObject({ quantity: '5', count_detail: '' })
+    await db.delete()
+  })
+
   it('moves new entries with counts, provenance, shared photos, and immutable source numbering', async () => {
     const { name, repo } = repoFor()
     const sourceCollection = await repo.createCollection({ name: 'Batch B', storage_mode: 'local_only' })

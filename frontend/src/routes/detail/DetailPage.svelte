@@ -452,7 +452,14 @@
 {/if}
 {#if entry}<CameraSheet bind:open={cameraOpen} entryId={entry.id} />{/if}
 <PhotoViewer bind:open={viewerOpen} {entryId} startPhotoId={viewerPhotoId} />
-<MoveToSheet bind:open={moveOpen} {entryId} onmoved={backToList} beforemove={flushAll} />
+<MoveToSheet
+  bind:open={moveOpen}
+  {entryId}
+  onmoved={({ partial }) => {
+    if (!partial) backToList()
+  }}
+  beforemove={flushAll}
+/>
 
 <style>
   .review-badge {

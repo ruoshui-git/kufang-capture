@@ -470,6 +470,7 @@ export function createRepo(options: RepoOptions = {}): Repo {
   const moveEntriesInTransaction = async (
     targetId: Id,
     sourceIds: Id[],
+    part?: { quantity: string },
   ): Promise<import('../repo').MoveResult> => {
     const target = await db.collections.get(targetId)
     if (!target) throw new Error('Collection not found')
@@ -482,10 +483,28 @@ export function createRepo(options: RepoOptions = {}): Repo {
     const createdEntryIds: Id[] = []
     for (const sourceId of sourceIds) {
       const source = await db.entries.get(sourceId)
+      if (part && !source) throw new Error('Source entry not found.')
+      if (part && source?.deleted_at !== null) throw new Error('Source entry must be active.')
+      if (part && source?.collection_id === targetId)
+        throw new Error('Source entry is already in the target collection.')
       if (!source || source.deleted_at !== null || source.collection_id === targetId) continue
       const sourceCollection = await db.collections.get(source.collection_id)
       if (!sourceCollection || sourceCollection.storage_mode !== target.storage_mode)
         throw new Error('Collections must use the same storage mode to share items.')
+      let movedQuantity = source.quantity
+      let remainder: string | undefined
+      if (part) {
+        const validDecimal = (value: string | null): value is string =>
+          value !== null && /^\d+(?:\.\d+)?$/.test(value)
+        if (!validDecimal(source.quantity) || addDecimals(source.quantity, '-0') === '0')
+          throw new Error('Source quantity must be a recorded positive decimal.')
+        if (!validDecimal(part.quantity) || !/[1-9]/.test(part.quantity))
+          throw new Error('Amount must be a valid positive decimal.')
+        remainder = addDecimals(source.quantity, `-${part.quantity}`)
+        if (remainder.startsWith('-') || remainder === '0')
+          throw new Error('Amount must be greater than zero and less than the source quantity.')
+        movedQuantity = part.quantity
+      }
       const candidates = await db.entries
         .where('[collection_id+item_id]')
         .equals([targetId, source.item_id])
@@ -506,7 +525,8 @@ export function createRepo(options: RepoOptions = {}): Repo {
         ]
           .filter(Boolean)
           .join('; ')
-      const sourceCount = countText(source)
+      const movedSource = part ? { ...source, quantity: movedQuantity, count_detail: '' } : source
+      const sourceCount = countText(movedSource)
       const provenanceLine = sourceCount ? `${provenance}: ${sourceCount}` : provenance
       const entryNotes = [provenanceLine, source.entry_notes.trim()].filter(Boolean).join('\n')
       let movedTarget: Entry
@@ -517,18 +537,18 @@ export function createRepo(options: RepoOptions = {}): Repo {
         // same unit). Blank is not zero, and different units are never summed; those need review.
         const canSum =
           active.quantity !== null &&
-          source.quantity !== null &&
+          movedQuantity !== null &&
           normalizeUnit(active.unit) === normalizeUnit(source.unit)
         const countsDiffer =
-          active.quantity !== source.quantity ||
+          active.quantity !== movedQuantity ||
           active.unit !== source.unit ||
-          active.count_detail !== source.count_detail
+          active.count_detail !== movedSource.count_detail
         // Notes list the count from each location. If nothing explains the count already here
         // (no earlier "Moved from …: count" line), record it first so the lines add up to the total.
         const activeCount = countText(active)
         const explained = /^Moved from ".*" #\d+: /m.test(active.entry_notes)
         const alreadyHere = activeCount && !explained ? `Already here: ${activeCount}` : ''
-        const quantity = canSum ? addDecimals(active.quantity!, source.quantity!) : active.quantity
+        const quantity = canSum ? addDecimals(active.quantity!, movedQuantity!) : active.quantity
         movedTarget = {
           ...active,
           quantity,
@@ -560,9 +580,9 @@ export function createRepo(options: RepoOptions = {}): Repo {
         movedTarget = {
           ...deleted,
           deleted_at: null,
-          quantity: source.quantity,
+          quantity: movedQuantity,
           unit: source.unit,
-          count_detail: source.count_detail,
+          count_detail: part ? '' : source.count_detail,
           starred_at: source.starred_at,
           entry_notes: entryNotes,
           updated_at: at,
@@ -572,9 +592,9 @@ export function createRepo(options: RepoOptions = {}): Repo {
         await db.entries.put(movedTarget)
         await enqueue(target, 'entry', movedTarget, 'restore', {
           deleted_at: null,
-          quantity: source.quantity,
+          quantity: movedQuantity,
           unit: source.unit,
-          count_detail: source.count_detail,
+          count_detail: part ? '' : source.count_detail,
           starred_at: source.starred_at,
           entry_notes: entryNotes,
         })
@@ -585,9 +605,9 @@ export function createRepo(options: RepoOptions = {}): Repo {
           collection_id: targetId,
           item_id: source.item_id,
           sequence_number: target.next_sequence_number,
-          quantity: source.quantity,
+          quantity: movedQuantity,
           unit: source.unit,
-          count_detail: source.count_detail,
+          count_detail: part ? '' : source.count_detail,
           entry_notes: entryNotes,
           starred_at: source.starred_at,
           deleted_at: null,
@@ -603,17 +623,31 @@ export function createRepo(options: RepoOptions = {}): Repo {
         await enqueue(target, 'entry', movedTarget, 'upsert', { ...movedTarget })
         created.push(await entryView(movedTarget))
       }
-      const sourceNotes = [
-        source.entry_notes.trim(),
-        `Moved to "${target.name}" ${formatSequence(movedTarget.sequence_number)}`,
-      ]
-        .filter(Boolean)
-        .join('\n')
-      await saveEntry(
-        { ...source, deleted_at: at, entry_notes: sourceNotes },
-        { deleted_at: at, entry_notes: sourceNotes },
-        'delete',
-      )
+      const sourceNotes = part
+        ? [
+            source.entry_notes.trim(),
+            `Moved ${movedQuantity}${source.unit ? ` ${source.unit}` : ''} to "${target.name}" ${formatSequence(movedTarget.sequence_number)}`,
+          ]
+            .filter(Boolean)
+            .join('\n')
+        : [
+            source.entry_notes.trim(),
+            `Moved to "${target.name}" ${formatSequence(movedTarget.sequence_number)}`,
+          ]
+            .filter(Boolean)
+            .join('\n')
+      if (part) {
+        await saveEntry(
+          { ...source, quantity: remainder!, entry_notes: sourceNotes },
+          { quantity: remainder!, entry_notes: sourceNotes },
+        )
+      } else {
+        await saveEntry(
+          { ...source, deleted_at: at, entry_notes: sourceNotes },
+          { deleted_at: at, entry_notes: sourceNotes },
+          'delete',
+        )
+      }
       const updatedTarget: Collection = {
         ...target,
         updated_at: at,
@@ -1492,6 +1526,12 @@ export function createRepo(options: RepoOptions = {}): Repo {
         'rw',
         [db.collections, db.entries, db.items, db.photos, db.outbox, db.conflicts, db.settings],
         async () => await moveEntriesInTransaction(targetId, sourceIds),
+      ),
+    moveEntryPart: async (targetId, sourceId, quantity) =>
+      db.transaction(
+        'rw',
+        [db.collections, db.entries, db.items, db.photos, db.outbox, db.conflicts, db.settings],
+        async () => await moveEntriesInTransaction(targetId, [sourceId], { quantity }),
       ),
     undoMove: async (undo) =>
       db.transaction(

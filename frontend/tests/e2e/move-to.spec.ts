@@ -64,3 +64,45 @@ test('moves one entry between rooms, supports undo, and opens the placement', as
   await expect(page.getByText('Moved to "Room B" as #0001')).toBeVisible()
   await page.screenshot({ path: '/tmp/codex-runs/move-to-shots/banner-390.png', fullPage: true })
 })
+
+test('moves part of a recorded quantity and leaves the remainder in the source room', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 })
+  await makeRoom(page, 'Partial A')
+  await page
+    .getByRole('button', { name: /New Entry/ })
+    .first()
+    .click()
+  await expect(page.locator('[data-entry-id]')).toHaveCount(1)
+  const created = await idbSnapshot(page)
+  const sourceId = created.entries.find((item) => !item.deleted_at)!.id
+  const sourceCollectionId = created.collections.find((item) => item.name === 'Partial A')!.id
+  await page.goto(`/c/${sourceCollectionId}/e/${sourceId}`)
+  await page.getByLabel('Entry title').fill('Candles')
+  await page.getByLabel('Quantity').fill('12')
+  await page.getByLabel('Unit').fill('boxes')
+  await page.getByLabel('Unit').blur()
+  await page.getByLabel('Quantity').blur()
+  await page.goto('/')
+  await makeRoom(page, 'Partial B')
+  await page.goto('/')
+  await page.getByRole('link', { name: 'Open Partial A' }).click()
+  const row = page.locator(`[data-entry-id="${sourceId}"]`)
+  await row.getByLabel('Entry actions').click()
+  await page.getByRole('menuitem', { name: 'Move to…' }).click()
+  const amount = page.getByRole('textbox', { name: 'Amount to move' })
+  await expect(amount).toHaveValue('12')
+  await amount.fill('5')
+  await page.getByRole('button', { name: /Partial B/ }).click()
+  await expect(page.locator('.toast')).toContainText('Moved 5 boxes to "Partial B" as #0001')
+  await expect(row.getByLabel('Quantity')).toHaveValue('7')
+  const afterMove = await idbSnapshot(page)
+  const sourceEntry = afterMove.entries.find((item) => item.id === sourceId)!
+  expect(sourceEntry.quantity).toBe('7')
+  const targetEntry = afterMove.entries.find(
+    (item) => item.collection_id !== sourceEntry.collection_id && !item.deleted_at,
+  )!
+  expect(targetEntry.quantity).toBe('5')
+  await page.goto('/')
+  await page.getByRole('link', { name: 'Open Partial B' }).click()
+  await expect(page.locator(`[data-entry-id="${targetEntry.id}"]`).getByLabel('Quantity')).toHaveValue('5')
+})

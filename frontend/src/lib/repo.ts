@@ -239,6 +239,13 @@ export interface Repo {
   /** In ONE transaction, move active entries into the target with counts and provenance preserved. */
   moveEntries(targetCollectionId: Id, sourceEntryIds: Id[]): Promise<MoveResult>
   undoMove(undo: MoveUndo): Promise<void>
+  /**
+   * In ONE transaction, move part of one active entry's count into the target. `quantity` is a raw
+   * decimal string with 0 < quantity < the source quantity, in the source's unit; the source stays
+   * active with the remainder (exact decimal subtraction). Throws if the source quantity is blank or
+   * the amount is out of range. Same target rules and Undo as moveEntries.
+   */
+  moveEntryPart(targetCollectionId: Id, sourceEntryId: Id, quantity: string): Promise<MoveResult>
   /** Create a collection in the source's storage mode and move entries into it, in ONE transaction. */
   splitEntries(
     sourceEntryIds: Id[],
