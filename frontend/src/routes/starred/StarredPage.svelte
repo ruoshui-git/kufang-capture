@@ -17,6 +17,11 @@
     }
     return [...grouped.values()]
   })
+  const notesFor = (row: StarredRow) =>
+    [row.entry.notes, row.entry.entry_notes]
+      .map((note) => note?.replace(/\s+/g, ' ').trim() ?? '')
+      .filter(Boolean)
+      .join(' · ')
 </script>
 
 <svelte:head><title>Starred — Kufang Capture</title></svelte:head>
@@ -40,12 +45,15 @@
               onopen={() => navigate(`/c/${row.entry.collection_id}/e/${row.entry.id}`)}
               onmore={() => navigate(`/c/${row.entry.collection_id}/e/${row.entry.id}`)}
             />
-            <a href="/c/{row.entry.collection_id}/e/{row.entry.id}"
-              ><span class="sequence-label">{formatSequence(row.entry.sequence_number)}</span>
-              <span>{entryDisplayTitle(row.entry)}</span>
-              {#if row.entry.review_status === 'needs_review'}<span class="review-badge">Needs review</span
-                >{/if}</a
-            ><button
+            <a href="/c/{row.entry.collection_id}/e/{row.entry.id}">
+              <span class="starred-title-row">
+                <span class="sequence-label">{formatSequence(row.entry.sequence_number)}</span>
+                <span class="entry-title">{entryDisplayTitle(row.entry)}</span>
+                {#if row.entry.review_status === 'needs_review'}<span class="review-badge">Needs review</span
+                  >{/if}
+              </span>
+              {#if notesFor(row)}<span class="entry-notes">{notesFor(row)}</span>{/if}
+            </a><button
               aria-label="Unstar entry"
               aria-pressed="true"
               onclick={() => void repo.setEntryStarred(row.entry.id, false)}>★</button
@@ -93,13 +101,33 @@
     flex: 0 0 var(--size-thumb);
   }
   .starred-row a {
-    display: flex;
+    display: grid;
     flex: 1;
-    align-items: center;
-    gap: var(--space-3);
+    gap: var(--space-1);
     min-width: 0;
     color: var(--color-ink);
     text-decoration: none;
+  }
+  .starred-title-row {
+    display: flex;
+    align-items: center;
+    gap: var(--space-3);
+    min-width: 0;
+  }
+  .entry-title {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .entry-notes {
+    display: -webkit-box;
+    overflow: hidden;
+    color: var(--color-muted);
+    font-size: var(--text-sm);
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
+    line-clamp: 2;
+    overflow-wrap: anywhere;
   }
   .sequence-label {
     flex: none;
