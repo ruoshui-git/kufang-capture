@@ -1,6 +1,6 @@
 <script lang="ts">
   import type { Snippet } from 'svelte'
-  import { router } from './router.svelte'
+  import { navigate, router } from './router.svelte'
   import { repo } from '$lib/db'
   import { onMount } from 'svelte'
   import ToastHost from '../components/ui/ToastHost.svelte'
@@ -9,8 +9,10 @@
   import type { SyncStatus } from '$lib/sync/api'
   import SyncNowButton from '../components/sync/SyncNowButton.svelte'
   import StarredPage from '../routes/starred/StarredPage.svelte'
+  import { collectionMatches } from '../routes/collections/collectionSearch'
   let { children, header, bottomBar }: { children: Snippet; header?: Snippet; bottomBar?: Snippet } = $props()
   let collections = $state<CollectionSummary[]>([])
+  let search = $state('')
   let signedIn = $state(false)
   let syncStatus = $state<SyncStatus | null>(null)
   const pending = $derived((syncStatus?.pending_uploads ?? 0) + (syncStatus?.pending_mutations ?? 0))
@@ -24,15 +26,18 @@
     return syncStatus.phase === 'syncing' ? 'Syncing' : 'Changes waiting to sync'
   })
   const syncTone = $derived(syncStatus?.phase === 'error' && pending > 0 ? 'danger' : 'info')
+  const filteredCollections = $derived(
+    search.trim() ? collections.filter((item) => collectionMatches(item, search)) : collections,
+  )
   const collectionGroups = $derived.by(() => {
     const folders = [
-      ...new Set(collections.map((item) => (item.collection.folder ?? '').trim()).filter(Boolean)),
+      ...new Set(filteredCollections.map((item) => (item.collection.folder ?? '').trim()).filter(Boolean)),
     ].sort((a, b) => a.localeCompare(b))
     const groups = folders.map((folder) => ({
       folder,
-      items: collections.filter((item) => (item.collection.folder ?? '').trim() === folder),
+      items: filteredCollections.filter((item) => (item.collection.folder ?? '').trim() === folder),
     }))
-    const unfiled = collections.filter((item) => !(item.collection.folder ?? '').trim())
+    const unfiled = filteredCollections.filter((item) => !(item.collection.folder ?? '').trim())
     if (unfiled.length) groups.push({ folder: '', items: unfiled })
     return groups
   })
@@ -64,7 +69,36 @@
   {#if router.isDesktop}
     <aside class="rail" aria-label="Collections">
       <a class="rail-title" href="/">Collections</a>
+      <input
+        class="rail-search"
+        type="search"
+        aria-label="Filter collections"
+        placeholder="Filter collections"
+        autocomplete="off"
+        autocapitalize="off"
+        spellcheck="false"
+        enterkeyhint="search"
+        bind:value={search}
+        onkeydown={(event) => {
+          if (event.key === 'Escape' && search) {
+            event.preventDefault()
+            event.stopPropagation()
+            search = ''
+          }
+          if (event.key === 'Enter' && filteredCollections.length === 1) {
+            event.preventDefault()
+            navigate(`/c/${filteredCollections[0]!.collection.id}`)
+          }
+        }}
+      />
       <a href="/starred">★ Starred</a>
+      {#if search.trim() && filteredCollections.length === 0}<div
+          class="rail-empty"
+          role="status"
+          aria-live="polite"
+        >
+          No matches
+        </div>{/if}
       {#each collectionGroups as group (group.folder)}
         {#if group.folder}<div class="rail-folder">{group.folder}</div>{/if}
         {#each group.items as item (item.collection.id)}
@@ -111,5 +145,21 @@
     color: var(--color-muted);
     font-size: var(--text-sm);
     font-weight: var(--weight-medium);
+  }
+  .rail-search {
+    width: 100%;
+    min-height: var(--size-touch);
+    margin-bottom: var(--space-3);
+    border: 1px solid var(--color-line);
+    border-radius: var(--radius-md);
+    padding: 0 var(--space-3);
+    background: var(--color-card);
+    color: var(--color-ink);
+    font-size: var(--text-md);
+  }
+  .rail-empty {
+    padding: var(--space-3);
+    color: var(--color-muted);
+    font-size: var(--text-sm);
   }
 </style>
