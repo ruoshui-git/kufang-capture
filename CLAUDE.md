@@ -4,13 +4,13 @@
 
 ## Codex delegation
 
-Use Codex for scoped implementation tasks through `scripts/codex-run`; see [docs/agents/codex.md](docs/agents/codex.md) for the full workflow and verification checklist.
+Use Codex for scoped implementation tasks. See [docs/agents/codex.md](docs/agents/codex.md) for the full workflow and the verification checklist.
 
-```sh
-scripts/codex-run NAME BRIEF [--resume|--fork SESSION] --config 'model_reasoning_effort="medium|high"'
-```
+**Default: the T3 Code harness.** Write the brief to `/tmp/codex-runs/NAME.brief.md`, then call `delegate_task` with `target: {providerInstanceId: "codex", model: "gpt-6-luna", options: {reasoningEffort: "high"|"medium", serviceTier: "default"}}` and `role: "implementation"`, with a `task` that points at the brief. Don't poll; the child's completion wakes you. Use `isolation: "worktree"` only for parallel waves that need separate checkouts.
 
-Fast mode (`--config 'service_tier="fast"'`) is allowed while Codex has quota; if Codex hits its usage limit, fall back to Claude Haiku subagents for scoped tasks and return to Codex once available. Launch with Bash `run_in_background`; in the same turn arm a Monitor on `scripts/codex-watch NAME 20 45`. Parallel waves are fine when owned paths are disjoint. Codex leaves changes uncommitted; review, verify and commit as the orchestrator.
+**Fallback (T3 tools unavailable):** `scripts/codex-run NAME BRIEF [--resume|--fork SESSION] --config 'model_reasoning_effort="medium|high"'` with Bash `run_in_background`, plus a Monitor on `scripts/codex-watch NAME 20 45`.
+
+Use the regular service tier. Fast mode (`serviceTier: "priority"` / `service_tier="fast"`) is only for when the owner asks. If Codex hits its usage limit, use Claude Haiku subagents for scoped tasks and go back to Codex once it is available. Parallel waves are fine when their owned paths are disjoint. Codex leaves its changes uncommitted; review, verify and commit them as the orchestrator.
 
 ## Production access
 
