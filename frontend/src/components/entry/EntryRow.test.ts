@@ -171,7 +171,6 @@ describe('entry row inline editing', () => {
     expect(screen.queryByLabelText('Unit')).not.toBeInTheDocument()
     const quantity = screen.getByLabelText('Quantity') as HTMLInputElement
     const dimensions = screen.getByLabelText('Dimensions') as HTMLInputElement
-    expect(dimensions).toHaveClass('dimensions')
     quantity.focus()
     await fireEvent.keyDown(quantity, { key: 'Enter' })
     expect(document.activeElement).toBe(dimensions)

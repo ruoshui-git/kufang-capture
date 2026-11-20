@@ -388,7 +388,7 @@
             class="dimensions-field"
             data-field="dimensions"
             bind:this={dimensionsField}
-            rows="1"
+            rows="2"
             placeholder="e.g. 30 × 20 × 15 cm"
             value={draft.dimensions ?? ''}
             oninput={(event) => {
@@ -584,7 +584,8 @@
   }
   .field textarea.dimensions-field {
     field-sizing: content;
-    min-height: var(--size-touch);
+    /* Two lines tall to start, so long values read at a glance; grows with the text. */
+    min-height: calc(2lh + 2 * var(--space-3) + 2px);
     overflow-wrap: anywhere;
     resize: none;
   }

@@ -74,7 +74,7 @@ describe('entry detail', () => {
     const { entry } = await setup()
     const dimensions = screen.getByLabelText('Dimensions') as HTMLTextAreaElement
     expect(dimensions.tagName).toBe('TEXTAREA')
-    expect(dimensions).toHaveAttribute('rows', '1')
+    expect(dimensions).toHaveAttribute('rows', '2')
     expect(dimensions.closest('label')).toHaveClass('full-field')
     expect(dimensions).toHaveClass('dimensions-field')
 

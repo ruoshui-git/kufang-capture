@@ -591,9 +591,6 @@
     position: relative;
     min-width: 0;
   }
-  .dimensions {
-    grid-column: 1 / -1;
-  }
   .fields .error {
     grid-column: 1 / -1;
   }
@@ -731,7 +728,6 @@
     }
     .dimensions {
       grid-area: dimensions;
-      grid-column: auto;
     }
     .short-note {
       grid-area: note;
