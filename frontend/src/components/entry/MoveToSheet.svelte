@@ -67,7 +67,7 @@
       open = false
       onmoved?.()
       showToast({
-        message: `Moved to "${target.name}" as ${formatSequence(placed.sequence_number)}${result.merged_into_existing.length ? ' (already there)' : ''}`,
+        message: `Moved to "${target.name}" as ${formatSequence(placed.sequence_number)}${result.merged_into_existing.length ? ' (added to the entry already there)' : ''}`,
         actions: [
           {
             label: 'Undo',

@@ -497,34 +497,52 @@ export function createRepo(options: RepoOptions = {}): Repo {
       beforeCollections.set(sourceCollection.id, sourceCollection)
       if (!beforeCollections.has(target.id)) beforeCollections.set(target.id, target)
       const provenance = `Moved from "${sourceCollection.name}" ${formatSequence(source.sequence_number)}`
-      const sourceCount = [
-        source.quantity === null || source.quantity === ''
-          ? source.unit.trim()
-          : `${source.quantity}${source.unit ? ` ${source.unit}` : ''}`,
-        source.count_detail.trim(),
-      ]
-        .filter(Boolean)
-        .join('; ')
-      const entryNotes = [provenance, source.entry_notes.trim()].filter(Boolean).join('\n')
+      const countText = (entry: Entry) =>
+        [
+          entry.quantity === null || entry.quantity === ''
+            ? entry.unit.trim()
+            : `${entry.quantity}${entry.unit ? ` ${entry.unit}` : ''}`,
+          entry.count_detail.trim(),
+        ]
+          .filter(Boolean)
+          .join('; ')
+      const sourceCount = countText(source)
+      const provenanceLine = sourceCount ? `${provenance}: ${sourceCount}` : provenance
+      const entryNotes = [provenanceLine, source.entry_notes.trim()].filter(Boolean).join('\n')
       let movedTarget: Entry
       if (active) {
         beforeEntries.set(active.id, active)
         const activeItem = await db.items.get(active.item_id)
+        // Same item in both places: add the counts when they can be added exactly (both recorded,
+        // same unit). Blank is not zero, and different units are never summed; those need review.
+        const canSum =
+          active.quantity !== null &&
+          source.quantity !== null &&
+          normalizeUnit(active.unit) === normalizeUnit(source.unit)
         const countsDiffer =
           active.quantity !== source.quantity ||
           active.unit !== source.unit ||
           active.count_detail !== source.count_detail
-        const note = sourceCount ? `${provenance}: ${sourceCount}` : provenance
+        // Notes list the count from each location. If nothing explains the count already here
+        // (no earlier "Moved from …: count" line), record it first so the lines add up to the total.
+        const activeCount = countText(active)
+        const explained = /^Moved from ".*" #\d+: /m.test(active.entry_notes)
+        const alreadyHere = activeCount && !explained ? `Already here: ${activeCount}` : ''
+        const quantity = canSum ? addDecimals(active.quantity!, source.quantity!) : active.quantity
         movedTarget = {
           ...active,
-          entry_notes: [active.entry_notes.trim(), note].filter(Boolean).join('\n'),
+          quantity,
+          entry_notes: [active.entry_notes.trim(), alreadyHere, provenanceLine].filter(Boolean).join('\n'),
           updated_at: at,
           revision: active.revision + 1,
           sync_state: target.storage_mode === 'local_only' ? 'local_only' : 'pending',
         }
         await db.entries.put(movedTarget)
-        await enqueue(target, 'entry', movedTarget, 'upsert', { entry_notes: movedTarget.entry_notes })
-        if (countsDiffer && activeItem && activeItem.review_status !== 'needs_review') {
+        await enqueue(target, 'entry', movedTarget, 'upsert', {
+          quantity: movedTarget.quantity,
+          entry_notes: movedTarget.entry_notes,
+        })
+        if (!canSum && countsDiffer && activeItem && activeItem.review_status !== 'needs_review') {
           beforeItems.set(activeItem.id, activeItem)
           const item = {
             ...activeItem,

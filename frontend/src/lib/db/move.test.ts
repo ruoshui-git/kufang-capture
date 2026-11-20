@@ -43,7 +43,7 @@ describe('moving entries', () => {
       quantity: '5',
       unit: 'boxes',
       count_detail: '3 boxes, 24 packs each',
-      entry_notes: 'Moved from "Batch B" #0001\nTop shelf',
+      entry_notes: 'Moved from "Batch B" #0001: 5 boxes; 3 boxes, 24 packs each\nTop shelf',
     })
     expect((await repo.getEntry(source.id))?.deleted_at).not.toBeNull()
     expect((await repo.getEntry(source.id))?.entry_notes).toBe('Top shelf\nMoved to "Room A" #0001')
@@ -72,7 +72,7 @@ describe('moving entries', () => {
       id: target.id,
       sequence_number: target.sequence_number,
       quantity: '9',
-      entry_notes: 'Moved from "Source" #0001',
+      entry_notes: 'Moved from "Source" #0001: 9 pieces',
     })
     await repo.undoMove(result.undo)
     expect(await repo.getEntry(source.id)).toMatchObject({ deleted_at: null, entry_notes: '' })
@@ -96,7 +96,7 @@ describe('moving entries', () => {
     expect((await repo.getEntry(active.id))?.deleted_at).toBeNull()
   })
 
-  it('notes active duplicates and marks shared item needs review when counts differ', async () => {
+  it('adds counts into an entry already there and notes the count from each location', async () => {
     const { repo } = repoFor()
     const a = await repo.createCollection({ name: 'A', storage_mode: 'local_only' })
     const b = await repo.createCollection({ name: 'B', storage_mode: 'local_only' })
@@ -110,20 +110,66 @@ describe('moving entries', () => {
     const duplicate = await repo.importEntries(b.id, [source.id])
     await repo.updateEntry(duplicate.created[0]!.id, {
       quantity: '5',
-      unit: 'boxes',
+      unit: 'Boxes',
       count_detail: '3 boxes, 24 packs each',
     })
     const targetEntry = (await repo.importEntries(target.id, [source.id])).created[0]!
-    await repo.updateEntry(targetEntry.id, { quantity: '2', unit: 'boxes' })
+    await repo.updateEntry(targetEntry.id, { quantity: '2.5', unit: 'boxes' })
     const result = await repo.moveEntries(target.id, [duplicate.created[0]!.id])
-    expect(result.merged_into_existing[0]?.entry_notes).toContain(
-      'Moved from "B" #0001: 5 boxes; 3 boxes, 24 packs each',
-    )
-    expect(result.merged_into_existing[0]?.review_status).toBe('needs_review')
+    expect(result.merged_into_existing[0]).toMatchObject({
+      quantity: '7.5',
+      unit: 'boxes',
+      entry_notes: 'Already here: 2.5 boxes\nMoved from "B" #0001: 5 Boxes; 3 boxes, 24 packs each',
+      review_status: 'draft',
+    })
     expect(result.created).toHaveLength(0)
     await repo.undoMove(result.undo)
     expect(await repo.getEntry(duplicate.created[0]!.id)).toMatchObject({ deleted_at: null })
-    expect(await repo.getEntry(targetEntry.id)).toMatchObject({ entry_notes: '', review_status: 'draft' })
+    expect(await repo.getEntry(targetEntry.id)).toMatchObject({
+      quantity: '2.5',
+      entry_notes: '',
+      review_status: 'draft',
+    })
+  })
+
+  it('moving the same item from two rooms sums the quantity and lists both sources', async () => {
+    const { repo } = repoFor()
+    const a = await repo.createCollection({ name: 'A', storage_mode: 'local_only' })
+    const c = await repo.createCollection({ name: 'C', storage_mode: 'local_only' })
+    const target = await repo.createCollection({ name: 'Target', storage_mode: 'local_only' })
+    const fromA = await repo.createEntry(a.id, { title: 'Candles', quantity: '5' })
+    const fromC = (await repo.importEntries(c.id, [fromA.id])).created[0]!
+    await repo.updateEntry(fromC.id, { quantity: '3' })
+    const first = await repo.moveEntries(target.id, [fromA.id])
+    const second = await repo.moveEntries(target.id, [fromC.id])
+    expect(second.merged_into_existing[0]).toMatchObject({
+      id: first.created[0]!.id,
+      quantity: '8',
+      entry_notes: 'Moved from "A" #0001: 5\nMoved from "C" #0001: 3',
+      review_status: 'draft',
+    })
+  })
+
+  it('never sums a blank quantity or different units, and marks the item for review', async () => {
+    const { repo } = repoFor()
+    const a = await repo.createCollection({ name: 'A', storage_mode: 'local_only' })
+    const b = await repo.createCollection({ name: 'B', storage_mode: 'local_only' })
+    const target = await repo.createCollection({ name: 'Target', storage_mode: 'local_only' })
+    const source = await repo.createEntry(a.id, { quantity: '4', unit: 'packs' })
+    const targetEntry = (await repo.importEntries(target.id, [source.id])).created[0]!
+    await repo.updateEntry(targetEntry.id, { quantity: '2', unit: 'boxes' })
+    const units = await repo.moveEntries(target.id, [source.id])
+    expect(units.merged_into_existing[0]).toMatchObject({
+      quantity: '2',
+      entry_notes: 'Already here: 2 boxes\nMoved from "A" #0001: 4 packs',
+      review_status: 'needs_review',
+    })
+    const blank = (await repo.importEntries(b.id, [source.id])).created[0]!
+    const other = await repo.createCollection({ name: 'Other', storage_mode: 'local_only' })
+    const otherEntry = (await repo.importEntries(other.id, [source.id])).created[0]!
+    await repo.updateEntry(otherEntry.id, { quantity: '6' })
+    const blankMove = await repo.moveEntries(other.id, [blank.id])
+    expect(blankMove.merged_into_existing[0]).toMatchObject({ quantity: '6' })
   })
 
   it('rejects storage mismatch and split and merge operate atomically in the requested order', async () => {
