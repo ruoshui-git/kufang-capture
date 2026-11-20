@@ -419,8 +419,12 @@
       >
     </div>
   {/if}
-  <CameraSheet bind:open={cameraOpen} entryId={row.entry.id} />
-  <MoveToSheet bind:open={moveOpen} entryId={row.entry.id} beforemove={() => autosave.flush()} />
+  {#if cameraOpen}<CameraSheet bind:open={cameraOpen} entryId={row.entry.id} />{/if}
+  {#if moveOpen}<MoveToSheet
+      bind:open={moveOpen}
+      entryId={row.entry.id}
+      beforemove={() => autosave.flush()}
+    />{/if}
 </article>
 
 <style>

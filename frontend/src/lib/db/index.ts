@@ -723,17 +723,16 @@ export function createRepo(options: RepoOptions = {}): Repo {
       }
     }
   }
-  const summaryFor = async (collection: Collection): Promise<CollectionSummary> => {
-    const [entries, allPhotos, allOutbox, items] = await Promise.all([
-      db.entries.where('collection_id').equals(collection.id).toArray(),
-      db.photos.toArray(),
-      db.outbox.toArray(),
-      db.items.toArray(),
-    ])
+  const summaryFor = (
+    collection: Collection,
+    entries: Entry[],
+    photos: Photo[],
+    outbox: OutboxItem[],
+    items: Item[],
+  ): CollectionSummary => {
     const itemIds = new Set(entries.map((entry) => entry.item_id))
-    const photos = allPhotos.filter((photo) => itemIds.has(photo.item_id))
     const photoIds = new Set(photos.map((photo) => photo.id))
-    const outbox = allOutbox.filter(
+    const relevantOutbox = outbox.filter(
       (item) =>
         item.collection_id === collection.id ||
         (item.entity === 'item' && itemIds.has(item.entity_id)) ||
@@ -741,10 +740,9 @@ export function createRepo(options: RepoOptions = {}): Repo {
     )
     const itemById = new Map(items.map((item) => [item.id, item]))
     const activeEntries = entries.filter((entry) => entry.deleted_at === null)
+    const activeItemIds = new Set(activeEntries.map((entry) => entry.item_id))
     const activePhotos = photos.filter(
-      (photo) =>
-        photo.deleted_at === null &&
-        entries.some((entry) => entry.item_id === photo.item_id && entry.deleted_at === null),
+      (photo) => photo.deleted_at === null && activeItemIds.has(photo.item_id),
     )
     const quantities = new Map<
       string,
@@ -798,7 +796,7 @@ export function createRepo(options: RepoOptions = {}): Repo {
         (entry) => itemById.get(entry.item_id)?.review_status === 'needs_review',
       ).length,
       deleted_entry_count: entries.filter((entry) => entry.deleted_at !== null).length,
-      pending_sync_count: outbox.length + pendingUpload.length,
+      pending_sync_count: relevantOutbox.length + pendingUpload.length,
       pending_upload_bytes: pendingUpload.reduce((sum, photo) => sum + photo.byte_size, 0),
       quantity_by_unit: [...quantities.values()].map(({ unit, total, entry_count }) => ({
         unit,
@@ -809,23 +807,119 @@ export function createRepo(options: RepoOptions = {}): Repo {
     }
   }
 
+  const summaryInputs = async () => {
+    const [collections, entries, photos, outbox, items] = await Promise.all([
+      db.collections.toArray(),
+      db.entries.toArray(),
+      db.photos.toArray(),
+      db.outbox.toArray(),
+      db.items.toArray(),
+    ])
+    const entriesByCollection = new Map<Id, Entry[]>()
+    const photosByItem = new Map<Id, Photo[]>()
+    const itemsById = new Map(items.map((item) => [item.id, item]))
+    const outboxByCollection = new Map<Id, OutboxItem[]>()
+    const outboxByEntity = new Map<string, OutboxItem[]>()
+    for (const entry of entries) {
+      const group = entriesByCollection.get(entry.collection_id) ?? []
+      group.push(entry)
+      entriesByCollection.set(entry.collection_id, group)
+    }
+    for (const photo of photos) {
+      const group = photosByItem.get(photo.item_id) ?? []
+      group.push(photo)
+      photosByItem.set(photo.item_id, group)
+    }
+    for (const mutation of outbox) {
+      const collectionGroup = outboxByCollection.get(mutation.collection_id) ?? []
+      collectionGroup.push(mutation)
+      outboxByCollection.set(mutation.collection_id, collectionGroup)
+      const key = `${mutation.entity}:${mutation.entity_id}`
+      const entityGroup = outboxByEntity.get(key) ?? []
+      entityGroup.push(mutation)
+      outboxByEntity.set(key, entityGroup)
+    }
+    return { collections, entriesByCollection, photosByItem, itemsById, outboxByCollection, outboxByEntity }
+  }
+
+  const summaryFromInputs = (
+    collection: Collection,
+    entries: Entry[],
+    photosByItem: Map<Id, Photo[]>,
+    itemsById: Map<Id, Item>,
+    outboxByCollection: Map<Id, OutboxItem[]>,
+    outboxByEntity: Map<string, OutboxItem[]>,
+  ) => {
+    const itemIds = new Set(entries.map((entry) => entry.item_id))
+    const photos = [...itemIds].flatMap((id) => photosByItem.get(id) ?? [])
+    const outbox = [
+      ...(outboxByCollection.get(collection.id) ?? []),
+      ...[...itemIds].flatMap((id) => outboxByEntity.get(`item:${id}`) ?? []),
+      ...photos.flatMap((photo) => outboxByEntity.get(`photo:${photo.id}`) ?? []),
+    ]
+    return summaryFor(
+      collection,
+      entries,
+      photos,
+      [...new Map(outbox.map((item) => [item.id, item])).values()],
+      [...itemIds].flatMap((id) => {
+        const item = itemsById.get(id)
+        return item ? [item] : []
+      }),
+    )
+  }
+
+  const summaryForCollectionId = async (collection: Collection): Promise<CollectionSummary> => {
+    const entries = await db.entries.where('collection_id').equals(collection.id).toArray()
+    const itemIds = [...new Set(entries.map((entry) => entry.item_id))]
+    const [photos, items, collectionOutbox] = await Promise.all([
+      itemIds.length ? db.photos.where('item_id').anyOf(itemIds).toArray() : Promise.resolve([]),
+      db.items.bulkGet(itemIds),
+      db.outbox.where('collection_id').equals(collection.id).toArray(),
+    ])
+    // A compound anyOf over hundreds of keys is slower than one scan of the (usually small) outbox.
+    const itemIdSet = new Set(itemIds)
+    const photoIdSet = new Set(photos.map((photo) => photo.id))
+    const entityOutbox = (await db.outbox.toArray()).filter(
+      (row) =>
+        (row.entity === 'item' && itemIdSet.has(row.entity_id)) ||
+        (row.entity === 'photo' && photoIdSet.has(row.entity_id)),
+    )
+    return summaryFor(
+      collection,
+      entries,
+      photos,
+      [...new Map([...collectionOutbox, ...entityOutbox].map((row) => [row.id, row])).values()],
+      items.filter((item): item is Item => item !== undefined),
+    )
+  }
+
   const repo: Repo = {
     watchCollectionSummaries: ({ includeArchived }) =>
       liveQuery(async () => {
-        const collections = await db.collections.toArray()
+        const inputs = await summaryInputs()
         return Promise.all(
-          collections
+          inputs.collections
             .filter((collection) => includeArchived || collection.status === 'active')
             .sort(
               (a, b) => (a.sort_order ?? 0) - (b.sort_order ?? 0) || b.updated_at.localeCompare(a.updated_at),
             )
-            .map(summaryFor),
+            .map((collection) =>
+              summaryFromInputs(
+                collection,
+                inputs.entriesByCollection.get(collection.id) ?? [],
+                inputs.photosByItem,
+                inputs.itemsById,
+                inputs.outboxByCollection,
+                inputs.outboxByEntity,
+              ),
+            ),
         )
       }) as Watchable<CollectionSummary[]>,
     watchCollectionSummary: (id) =>
       liveQuery(async () => {
         const collection = await db.collections.get(id)
-        return collection ? summaryFor(collection) : undefined
+        return collection ? summaryForCollectionId(collection) : undefined
       }) as Watchable<CollectionSummary | undefined>,
     getCollection: (id) => db.collections.get(id),
     createCollection: async (input: NewCollectionInput) => {

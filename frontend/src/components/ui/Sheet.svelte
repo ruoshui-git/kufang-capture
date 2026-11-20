@@ -1,6 +1,6 @@
 <script lang="ts">
   import type { Snippet } from 'svelte'
-  import { tick } from 'svelte'
+  import { onDestroy, tick } from 'svelte'
   import { openOverlay } from '$lib/ui/overlayHistory'
   let {
     open = $bindable(false),
@@ -24,6 +24,12 @@
       unregisterOverlay = undefined
       dialog.close()
     }
+  })
+  // Sheets mounted with {#if open} are destroyed in the same update that closes them, before the
+  // effect above can run; drop the history entry here so the next Back is not swallowed.
+  onDestroy(() => {
+    unregisterOverlay?.()
+    unregisterOverlay = undefined
   })
   function handleKeydown(event: KeyboardEvent) {
     if (event.key === 'Escape') {

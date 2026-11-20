@@ -25,6 +25,23 @@ async function first<T>(watch: {
 }
 
 describe('entry row inline editing', () => {
+  it('does not subscribe to collection summaries for closed row sheets', async () => {
+    const collection = await repo.createCollection({ name: `List ${Date.now()}`, storage_mode: 'local_only' })
+    const entries = await Promise.all(Array.from({ length: 40 }, () => repo.createEntry(collection.id)))
+    const query = { search: '', filter: 'all' as const, sort: 'newest' as const }
+    const rows = await first(repo.watchEntryRows(collection.id, query))
+    const summaryWatch = vi.spyOn(repo, 'watchCollectionSummaries')
+    const rendered = rows.map((row) =>
+      render(EntryRow, {
+        props: { row, units: [], ondetails: () => {}, onviewer: () => {}, ondelete: () => {} },
+      }),
+    )
+    expect(summaryWatch).not.toHaveBeenCalled()
+    rendered.forEach((view) => view.unmount())
+    summaryWatch.mockRestore()
+    expect(entries).toHaveLength(40)
+  })
+
   it('shows needs-review badge and toggles the per-entry star accessibly', async () => {
     const collection = await repo.createCollection({
       name: `Review ${Date.now()}`,

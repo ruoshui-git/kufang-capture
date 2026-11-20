@@ -1,5 +1,5 @@
 import { cleanup, render, screen, waitFor } from '@testing-library/svelte'
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import Sheet from './Sheet.svelte'
 
 afterEach(() => cleanup())
@@ -30,5 +30,22 @@ describe('Sheet', () => {
     expect(close).toHaveFocus()
     close.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
     await waitFor(() => expect(dialog).not.toHaveAttribute('open'))
+  })
+
+  it('releases its Back history entry when unmounted while open', async () => {
+    Object.defineProperty(HTMLDialogElement.prototype, 'showModal', {
+      configurable: true,
+      value(this: HTMLDialogElement) {
+        this.setAttribute('open', '')
+      },
+    })
+    const back = vi.spyOn(history, 'back').mockImplementation(() => {})
+    const children = () => null
+    const view = render(Sheet, { props: { open: true, title: 'Move to…', children: children as never } })
+    await waitFor(() => expect(screen.getByRole('dialog', { name: 'Move to…' })).toHaveAttribute('open'))
+    expect(back).not.toHaveBeenCalled()
+    view.unmount()
+    expect(back).toHaveBeenCalledTimes(1)
+    back.mockRestore()
   })
 })

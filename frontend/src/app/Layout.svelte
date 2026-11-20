@@ -42,9 +42,6 @@
     return groups
   })
   onMount(() => {
-    const subscription = repo
-      .watchCollectionSummaries({ includeArchived: false })
-      .subscribe((items) => (collections = items))
     let stopStatus: (() => void) | undefined
     void import('$lib/sync')
       .then(({ authClient, syncEngine }) => {
@@ -59,9 +56,18 @@
       })
       .catch(() => (signedIn = false))
     return () => {
-      typeof subscription === 'function' ? subscription() : subscription.unsubscribe()
       stopStatus?.()
     }
+  })
+  $effect(() => {
+    if (!router.isDesktop) {
+      collections = []
+      return
+    }
+    const subscription = repo
+      .watchCollectionSummaries({ includeArchived: false })
+      .subscribe((items) => (collections = items))
+    return () => (typeof subscription === 'function' ? subscription() : subscription.unsubscribe())
   })
 </script>
 

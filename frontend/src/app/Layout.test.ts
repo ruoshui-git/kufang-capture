@@ -11,11 +11,12 @@ vi.mock('$lib/sync', () => ({
   authClient: { session: () => Promise.resolve({ authenticated: false }) },
   syncEngine: { status: { subscribe: () => () => {} } },
 }))
-vi.mock('./router.svelte', () => ({
-  router: { isDesktop: true, route: { name: 'collections' } },
-  navigate: navigateSpy,
-}))
+vi.mock('./router.svelte', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./router.svelte')>()
+  return { ...actual, navigate: navigateSpy }
+})
 import Layout from './Layout.svelte'
+import { router } from './router.svelte'
 
 function summary(id: string, name: string, folder = '') {
   return {
@@ -31,10 +32,13 @@ function summary(id: string, name: string, folder = '') {
 }
 
 const children = createRawSnippet(() => ({ render: () => '<p>page</p>' }))
+let unsubscribeSummary: ReturnType<typeof vi.fn>
 
 afterEach(() => cleanup())
 beforeEach(() => {
   vi.clearAllMocks()
+  router.isDesktop = true
+  unsubscribeSummary = vi.fn()
   fakeRepo.watchCollectionSummaries.mockReturnValue({
     subscribe: (next: (value: unknown[]) => void) => {
       next([
@@ -42,7 +46,7 @@ beforeEach(() => {
         summary('b01', 'B01', 'Annex'),
         summary('loose', 'Loose room'),
       ])
-      return () => {}
+      return unsubscribeSummary
     },
   })
 })
@@ -97,5 +101,20 @@ describe('Desktop rail search', () => {
     await fireEvent.keyDown(input, { key: 'Escape' })
     expect(input.value).toBe('')
     expect(railRow('B01')).toBeInTheDocument()
+  })
+
+  it('subscribes to summaries only while the desktop rail is shown', async () => {
+    router.isDesktop = false
+    const view = render(Layout, { children })
+    expect(fakeRepo.watchCollectionSummaries).not.toHaveBeenCalled()
+    expect(screen.queryByRole('complementary', { name: 'Collections' })).not.toBeInTheDocument()
+
+    router.isDesktop = true
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    expect(fakeRepo.watchCollectionSummaries).toHaveBeenCalledTimes(1)
+    router.isDesktop = false
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    expect(unsubscribeSummary).toHaveBeenCalledTimes(1)
+    view.unmount()
   })
 })
