@@ -43,6 +43,7 @@ const sample = {
 afterEach(() => cleanup())
 beforeEach(() => {
   vi.clearAllMocks()
+  window.history.replaceState({}, '', '/')
   exportFromDevice.mockResolvedValue({ delivery: 'download', filename: 'export.zip', byteSize: 1 })
   fakeRepo.watchCollectionSummaries.mockReturnValue({
     subscribe: (next: (value: unknown[]) => void) => {
@@ -135,6 +136,103 @@ describe('Collections page', () => {
   it('shows no unfiled label when no collection is in a folder', () => {
     render(CollectionsPage)
     expect(screen.queryByRole('heading', { name: /Not in a folder/ })).not.toBeInTheDocument()
+  })
+
+  it('filters collections and shows matched counts while leaving the header totals unfiltered', async () => {
+    const base = sample as unknown as Record<string, unknown>
+    const collection = base.collection as Record<string, unknown>
+    const matching = { ...base, collection: { ...collection, id: 'match', name: 'A04', folder: 'Temple 2' } }
+    const other = { ...base, collection: { ...collection, id: 'other', name: 'Workshop', folder: 'Annex' } }
+    fakeRepo.watchCollectionSummaries.mockReturnValue({
+      subscribe: (next: (value: unknown[]) => void) => (next([matching, other]), () => {}),
+    })
+    const { container } = render(CollectionsPage)
+    const status = container.querySelector('.search-status')
+    expect(status?.textContent).toBe('') // no whitespace text nodes, so :empty hides it
+    await fireEvent.input(screen.getByRole('searchbox', { name: 'Search collections' }), {
+      target: { value: 'temple a04' },
+    })
+    expect(status?.getAttribute('aria-live')).toBe('polite')
+    expect(status?.textContent?.trim()).toBe('1 of 2 collections')
+    expect(screen.getByRole('link', { name: 'Open A04' })).toBeInTheDocument()
+    expect(screen.queryByRole('link', { name: 'Open Workshop' })).not.toBeInTheDocument()
+    expect(screen.getByText('1 of 2 collections')).toBeInTheDocument()
+    expect(screen.getByText('2 collections')).toBeInTheDocument()
+    expect(screen.getByText('1', { selector: '.folder-count' })).toBeInTheDocument()
+  })
+
+  it('expands a collapsed folder during search without saving the collapsed setting', async () => {
+    const base = sample as unknown as Record<string, unknown>
+    const collection = base.collection as Record<string, unknown>
+    const filed = { ...base, collection: { ...collection, id: 'filed', name: 'A04', folder: 'Temple 2' } }
+    fakeRepo.getSetting.mockResolvedValueOnce(['Temple 2'])
+    fakeRepo.watchCollectionSummaries.mockReturnValue({
+      subscribe: (next: (value: unknown[]) => void) => (next([filed]), () => {}),
+    })
+    render(CollectionsPage)
+    await waitFor(() => expect(screen.queryByRole('link', { name: 'Open A04' })).not.toBeInTheDocument())
+    await fireEvent.input(screen.getByRole('searchbox', { name: 'Search collections' }), {
+      target: { value: 'a04' },
+    })
+    expect(screen.getByRole('button', { name: /Temple 2/ })).toHaveAttribute('aria-expanded', 'true')
+    expect(screen.getByRole('link', { name: 'Open A04' })).toBeInTheDocument()
+    expect(fakeRepo.setSetting).not.toHaveBeenCalledWith('collapsed_folders', expect.anything())
+  })
+
+  it('hides empty folders and shows a clear-search empty state', async () => {
+    const base = sample as unknown as Record<string, unknown>
+    const collection = base.collection as Record<string, unknown>
+    const filed = { ...base, collection: { ...collection, id: 'filed', name: 'A04', folder: 'Temple 2' } }
+    const other = { ...base, collection: { ...collection, id: 'other', name: 'Workshop', folder: 'Annex' } }
+    fakeRepo.watchCollectionSummaries.mockReturnValue({
+      subscribe: (next: (value: unknown[]) => void) => (next([filed, other]), () => {}),
+    })
+    render(CollectionsPage)
+    const input = screen.getByRole('searchbox', { name: 'Search collections' })
+    await fireEvent.input(input, { target: { value: 'a04' } })
+    expect(screen.queryByRole('button', { name: /Annex/ })).not.toBeInTheDocument()
+    await fireEvent.input(input, { target: { value: 'no-such-collection' } })
+    expect(
+      screen.getByRole('heading', { name: 'No collections match “no-such-collection”' }),
+    ).toBeInTheDocument()
+    await fireEvent.click(screen.getByRole('button', { name: 'Clear search' }))
+    expect(input).toHaveValue('')
+    await waitFor(() => expect(input).toHaveFocus())
+  })
+
+  it('navigates to the only result on Enter and clears search on Escape', async () => {
+    render(CollectionsPage)
+    const input = screen.getByRole('searchbox', { name: 'Search collections' })
+    await fireEvent.input(input, { target: { value: 'temple' } })
+    expect(screen.getByText('1 of 1 collection')).toBeInTheDocument()
+    await fireEvent.keyDown(input, { key: 'Enter' })
+    expect(navigateSpy).toHaveBeenCalledWith('/c/room-one')
+    await fireEvent.keyDown(input, { key: 'Escape' })
+    expect(input).toHaveValue('')
+  })
+
+  it('selects only visible items with a folder Select all action', async () => {
+    const base = sample as unknown as Record<string, unknown>
+    const collection = base.collection as Record<string, unknown>
+    const first = { ...base, collection: { ...collection, id: 'a04', name: 'A04', folder: 'Temple 2' } }
+    const second = { ...base, collection: { ...collection, id: 'A05', name: 'A05', folder: 'Temple 2' } }
+    fakeRepo.watchCollectionSummaries.mockReturnValue({
+      subscribe: (next: (value: unknown[]) => void) => (next([first, second]), () => {}),
+    })
+    render(CollectionsPage)
+    await fireEvent.click(screen.getByRole('button', { name: 'Select' }))
+    await fireEvent.click(screen.getByRole('checkbox', { name: 'A05' }))
+    const input = screen.getByRole('searchbox', { name: 'Search collections' })
+    await fireEvent.input(input, { target: { value: 'a04' } })
+    await fireEvent.click(screen.getByRole('button', { name: 'Select all' }))
+    expect(screen.getByRole('region', { name: 'Export selected collections' })).toHaveTextContent(
+      '2 selected',
+    )
+    expect(screen.getByRole('checkbox', { name: 'A04' })).toBeChecked()
+    expect(screen.queryByRole('checkbox', { name: 'A05' })).not.toBeInTheDocument()
+    await fireEvent.click(screen.getByRole('button', { name: 'Export ZIP' }))
+    await fireEvent.click(screen.getAllByRole('button', { name: 'Export ZIP' }).at(-1)!)
+    await waitFor(() => expect(exportFromDevice).toHaveBeenCalledWith(['a04', 'A05'], expect.anything()))
   })
 
   it('enters and leaves selection mode and toggles a collection card', async () => {

@@ -19,9 +19,12 @@
   import ClearCollectionSheet from '../../components/sync/ClearCollectionSheet.svelte'
   import ExportSheet from '../../components/sync/ExportSheet.svelte'
   import MergeCollectionsSheet from '../../components/collection/MergeCollectionsSheet.svelte'
+  import { collectionMatches } from './collectionSearch'
 
   let summaries = $state<CollectionSummary[]>([])
   let includeArchived = $state(false)
+  let search = $state('')
+  let searchInput = $state<HTMLInputElement>()
   let sheetOpen = $state(false)
   let editing = $state<CollectionSummary | null>(null)
   let name = $state('')
@@ -68,21 +71,39 @@
   })
 
   const totalEntries = $derived(summaries.reduce((sum, item) => sum + item.entry_count, 0))
+  const filteredSummaries = $derived(
+    search.trim() ? summaries.filter((item) => collectionMatches(item, search)) : summaries,
+  )
+  const searching = $derived(search.trim().length > 0)
   const groups = $derived.by(() => {
     const names = [
-      ...new Set(summaries.map((item) => (item.collection.folder ?? '').trim()).filter(Boolean)),
+      ...new Set(filteredSummaries.map((item) => (item.collection.folder ?? '').trim()).filter(Boolean)),
     ].sort((a, b) => a.localeCompare(b))
     const result = names.map((name) => ({
       name,
-      items: summaries.filter((item) => (item.collection.folder ?? '').trim() === name),
+      items: filteredSummaries.filter((item) => (item.collection.folder ?? '').trim() === name),
     }))
-    const unfiled = summaries.filter((item) => !(item.collection.folder ?? '').trim())
+    const unfiled = filteredSummaries.filter((item) => !(item.collection.folder ?? '').trim())
     if (unfiled.length) result.push({ name: '', items: unfiled })
     return result
   })
   const displayedItems = $derived(groups.flatMap((group) => group.items))
+  const searchStatus = $derived(
+    searching && summaries.length > 0
+      ? `${displayedItems.length} of ${summaries.length} ${summaries.length === 1 ? 'collection' : 'collections'}`
+      : '',
+  )
+  const allItemsInDisplayOrder = $derived.by(() => {
+    const names = [
+      ...new Set(summaries.map((item) => (item.collection.folder ?? '').trim()).filter(Boolean)),
+    ].sort((a, b) => a.localeCompare(b))
+    const ordered = names.flatMap((name) =>
+      summaries.filter((item) => (item.collection.folder ?? '').trim() === name),
+    )
+    return [...ordered, ...summaries.filter((item) => !(item.collection.folder ?? '').trim())]
+  })
   const selectedInDisplayOrder = $derived(
-    displayedItems.filter((item) => selectedIds.includes(item.collection.id)),
+    allItemsInDisplayOrder.filter((item) => selectedIds.includes(item.collection.id)),
   )
   onMount(() => {
     void repo.getSetting<string[]>(SETTING_KEYS.collapsedFolders, []).then((value) => {
@@ -117,6 +138,22 @@
     selectedIds = allSelected
       ? selectedIds.filter((id) => !ids.includes(id))
       : [...selectedIds, ...ids.filter((id) => !selectedIds.includes(id))]
+  }
+  function clearSearch() {
+    search = ''
+    requestAnimationFrame(() => searchInput?.focus())
+  }
+  function searchKeydown(event: KeyboardEvent) {
+    if (event.key === 'Escape' && search) {
+      event.preventDefault()
+      event.stopPropagation()
+      clearSearch()
+      return
+    }
+    if (event.key === 'Enter' && !selectionMode && displayedItems.length === 1) {
+      event.preventDefault()
+      navigate(`/c/${displayedItems[0]!.collection.id}`)
+    }
   }
   function openSelectedExport() {
     if (!selectedInDisplayOrder.length) return
@@ -243,157 +280,180 @@
       </button>
     </div>
   </div>
-  <label class="toggle-row"><input type="checkbox" bind:checked={includeArchived} /> Show archived</label>
+  <div class="search-controls">
+    <div class="search-row">
+      <input
+        bind:this={searchInput}
+        type="search"
+        aria-label="Search collections"
+        placeholder="Search collections"
+        enterkeyhint="search"
+        autocomplete="off"
+        autocapitalize="off"
+        spellcheck="false"
+        bind:value={search}
+        onkeydown={searchKeydown}
+      />
+    </div>
+    <label class="toggle-row"><input type="checkbox" bind:checked={includeArchived} /> Show archived</label>
+  </div>
+  <p class="search-status" aria-live="polite">{searchStatus}</p>
   {#if summaries.length === 0}
     <EmptyState title={includeArchived ? 'No archived collections' : 'No collections yet'}
       >Create a collection for a room or counting session. Add photos and counts as you work, even when you
       are offline.</EmptyState
     >
   {:else}
-    {#each groups as group (group.name)}
-      {#if group.name}<div class="folder-heading-row">
-          <button
-            class="folder-heading"
-            aria-expanded={!collapsedFolders.includes(group.name)}
-            onclick={() => void toggleFolder(group.name)}
-          >
-            <span class="folder-chevron" aria-hidden="true">⌄</span>
-            <span class="folder-name">{group.name}</span>
-            <span class="chip folder-count">{group.items.length}</span>
-          </button>
-          {#if selectionMode}
+    {#if searching && displayedItems.length === 0}
+      <EmptyState title={`No collections match “${search.trim()}”`}>
+        <button class="button quiet" type="button" onclick={clearSearch}>Clear search</button>
+      </EmptyState>
+    {:else}{#each groups as group (group.name)}
+        {#if group.name}<div class="folder-heading-row">
             <button
-              class="button quiet folder-select"
-              type="button"
-              onclick={() => toggleFolderSelection(group.items)}
-            >
-              {#if group.items.every((item) => selectedIds.includes(item.collection.id))}Clear{:else}Select
-                all{/if}
-            </button>
-          {/if}
-        </div>{:else if groups.length > 1}<div class="folder-heading-row">
-          <h2 class="unfiled-heading">
-            Not in a folder <span class="chip folder-count">{group.items.length}</span>
-          </h2>
-          {#if selectionMode}
-            <button
-              class="button quiet folder-select"
-              type="button"
-              onclick={() => toggleFolderSelection(group.items)}
-            >
-              {#if group.items.every((item) => selectedIds.includes(item.collection.id))}Clear{:else}Select
-                all{/if}
-            </button>
-          {/if}
-        </div>{/if}
-      {#if !group.name || !collapsedFolders.includes(group.name)}<div class="collection-grid">
-          {#each group.items as item (item.collection.id)}
-            <!-- svelte-ignore a11y_no_noninteractive_tabindex -->
-            <article
-              class="collection-card"
-              class:selectable={selectionMode}
-              class:is-selected={selectedIds.includes(item.collection.id)}
-              role={selectionMode ? 'checkbox' : undefined}
-              aria-label={selectionMode ? item.collection.name : undefined}
-              aria-checked={selectionMode ? selectedIds.includes(item.collection.id) : undefined}
-              onclick={selectionMode ? () => toggleSelected(item.collection.id) : undefined}
-              onkeydown={(event) => {
-                if (selectionMode && (event.key === 'Enter' || event.key === ' ')) {
-                  event.preventDefault()
-                  toggleSelected(item.collection.id)
-                }
+              class="folder-heading"
+              aria-expanded={searching || !collapsedFolders.includes(group.name)}
+              onclick={() => {
+                if (!searching) void toggleFolder(group.name)
               }}
-              tabindex={selectionMode ? 0 : undefined}
             >
-              {#if selectionMode}
-                <span class="selection-checkbox" aria-hidden="true">
-                  {#if selectedIds.includes(item.collection.id)}✓{/if}
-                </span>
-              {/if}
-              {#if selectionMode}<div class="collection-open selection-copy">
-                  <span class="collection-title-row">
-                    <span class="collection-title">{item.collection.name}</span>
+              <span class="folder-chevron" aria-hidden="true">⌄</span>
+              <span class="folder-name">{group.name}</span>
+              <span class="chip folder-count">{group.items.length}</span>
+            </button>
+            {#if selectionMode}
+              <button
+                class="button quiet folder-select"
+                type="button"
+                onclick={() => toggleFolderSelection(group.items)}
+              >
+                {#if group.items.every((item) => selectedIds.includes(item.collection.id))}Clear{:else}Select
+                  all{/if}
+              </button>
+            {/if}
+          </div>{:else if groups.length > 1}<div class="folder-heading-row">
+            <h2 class="unfiled-heading">
+              Not in a folder <span class="chip folder-count">{group.items.length}</span>
+            </h2>
+            {#if selectionMode}
+              <button
+                class="button quiet folder-select"
+                type="button"
+                onclick={() => toggleFolderSelection(group.items)}
+              >
+                {#if group.items.every((item) => selectedIds.includes(item.collection.id))}Clear{:else}Select
+                  all{/if}
+              </button>
+            {/if}
+          </div>{/if}
+        {#if !group.name || searching || !collapsedFolders.includes(group.name)}<div class="collection-grid">
+            {#each group.items as item (item.collection.id)}
+              <!-- svelte-ignore a11y_no_noninteractive_tabindex -->
+              <article
+                class="collection-card"
+                class:selectable={selectionMode}
+                class:is-selected={selectedIds.includes(item.collection.id)}
+                role={selectionMode ? 'checkbox' : undefined}
+                aria-label={selectionMode ? item.collection.name : undefined}
+                aria-checked={selectionMode ? selectedIds.includes(item.collection.id) : undefined}
+                onclick={selectionMode ? () => toggleSelected(item.collection.id) : undefined}
+                onkeydown={(event) => {
+                  if (selectionMode && (event.key === 'Enter' || event.key === ' ')) {
+                    event.preventDefault()
+                    toggleSelected(item.collection.id)
+                  }
+                }}
+                tabindex={selectionMode ? 0 : undefined}
+              >
+                {#if selectionMode}
+                  <span class="selection-checkbox" aria-hidden="true">
+                    {#if selectedIds.includes(item.collection.id)}✓{/if}
                   </span>
-                  <span class="collection-meta">
-                    <span class="stat-chip"
-                      >{item.entry_count} {item.entry_count === 1 ? 'entry' : 'entries'}</span
-                    >
-                    <span class="stat-chip"
-                      >{item.photo_count} {item.photo_count === 1 ? 'photo' : 'photos'}</span
-                    >
-                    <span class="stat-chip" class:incomplete={item.incomplete_count > 0}
-                      >{item.incomplete_count} incomplete</span
-                    >
-                  </span>
-                  <span class="collection-updated">Updated {relativeTime(item.last_activity_at)}</span>
-                </div>{:else}<a
-                  class="collection-open"
-                  href="/c/{item.collection.id}"
-                  aria-label="Open {item.collection.name}"
-                >
-                  <span class="collection-title-row">
-                    <span class="collection-title">{item.collection.name}</span>
-                  </span>
-                  <span class="collection-meta">
-                    <span class="stat-chip"
-                      >{item.entry_count} {item.entry_count === 1 ? 'entry' : 'entries'}</span
-                    >
-                    <span class="stat-chip"
-                      >{item.photo_count} {item.photo_count === 1 ? 'photo' : 'photos'}</span
-                    >
-                    <span class="stat-chip" class:incomplete={item.incomplete_count > 0}>
-                      {item.incomplete_count} incomplete
+                {/if}
+                {#if selectionMode}<div class="collection-open selection-copy">
+                    <span class="collection-title-row">
+                      <span class="collection-title">{item.collection.name}</span>
                     </span>
-                  </span>
-                  <span class="collection-updated">Updated {relativeTime(item.last_activity_at)}</span>
-                </a>{/if}
-              {#if !selectionMode}
-                <button
-                  class="status-trigger"
-                  type="button"
-                  aria-label="Show sync conflicts"
-                  onclick={() => void openConflicts()}
-                  ><SyncStatusChip
-                    collectionId={item.collection.id}
-                    mode={item.collection.storage_mode}
-                    pendingCount={item.pending_sync_count}
-                    pendingBytes={item.pending_upload_bytes}
-                  /></button
-                >
-                <div class="collection-card-menu">
-                  <Menu label={`Actions for ${item.collection.name}`}>
-                    <button role="menuitem" onclick={() => openEdit(item)}>Rename / Edit</button>
-                    <button role="menuitem" onclick={() => toggleArchive(item)}>
-                      {item.collection.status === 'archived' ? 'Unarchive' : 'Archive'}
-                    </button>
-                    <button
-                      role="menuitem"
-                      onclick={() => {
-                        selected = item
-                        exportOpen = true
-                      }}>Export ZIP</button
-                    >
-                    <button
-                      role="menuitem"
-                      onclick={() => {
-                        selected = item
-                        storageOpen = true
-                      }}>Change storage mode…</button
-                    >
-                    <button
-                      role="menuitem"
-                      onclick={() => {
-                        selected = item
-                        clearOpen = true
-                      }}>Clear from this device…</button
-                    >
-                  </Menu>
-                </div>
-              {/if}
-            </article>
-          {/each}
-        </div>{/if}
-    {/each}
+                    <span class="collection-meta">
+                      <span class="stat-chip"
+                        >{item.entry_count} {item.entry_count === 1 ? 'entry' : 'entries'}</span
+                      >
+                      <span class="stat-chip"
+                        >{item.photo_count} {item.photo_count === 1 ? 'photo' : 'photos'}</span
+                      >
+                      <span class="stat-chip" class:incomplete={item.incomplete_count > 0}
+                        >{item.incomplete_count} incomplete</span
+                      >
+                    </span>
+                    <span class="collection-updated">Updated {relativeTime(item.last_activity_at)}</span>
+                  </div>{:else}<a
+                    class="collection-open"
+                    href="/c/{item.collection.id}"
+                    aria-label="Open {item.collection.name}"
+                  >
+                    <span class="collection-title-row">
+                      <span class="collection-title">{item.collection.name}</span>
+                    </span>
+                    <span class="collection-meta">
+                      <span class="stat-chip"
+                        >{item.entry_count} {item.entry_count === 1 ? 'entry' : 'entries'}</span
+                      >
+                      <span class="stat-chip"
+                        >{item.photo_count} {item.photo_count === 1 ? 'photo' : 'photos'}</span
+                      >
+                      <span class="stat-chip" class:incomplete={item.incomplete_count > 0}>
+                        {item.incomplete_count} incomplete
+                      </span>
+                    </span>
+                    <span class="collection-updated">Updated {relativeTime(item.last_activity_at)}</span>
+                  </a>{/if}
+                {#if !selectionMode}
+                  <button
+                    class="status-trigger"
+                    type="button"
+                    aria-label="Show sync conflicts"
+                    onclick={() => void openConflicts()}
+                    ><SyncStatusChip
+                      collectionId={item.collection.id}
+                      mode={item.collection.storage_mode}
+                      pendingCount={item.pending_sync_count}
+                      pendingBytes={item.pending_upload_bytes}
+                    /></button
+                  >
+                  <div class="collection-card-menu">
+                    <Menu label={`Actions for ${item.collection.name}`}>
+                      <button role="menuitem" onclick={() => openEdit(item)}>Rename / Edit</button>
+                      <button role="menuitem" onclick={() => toggleArchive(item)}>
+                        {item.collection.status === 'archived' ? 'Unarchive' : 'Archive'}
+                      </button>
+                      <button
+                        role="menuitem"
+                        onclick={() => {
+                          selected = item
+                          exportOpen = true
+                        }}>Export ZIP</button
+                      >
+                      <button
+                        role="menuitem"
+                        onclick={() => {
+                          selected = item
+                          storageOpen = true
+                        }}>Change storage mode…</button
+                      >
+                      <button
+                        role="menuitem"
+                        onclick={() => {
+                          selected = item
+                          clearOpen = true
+                        }}>Clear from this device…</button
+                      >
+                    </Menu>
+                  </div>
+                {/if}
+              </article>
+            {/each}
+          </div>{/if}
+      {/each}{/if}
   {/if}
 </section>
 {#if selectionMode}
@@ -482,6 +542,38 @@
 {#if conflictOpen && ConflictSheetView}<ConflictSheetView bind:open={conflictOpen} />{/if}
 
 <style>
+  .search-controls {
+    display: flex;
+    align-items: center;
+    gap: var(--space-3);
+    margin-top: var(--space-4);
+  }
+  .search-row {
+    flex: 1;
+    min-width: 0;
+  }
+  .search-row input {
+    width: 100%;
+    min-width: 0;
+    min-height: var(--size-touch);
+    border: 1px solid var(--color-line);
+    border-radius: var(--radius-md);
+    padding: var(--space-3);
+    background: var(--color-card);
+    color: var(--color-ink);
+    font-size: var(--text-lg);
+  }
+  .search-status:empty {
+    display: none;
+  }
+  .search-status {
+    margin: var(--space-3) 0 0;
+    color: var(--color-muted);
+    font-size: var(--text-sm);
+  }
+  .search-controls .toggle-row {
+    flex: none;
+  }
   .folder-heading {
     width: 100%;
     min-height: var(--size-touch);
@@ -577,6 +669,12 @@
     gap: var(--space-2);
   }
   @media (max-width: 430px) {
+    .search-controls {
+      flex-wrap: wrap;
+    }
+    .search-row {
+      flex-basis: auto;
+    }
     .page-heading {
       align-items: flex-start;
       flex-wrap: wrap;
