@@ -20,8 +20,8 @@ jobs:
       run:
         working-directory: frontend
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
         with:
           node-version: 26
       - run: npm install --global pnpm@12
@@ -38,8 +38,8 @@ jobs:
       run:
         working-directory: backend
     steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v6
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10.3.3
       - run: uv sync --frozen
       - run: uv run ruff check .
       - run: uv run ruff format --check .
@@ -48,7 +48,7 @@ jobs:
   tools-and-deploy-scripts:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - run: python3 -I -m unittest discover -s tools/tests
       - run: bash -n deploy/bin/deploy deploy/bin/install-host.sh scripts/prod-guard
       - run: bash deploy/tests/deploy_test.sh
@@ -61,18 +61,18 @@ jobs:
       run:
         working-directory: frontend
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
         with:
           node-version: 26
-      - uses: astral-sh/setup-uv@v6
+      - uses: astral-sh/setup-uv@v10.3.3
       - run: npm install --global pnpm@12
       - run: pnpm install --frozen-lockfile
       - run: (cd ../backend && uv sync --frozen)
       - run: pnpm exec playwright install --with-deps chromium webkit
       - run: pnpm build
       - run: pnpm exec playwright test --project=iphone-chromium --project=android-chromium --project=desktop-chromium --project=iphone-webkit
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: failure()
         with:
           name: playwright-report
@@ -82,7 +82,7 @@ jobs:
   secrets-scan:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
       - name: gitleaks (full history)
@@ -99,7 +99,7 @@ jobs:
       group: production-deploy
       cancel-in-progress: false
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Build image
         run: |
           ref="kufang-capture:git-${GITHUB_SHA::12}"
