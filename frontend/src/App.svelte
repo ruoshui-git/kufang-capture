@@ -42,10 +42,14 @@
 <Layout>
   {#snippet children()}
     {#if router.route.name === 'collections'}<CollectionsPage />
-    {:else if router.route.name === 'entries'}<EntryListPage collectionId={router.route.collectionId} />
+    {:else if router.route.name === 'entries'}
+      <!-- Keyed: one collection's search, filter and rows must never carry over to the next. -->
+      {#key router.route.collectionId}<EntryListPage collectionId={router.route.collectionId} />{/key}
     {:else if router.route.name === 'detail'}
       {#if router.isDesktop}
-        <EntryListPage collectionId={router.route.collectionId} detailEntryId={router.route.entryId} />
+        {#key router.route.collectionId}
+          <EntryListPage collectionId={router.route.collectionId} detailEntryId={router.route.entryId} />
+        {/key}
       {:else}
         <DetailPage collectionId={router.route.collectionId} entryId={router.route.entryId} variant="page" />
       {/if}

@@ -242,7 +242,7 @@ test('§9 #10 scale: generated Local Only sample rows render while scrolling', a
   const collectionLink = page.getByRole('link', { name: /Open Test data/ }).first()
   await expect(collectionLink).toBeVisible()
   await collectionLink.click()
-  await expect(page.getByText('300 entries')).toBeVisible({ timeout: 30_000 })
+  await expect(page.getByText('300 entries', { exact: true })).toBeVisible({ timeout: 30_000 })
   // The summary and the row list load separately; measure scrolling once rows are on screen.
   await expect(page.locator('[data-entry-id]').first()).toBeVisible({ timeout: 30_000 })
   const metrics = await page.evaluate(async () => {
@@ -268,11 +268,17 @@ test('§9 #10 scale: generated Local Only sample rows render while scrolling', a
     observer.disconnect()
     return { longTasks, frames, rendered: document.querySelectorAll('[data-entry-id]').length }
   })
-  expect(metrics.rendered).toBeGreaterThan(0)
+  // More than the first page: scrolling must reveal further rows.
+  expect(metrics.rendered).toBeGreaterThan(40)
   expect(metrics.longTasks.filter((duration) => duration > 250)).toEqual([])
   console.log(
     `§9 #10 scroll metrics: ${JSON.stringify({ maxLongTaskMs: Math.max(0, ...metrics.longTasks), maxFrameMs: Math.max(0, ...metrics.frames), rowsRendered: metrics.rendered })}`,
   )
+  await expect(async () => {
+    await page.evaluate(() => window.scrollTo(0, document.documentElement.scrollHeight))
+    expect(await page.locator('[data-entry-id]').count()).toBe(300)
+  }).toPass({ timeout: 30_000 })
+  await expect(page.locator('[data-entry-id]').last()).toBeInViewport()
 })
 
 test('§9 #11 summary and recovery: quantities stay per unit and sequence numbers are not reused', async ({

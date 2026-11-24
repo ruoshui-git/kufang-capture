@@ -1,3 +1,9 @@
+<script module lang="ts">
+  const PAGE_SIZE = 40
+  /** Rows revealed when a list was left, so coming back can restore the scroll position. */
+  const revealedRows = new Map<string, number>()
+</script>
+
 <script lang="ts">
   import { onMount, tick } from 'svelte'
   import { repo } from '$lib/db'
@@ -28,7 +34,8 @@
   let sort = $state<EntrySort>('newest')
   let search = $state('')
   let appliedSearch = $state('')
-  let limit = $state(40)
+  let limit = $state(PAGE_SIZE)
+  let loaded = $state(false)
   let viewerOpen = $state(false)
   let viewerEntryId = $state('')
   let viewerPhotoId = $state<string | null>(null)
@@ -56,9 +63,10 @@
       .watchEntryRows(collectionId, { search: appliedSearch, filter, sort })
       .subscribe((items) => {
         rows = items
-        limit = Math.max(limit, 40)
+        loaded = true
         if (!restoredScroll) {
           restoredScroll = true
+          limit = Math.max(limit, revealedRows.get(collectionId) ?? 0)
           requestAnimationFrame(() => restoreScroll(`entries: ${collectionId}`))
         }
       })
@@ -99,29 +107,38 @@
 
   onMount(() => {
     void repo.getSetting<EntrySort>(SETTING_KEYS.entrySort, 'newest').then((value) => (sort = value))
-    const observer = new IntersectionObserver(
-      (entries) => {
-        if (entries.some((entry) => entry.isIntersecting)) limit = Math.min(rows.length, limit + 40)
-      },
-      { rootMargin: '600px' },
-    )
-    if (sentinel) observer.observe(sentinel)
     const onNew = () => void createEntry()
-    const onHide = () => {
-      saveScroll(`entries: ${collectionId}`)
-    }
+    const onHide = () => savePosition()
     window.addEventListener('capture: new-entry', onNew)
     window.addEventListener('pagehide', onHide)
     document.addEventListener('visibilitychange', onHide)
     return () => {
       if (typeof activeSubscription === 'function') activeSubscription()
       else activeSubscription?.unsubscribe()
-      observer.disconnect()
       window.removeEventListener('capture: new-entry', onNew)
       window.removeEventListener('pagehide', onHide)
       document.removeEventListener('visibilitychange', onHide)
     }
   })
+
+  // The sentinel exists only once rows have rendered, and an observer reports changes only, so observe
+  // afresh after every reveal. Otherwise the list can stop short of entries that are in the collection.
+  $effect(() => {
+    if (!sentinel || limit >= rows.length) return
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (entries.some((entry) => entry.isIntersecting)) limit += PAGE_SIZE
+      },
+      { rootMargin: '600px' },
+    )
+    observer.observe(sentinel)
+    return () => observer.disconnect()
+  })
+
+  function savePosition() {
+    saveScroll(`entries: ${collectionId}`)
+    revealedRows.set(collectionId, limit)
+  }
 
   let searchTimer: ReturnType<typeof setTimeout>
   function searchChanged(value: string) {
@@ -129,14 +146,17 @@
     clearTimeout(searchTimer)
     searchTimer = setTimeout(() => (appliedSearch = search.trim()), 150)
   }
+  function showAllEntries() {
+    clearTimeout(searchTimer)
+    filter = 'all'
+    appliedSearch = ''
+    search = ''
+  }
   async function createEntry() {
     const focusOrigin = document.activeElement
     if (filter === 'deleted') filter = 'all'
     const entry = await repo.createEntry(collectionId)
-    filter = 'all'
-    appliedSearch = ''
-    search = ''
-    limit = Math.max(limit, rows.length + 1)
+    showAllEntries()
     await tick()
     void focusNewEntry(entry.id, focusOrigin)
   }
@@ -144,6 +164,12 @@
   async function focusNewEntry(entryId: string, focusOrigin: Element | null, attempts = 0) {
     await tick()
     if (document.activeElement !== focusOrigin) return
+    // Oldest first puts the new entry last, possibly beyond the rows revealed so far.
+    const index = rows.findIndex((row) => row.entry.id === entryId)
+    if (index >= limit) {
+      limit = index + 1
+      await tick()
+    }
     const row = listElement?.querySelector(`[data-entry-id="${entryId}"]`)
     if (!row && attempts < 30) {
       setTimeout(() => void focusNewEntry(entryId, focusOrigin, attempts + 1), 20)
@@ -169,7 +195,7 @@
     return `#${String(value).padStart(4, '0')}`
   }
   function openDetails(entry: EntryRow['entry']) {
-    saveScroll(`entries: ${collectionId}`)
+    savePosition()
     navigate(`/c/${collectionId}/e/${entry.id}`)
   }
   function openViewer(entryId: string, photoId: string) {
@@ -181,6 +207,7 @@
     [...new Set(unitRows.map(({ entry }) => entry.unit.trim()).filter(Boolean))].slice(0, 12),
   )
   const visibleRows = $derived(rows.slice(0, limit))
+  const narrowed = $derived(filter !== 'all' || appliedSearch !== '')
   const incompleteLabel = $derived(
     filter === 'missing_quantity'
       ? 'No quantity'
@@ -338,11 +365,26 @@
     </div>
     {#if filter === 'deleted'}
       <RecentlyDeleted {collectionId} />
+    {:else if rows.length === 0 && !loaded}
+      <!-- Rows are still being read: an empty state here would claim the room has nothing in it. -->
+    {:else if rows.length === 0 && narrowed}
+      <EmptyState title="No matching entries"
+        >Entries in this collection are hidden by the current search or filter.</EmptyState
+      >
+      <div class="list-status">
+        <Button variant="quiet" onclick={showAllEntries}>Show all entries</Button>
+      </div>
     {:else if rows.length === 0}
       <EmptyState title="No entries yet"
         >Tap New Entry, then Add Photo to start counting this room.</EmptyState
       >
     {:else}
+      {#if narrowed}
+        <div class="list-status">
+          <span>{rows.length} of {unitRows.length} entries match</span>
+          <Button variant="quiet" onclick={showAllEntries}>Show all entries</Button>
+        </div>
+      {/if}
       <div class="entry-list" bind:this={listElement}>
         {#each visibleRows as row (row.entry.id)}
           <div data-entry-id={row.entry.id} class="row-wrapper">
@@ -351,6 +393,12 @@
         {/each}
         <div class="sentinel" bind:this={sentinel}></div>
       </div>
+      {#if visibleRows.length < rows.length}
+        <div class="list-status">
+          <span>Showing {visibleRows.length} of {rows.length} entries</span>
+          <Button variant="quiet" onclick={() => (limit = rows.length)}>Show the rest</Button>
+        </div>
+      {/if}
     {/if}
   </section>
   {#if detailEntryId && matchMedia('(min-width: 900px)').matches}
@@ -506,6 +554,15 @@
   }
   .sentinel {
     height: 1px;
+  }
+  .list-status {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--space-3);
+    margin: var(--space-3) 0;
+    color: var(--color-muted);
   }
   .new-entry-bar {
     position: fixed;
