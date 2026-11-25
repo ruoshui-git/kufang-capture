@@ -58,6 +58,10 @@ export class AccountGate {
     return get(this.state)
   }
 
+  get sessionGeneration() {
+    return this.generation
+  }
+
   reset(signedOut = false) {
     this.generation++
     this.state.set({ kind: signedOut ? 'signed_out' : 'unknown' })

@@ -1,5 +1,6 @@
 import { mkdir } from 'node:fs/promises'
 import { test, expect } from '@playwright/test'
+import { idbSnapshot } from './helpers/local'
 import { addEntry } from './helpers/sync'
 
 const shots = '/tmp/codex-runs/A4-shots'
@@ -24,6 +25,15 @@ test('searches shared items across collections and imports the grouped item once
   const entryA = await addEntry(page)
   await entryA.getByLabel('Entry title').fill(title)
   await entryA.getByLabel('Entry title').blur()
+  // The next collection setup reloads the page, so wait for the IndexedDB commit.
+  const sourceEntryId = await entryA.getAttribute('data-entry-id')
+  await expect
+    .poll(async () => {
+      const { entries, items } = await idbSnapshot(page)
+      const itemId = entries.find((entry) => entry.id === sourceEntryId)?.item_id
+      return items.find((item) => item.id === itemId)?.title
+    })
+    .toBe(title)
   await createLocalCollection(page, sourceB)
   await page.locator('summary[aria-label="Collection actions"]').click()
   await page.getByRole('menuitem', { name: 'Import from another collection' }).click()

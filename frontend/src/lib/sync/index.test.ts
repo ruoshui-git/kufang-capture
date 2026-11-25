@@ -2,6 +2,7 @@ import { Blob as NodeBlobImpl } from 'node:buffer'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { createRepo, getCaptureDb } from '../db'
 import { createSyncEngine } from './index'
+import { accountGate } from './binding'
 
 const NodeBlob = NodeBlobImpl as unknown as typeof Blob
 let sequence = 0
@@ -129,6 +130,45 @@ describe('foreground sync privacy and consent', () => {
     expect(await db.outbox.where('collection_id').equals(collection.id).count()).toBe(0)
     await db.delete()
   })
+})
+
+it('ignores an old sync 401 while a new sign-in verifies its session', async () => {
+  const db = getCaptureDb()
+  const ownerSession = () =>
+    response(200, {
+      authenticated: true,
+      expires_at: null,
+      user: { id: 'owner', name: 'Owner', is_owner: true },
+    })
+  let finishPull!: (result: Response) => void
+  let pullStarted!: () => void
+  const pulling = new Promise<void>((resolve) => (pullStarted = resolve))
+  const fetcher: typeof fetch = async (input) => {
+    if (input === '/api/auth/session') return ownerSession()
+    expect(input).toMatch(/^\/api\/sync\/changes/)
+    pullStarted()
+    return new Promise((resolve) => (finishPull = resolve))
+  }
+  accountGate.reset()
+  const engine = createSyncEngine({ fetch: fetcher })
+  try {
+    const oldCycle = engine.runScheduledCycle()
+    await pulling
+
+    // Successful login resets the gate before checking the newly issued cookie.
+    accountGate.reset()
+    let finishSession!: (result: Response) => void
+    const newSession = accountGate.check(() => new Promise((resolve) => (finishSession = resolve)))
+    const checked = expect(newSession).resolves.toMatchObject({ kind: 'ready' })
+    finishPull(response(401))
+    await oldCycle
+    finishSession(ownerSession())
+    await checked
+  } finally {
+    engine.stop()
+    accountGate.reset()
+    await db.delete()
+  }
 })
 
 describe('mismatched sync accounts', () => {

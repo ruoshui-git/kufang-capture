@@ -112,6 +112,7 @@ export function createSyncEngine(options: SyncEngineOptions = {}): SyncEngineWit
   const fetcher = options.fetch ?? fetch
   const gate = options.repoDbName ? new AccountGate(options.repoDbName) : accountGate
   let cycleAccount: Id | undefined
+  let cycleSessionGeneration: number
   const now = options.now ?? (() => new Date())
   const timestamp = () => now().toISOString()
   const controller = { current: null as AbortController | null }
@@ -328,6 +329,8 @@ export function createSyncEngine(options: SyncEngineOptions = {}): SyncEngineWit
 
   async function haltOnStatus(code: number) {
     if (code === 401) {
+      // A fresh sign-in can replace the session while a request is still in flight.
+      if (gate.sessionGeneration !== cycleSessionGeneration) return true
       authBlocked = true
       authenticated = false
       phase = 'signed_out'
@@ -1263,6 +1266,7 @@ export function createSyncEngine(options: SyncEngineOptions = {}): SyncEngineWit
     signal.throwIfAborted()
     phase = 'syncing'
     lastError = null
+    cycleSessionGeneration = gate.sessionGeneration
     const access = await gate.check(fetcher, signal)
     if (showBlocked()) return
     if (access.kind !== 'ready') {

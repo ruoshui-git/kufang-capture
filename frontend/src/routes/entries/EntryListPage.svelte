@@ -198,9 +198,6 @@
 
   async function focusNewEntry(entryId: string, focusOrigin: Element | null, attempts = 0) {
     await tick()
-    const shouldTakeFocus =
-      document.activeElement === focusOrigin ||
-      (focusOrigin instanceof HTMLButtonElement && focusOrigin.textContent?.includes('New Entry'))
     // Oldest first puts the new entry last, possibly beyond the rows revealed so far.
     const index = rows.findIndex((row) => row.entry.id === entryId)
     if (index >= limit) {
@@ -214,8 +211,8 @@
       setTimeout(() => void focusNewEntry(entryId, focusOrigin, attempts + 1), 20)
       return
     }
-    if (!row) return
-    if (!shouldTakeFocus) return
+    // The live query may render after the user has already moved to another field.
+    if (!row || document.activeElement !== focusOrigin) return
     const titleInput = row?.querySelector('[aria-label="Entry title"]') as HTMLInputElement | null
     titleInput?.focus()
     row?.scrollIntoView({ block: 'center', behavior: 'auto' })

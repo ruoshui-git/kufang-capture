@@ -31,7 +31,7 @@ export async function createCollection(page: Page, name: string, mode: 'synced' 
   await page.goto('/')
   await page.getByRole('button', { name: 'New collection' }).click()
   await page.getByLabel('Name').fill(name)
-  await page.getByLabel(mode === 'synced' ? 'Sync to Server' : 'Local Only').check()
+  await page.getByRole('radio', { name: mode === 'synced' ? /^Sync to Server/ : /^Local Only/ }).check()
   await page.getByRole('button', { name: 'Create collection' }).click()
   await page.getByRole('heading', { name }).waitFor()
 }

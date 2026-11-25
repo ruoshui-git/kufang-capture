@@ -68,6 +68,27 @@ describe('Entry list', () => {
     expect(shared.navigate).not.toHaveBeenCalled()
   })
 
+  it('preserves focus moved elsewhere while creating a row', async () => {
+    const create = repo.createEntry.bind(repo)
+    let finishCreation!: () => void
+    const blocked = new Promise<void>((resolve) => (finishCreation = resolve))
+    vi.spyOn(repo, 'createEntry').mockImplementationOnce(async (...args) => {
+      await blocked
+      return create(...args)
+    })
+    render(EntryListPage, { props: { collectionId } })
+    const newEntry = screen.getAllByRole('button', { name: /New Entry/ })[0]!
+    newEntry.focus()
+    await fireEvent.click(newEntry)
+    const search = screen.getByRole('textbox', { name: 'Search entries' })
+    search.focus()
+    finishCreation()
+    await screen.findByRole('textbox', { name: 'Entry title' })
+    // Allow the deferred focus attempt to finish after the live query renders the row.
+    await new Promise((resolve) => setTimeout(resolve, 60))
+    expect(search).toHaveFocus()
+  })
+
   it('shows each new row once after the empty list has loaded', async () => {
     const { container } = render(EntryListPage, { props: { collectionId } })
     await screen.findByText('No entries yet')
