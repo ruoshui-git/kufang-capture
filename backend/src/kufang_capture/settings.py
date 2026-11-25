@@ -10,6 +10,7 @@ class Settings(BaseSettings):
     data_dir: Path = Path("./data")
     static_dir: Path = Path("../frontend/dist")
     public_origin: str = "http://127.0.0.1:5173"
+    agent_token_sha256: str | None = None
     password_hash: str | None = None
     session_secret: str | None = None
     dev_password: str | None = None

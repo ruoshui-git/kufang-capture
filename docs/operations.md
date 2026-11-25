@@ -40,6 +40,27 @@ The forced command accepts only `load` (image tarball on stdin), `deploy IMAGE_R
 evaluates shell input. `load` accepts exactly one image tagged `kufang-capture:git-<sha>` and removes
 anything else it was sent.
 
+## Agent API token
+
+Generate a token from at least 32 random bytes in a password manager and store it with the
+authorized client. On a trusted workstation, hash it at a hidden prompt:
+
+```sh
+python3 -c 'import getpass, hashlib; print(hashlib.sha256(getpass.getpass("Agent token: ").encode()).hexdigest())'
+```
+
+Set `CAPTURE_AGENT_TOKEN_SHA256` to the resulting lowercase hex digest in the VPS
+`/srv/kufang-capture/.env`. The client sends the original token as an HTTPS bearer credential.
+Recreate the Capture service using its current image to load the environment:
+
+```sh
+cd /srv/kufang-capture
+docker compose --env-file .env --env-file image.env up -d --no-deps --force-recreate capture
+```
+
+For rotation, replace the digest, recreate the service, and update the client's token. To
+disable agent access, remove the variable or leave it empty and recreate the service.
+
 ## DNS
 
 Review the single-record manifest with the `temple_inventory` `spaceship-dns` helper before applying

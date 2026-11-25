@@ -13,6 +13,7 @@ from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.responses import FileResponse, JSONResponse
 from starlette.responses import StreamingResponse
 
+from .agent_api import agent_guard, agent_router, is_agent_path
 from .db import connect, run_migrations, single_writer
 from .exports import build_export
 from .photos import get_photo, head_original, upload_original, upload_thumbnail
@@ -45,8 +46,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     secure_cookie = config.public_origin.startswith("https://")
 
     @app.exception_handler(HTTPException)
-    async def http_error(_: Request, exc: HTTPException):
+    async def http_error(request: Request, exc: HTTPException):
         code = exc.detail if isinstance(exc.detail, str) else "request_failed"
+        if is_agent_path(request.url.path):
+            return JSONResponse({"detail": code}, status_code=exc.status_code, headers=exc.headers)
         messages = {
             "auth_required": "Authentication is required",
             "csrf_failed": "Request verification failed",
@@ -72,8 +75,17 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             return forwarded.split(",")[-1].strip() or (request.client.host if request.client else "unknown")
         return request.client.host if request.client else "unknown"
 
+    guard_agent = agent_guard(config, get_client_ip)
+    app.include_router(agent_router(config))
+
     @app.middleware("http")
     async def auth_and_csrf(request: Request, call_next):
+        if is_agent_path(request.url.path):
+            response = guard_agent(request)
+            if response is None:
+                response = await call_next(request)
+            response.headers["Cache-Control"] = "no-store"
+            return response
         if request.url.path == "/api/health" or not request.url.path.startswith("/api/"):
             return await call_next(request)
         # Deny by default: every /api path except health and auth requires a session.

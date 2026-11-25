@@ -16,7 +16,7 @@ All paths are under `/api`. JSON uses the snake_case field names from `frontend/
 - **Password.** It is checked against the argon2id `CAPTURE_PASSWORD_HASH`. In dev, when the hash is unset, `CAPTURE_DEV_PASSWORD` is accepted, but only when the origin is http://127.0.0.1 or localhost.
 - **Login backoff.** It is counted per client IP, using Traefik's `X-Forwarded-For` (uvicorn runs with proxy headers). After 5 failures within 15 minutes, the server returns 429 with exponential delays capped at 15 minutes.
 - **CSRF.** Every unsafe method (POST, PUT, PATCH, DELETE) needs the header `X-Capture-Request: 1`. When an `Origin` header is present, it must equal `CAPTURE_PUBLIC_ORIGIN`; otherwise the request fails with `403 csrf_failed`.
-- **Session required.** Every endpoint except `/api/health`, `/api/auth/*` and the static files requires a session. Without one the response is `401 auth_required`.
+- **Session required.** App routes require a session, with public health, authentication and static-file endpoints. Without one the response is `401 auth_required`.
 
 ## Sync
 
@@ -104,6 +104,38 @@ The response is `201` (or `200` if it was already stored with the same hash), wi
 
 `GET /api/exports/all.zip?include_trash=0|1` and `GET /api/exports/collections/{id}.zip?include_trash=0|1` stream the archive. The layout is exactly as in [export-format.md](export-format.md), with `source: "server"`. They use STORE mode, built from the stored crc32 and size values, with no temp file. A photo whose original was never uploaded is listed in `manifest.json` under `missing_originals` (the photo id and path) and is not included. The response carries `Content-Disposition: attachment; filename="…"`.
 
+## Agent API
+
+The read-only Agent API lives under `/api/agent/v1` and uses
+`Authorization: Bearer <token>`. A missing or malformed server token hash disables the namespace
+with `404`. A missing or invalid bearer returns `401 {"detail":"agent_auth_required"}`.
+Repeated failures from one IP return `429` with `Retry-After`. Session credentials apply to the
+app routes and bearer credentials apply to the Agent API. Every Agent API route accepts
+`GET` and `HEAD`. Other methods return `405` with `Allow: GET, HEAD` when the namespace is
+enabled. Responses use `Cache-Control: no-store`.
+
+- `GET /api/agent/v1/users` returns `{"schema":1,"server_version": "...","users":[{"id":"owner","name":"Owner","disabled":false,"cursor":0}]}`.
+  Each user's `cursor` is the latest sequence in their change log. An unknown user ID returns `404`.
+- `GET /api/agent/v1/users/{user_id}/changes?cursor=N&limit=500` returns
+  `{"schema":1,"changes":[...],"cursor":M,"has_more":false,"latest":L,"server_time":"..."}`.
+  The cursor defaults to zero and the page limit is clamped to 1–1000 change-log rows. The server
+  reads one SQLite snapshot and keeps the last row per `(entity,id)` in that page, ordered by
+  sequence. Change objects use the same full `record`, `purged`, or `removed` format as app sync.
+  Records reflect that snapshot and a record can appear again on a later page. Advance using the
+  response cursor. A cursor greater than `latest` returns `409 {"detail":"cursor_ahead"}`.
+- `GET|HEAD /api/agent/v1/users/{user_id}/photos/{photo_id}/original` returns `Content-Type`,
+  `Content-Length`, `ETag` with the quoted SHA-256 and `X-Content-SHA256` with the unquoted hash.
+  GET returns the original bytes. A missing original returns `404 {"detail":"photo_not_stored"}`.
+  Photo IDs are uppercase ULIDs.
+- `GET /api/agent/v1/users/{user_id}/summary` returns counts for `collections`, `items`,
+  `entries`, `deleted_entries`, `photos`, `deleted_photos`, and `missing_originals`.
+  The entries and photos counts cover active rows. The missing count covers active photos with no
+  recorded original upload whose item has at least one active entry. Each photo counts once.
+  `missing_originals_details` lists up to 200 of those photos in ID order, each with `photo_id`,
+  `item_id`, and `entries` containing the active placements' `collection_name` and `sequence_number`.
+  `last_change_at` reflects the latest persisted record update or sync purge timestamp, or
+  `null` when no timestamp is available. Server-copy removals have no timestamp in the current schema.
+
 ## Clarifications (from the v1 server implementation)
 
 - **Batch response.** The response is `{ "results": [...], "cursor": N }`. A `field_conflict` result also carries `conflicting_fields`, and records expose `revision` and `field_revisions`.
@@ -114,4 +146,4 @@ The response is `201` (or `200` if it was already stored with the same hash), wi
 - **`photo_bytes` in server exports.** It counts the metadata `byte_size` of every active photo, including those listed in `missing_originals`.
 - **Trash export.** `trash/entries.csv` also lists active entries that own deleted photos, so every `trash/photos.csv` row has a valid entry reference.
 - **Client IP.** Login backoff uses the **rightmost** `X-Forwarded-For` hop, which is the peer that Traefik observed. The app is reachable only through Traefik.
-- **Unknown routes.** Every `/api` path except `/api/health` and `/api/auth/*` requires a session, including unknown paths. Unauthenticated callers get `401` and learn nothing about which routes exist.
+- **Unknown routes.** Unknown app API paths require a session. Unauthenticated callers get `401` and learn nothing about which routes exist.
