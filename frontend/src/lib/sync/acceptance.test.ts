@@ -319,6 +319,7 @@ async function waitFor(predicate: () => Promise<boolean>, message = 'Timed out w
 afterEach(() => {
   fixedNow.value = new Date('2026-11-08T12:00:00.000Z')
   vi.restoreAllMocks()
+  vi.unstubAllGlobals()
 })
 
 describe('sync acceptance against an in-memory API server', () => {
@@ -688,6 +689,41 @@ describe('sync acceptance against an in-memory API server', () => {
     ])
     await db.delete()
   })
+
+  it.each([true, false])(
+    'takes over an unexpired lease only when its Web Lock was released (%s)',
+    async (webLock) => {
+      const server = new MemoryServer()
+      const { name, db, repo, entry } = await syncedEntry(server)
+      await repo.updateEntry(entry.id, { quantity: '14' })
+      const row = (await db.outbox.where('[entity+entity_id]').equals(['entry', entry.id]).first())!
+      await db.outbox.update(row.id, { sent: true, in_flight: true })
+      const expiresAt = clock().getTime() + 30_000
+      await db.settings.put({
+        key: 'sync_cycle_lease',
+        value: { owner: 'previous-document', expiresAt, ...(webLock ? { webLock } : {}) },
+      })
+      // The browser has already granted the next document the exclusive lock.
+      const request = vi.fn(async (_name: string, _opts: LockOptions, run: () => Promise<void>) => run())
+      vi.stubGlobal('navigator', { onLine: true, locks: { request } })
+      const runner = makeEngine(name, server)
+      const offset = server.requests.length
+      try {
+        await runner.runScheduledCycle()
+        expect(request).toHaveBeenCalledWith(`capture-sync:${name}`, expect.anything(), expect.any(Function))
+        if (!webLock) {
+          expect(server.requests.slice(offset)).toEqual([])
+          expect(await db.outbox.get(row.id)).toMatchObject({ in_flight: true })
+          fixedNow.value = new Date(expiresAt + 1)
+          await runner.runScheduledCycle()
+        }
+        expect(server.batchRequests.at(-1)).toContainEqual(expect.objectContaining({ id: row.id }))
+        expect(await db.outbox.get(row.id)).toBeUndefined()
+      } finally {
+        await db.delete()
+      }
+    },
+  )
 
   it('fences a suspended tab when it returns after another tab reclaims the upload', async () => {
     const server = new MemoryServer()

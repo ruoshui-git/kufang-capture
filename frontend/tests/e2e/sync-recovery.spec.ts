@@ -164,7 +164,7 @@ test('low free space pauses original upload while synced metadata remains availa
       await context.setOffline(false)
       await syncNow(page)
       expect(await storageError).toBe('Server storage is low')
-      await expect(page.getByRole('status').filter({ hasText: 'Sync error' })).toBeVisible()
+      await expect(page.getByRole('status').filter({ hasText: /^Sync error — tap to retry$/ })).toBeVisible()
 
       const collections = await api<
         Array<{

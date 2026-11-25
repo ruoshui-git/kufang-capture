@@ -46,7 +46,7 @@ type BatchResult = {
   conflicting_fields?: string[]
   duplicate?: boolean
 }
-type SyncLease = { owner: Id; expiresAt: number }
+type SyncLease = { owner: Id; expiresAt: number; webLock?: boolean }
 const leaseKey = 'sync_cycle_lease'
 const leaseDuration = 30_000
 const updateRequired = 'Update the app to keep syncing.'
@@ -1330,14 +1330,17 @@ export function createSyncEngine(options: SyncEngineOptions = {}): SyncEngineWit
     lastSuccess = timestamp()
   }
 
-  async function withLease(abort: AbortController) {
+  async function withLease(abort: AbortController, webLock = false) {
     const owner = createId()
     const acquisition = await db.transaction('rw', db.settings, async () => {
       const existing = await readLease()
       const at = now().getTime()
-      if (abort.signal.aborted || (existing && existing.expiresAt > at)) return
-      await db.settings.put({ key: leaseKey, value: { owner, expiresAt: at + leaseDuration } })
-      return { expired: !!existing }
+      if (abort.signal.aborted) return
+      // The browser releases a document's Web Lock on unload, even if its IndexedDB
+      // cleanup never runs. A newly granted lock proves that lease can be reclaimed.
+      if (existing && existing.expiresAt > at && !(webLock && existing.webLock)) return
+      await db.settings.put({ key: leaseKey, value: { owner, expiresAt: at + leaseDuration, webLock } })
+      return { reclaimed: !!existing }
     })
     if (!acquisition) return
     leaseOwner = owner
@@ -1348,13 +1351,13 @@ export function createSyncEngine(options: SyncEngineOptions = {}): SyncEngineWit
           await assertLease(owner)
           await db.settings.put({
             key: leaseKey,
-            value: { owner, expiresAt: now().getTime() + leaseDuration },
+            value: { owner, expiresAt: now().getTime() + leaseDuration, webLock },
           })
         })
         .catch(() => abort.abort())
     }, leaseDuration / 3)
     try {
-      if (needsRepair || acquisition.expired) {
+      if (needsRepair || acquisition.reclaimed) {
         await db.transaction(
           'rw',
           [db.settings, db.collections, db.entries, db.photos, db.outbox],
@@ -1393,7 +1396,7 @@ export function createSyncEngine(options: SyncEngineOptions = {}): SyncEngineWit
       try {
         if (typeof navigator !== 'undefined' && navigator.locks) {
           await navigator.locks.request(`capture-sync:${db.name}`, { signal: abort.signal }, () =>
-            withLease(abort),
+            withLease(abort, true),
           )
         } else await withLease(abort)
       } catch (error) {
