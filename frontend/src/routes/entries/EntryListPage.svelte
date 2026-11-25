@@ -178,7 +178,7 @@
     if (!frozenRowIds) {
       frozenRowSnapshot = rows
       frozenRowIds = rows.map((row) => row.entry.id)
-      initialAllRowIds = (unitRowsLoaded ? unitRows : rows).map((row) => row.entry.id)
+      initialAllRowIds = [...new Set([...rows, ...unitRows].map((row) => row.entry.id))]
     }
   }
   function unfreezeVisibleOrder() {
@@ -188,7 +188,6 @@
   }
   async function createEntry() {
     const focusOrigin = document.activeElement
-    unfreezeVisibleOrder()
     if (filter === 'deleted') filter = 'all'
     const entry = await repo.createEntry(collectionId)
     if (sort === 'oldest') limit = Math.max(limit, rows.length + 1)
@@ -258,11 +257,12 @@
       return row ? [matching.get(id) ?? row] : []
     })
     const seen = new Set(initialAllRowIds)
+    const frozenIds = new Set(frozenRowIds)
     const additions = unitRows.filter(
-      (row) => !seen.has(row.entry.id) && (!narrowed || matching.has(row.entry.id)),
+      (row) =>
+        !seen.has(row.entry.id) && !frozenIds.has(row.entry.id) && (!narrowed || matching.has(row.entry.id)),
     )
     // Rows that started matching the filter later join at the end, above nothing.
-    const frozenIds = new Set(frozenRowIds)
     const joined = rows.filter((row) => seen.has(row.entry.id) && !frozenIds.has(row.entry.id))
     if (sort === 'oldest') return [...frozen, ...joined, ...additions]
     return [...additions, ...frozen, ...joined]

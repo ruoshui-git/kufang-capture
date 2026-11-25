@@ -68,6 +68,32 @@ describe('Entry list', () => {
     expect(shared.navigate).not.toHaveBeenCalled()
   })
 
+  it('shows each new row once after the empty list has loaded', async () => {
+    const { container } = render(EntryListPage, { props: { collectionId } })
+    await screen.findByText('No entries yet')
+    for (let count = 1; count <= 3; count++) {
+      await fireEvent.click(screen.getAllByRole('button', { name: /New Entry/ })[0]!)
+      await waitFor(() => expect(container.querySelectorAll('[data-entry-id]')).toHaveLength(count))
+    }
+    const numbers = [...container.querySelectorAll('[aria-label="Entry title"]')].map((input) =>
+      input.getAttribute('placeholder'),
+    )
+    expect(numbers).toEqual(['Entry #0003', 'Entry #0002', 'Entry #0001'])
+  })
+
+  it('keeps rows in place while they are edited, even under Last edited and Incomplete', async () => {
+    const first = await repo.createEntry(collectionId, { title: 'First' })
+    await repo.createEntry(collectionId, { title: 'Second' })
+    await repo.setSetting('entry_sort', 'last_edited')
+    const { container } = render(EntryListPage, { props: { collectionId } })
+    const order = () =>
+      [...container.querySelectorAll<HTMLInputElement>('[aria-label="Entry title"]')].map((x) => x.value)
+    await waitFor(() => expect(order()).toEqual(['Second', 'First']))
+    await repo.updateEntry(first.id, { notes: 'edited later' })
+    await repo.updateEntry(first.id, { title: 'First!' })
+    await waitFor(() => expect(order()).toEqual(['Second', 'First!']))
+  })
+
   it('opens Move entries from the collection actions menu', async () => {
     render(EntryListPage, { props: { collectionId } })
     await fireEvent.click(screen.getByLabelText('Collection actions'))
