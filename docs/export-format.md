@@ -6,6 +6,10 @@ The device exporter (`frontend/src/lib/export/`) and the server exporter (`backe
 
 **Version 3 (readable paths).** Photo files are stored under folders named after the collection and the entry, e.g. `photos/Temple 2 A04/0042 Red lantern/01.jpg`, instead of `photos/<item_id>/<photo_id>.jpg`. Folder names are derived from the **current** names at export time, so renaming a collection or an entry only changes the paths of later exports. IDs stay the stable keys: every CSV/JSON row still carries `collection_id`, `entry_id`, `item_id` and `photo_id`, and the only references to paths are inside the same archive (`photos.path`, `entries.photo_dir`). New columns: `collections.folder`, `entries.entry_notes`, `entries.starred_at`, `entries.photo_dir`. `tools/verify-export.py` accepts versions 1, 2 and 3.
 
+A server export contains collections and photo originals for the signed-in account. Account
+records, sessions and join codes stay out of the archive. The version 3 layout applies to both
+owner and helper exports.
+
 ## Archive
 
 - File name: `kufang-capture-<scope>-<YYYYMMDD-HHMMSS>Z.zip`. Scope is `all`; a slug of the collection name (ASCII, max 40 chars) when one collection is selected; or `<n>-collections` (e.g. `3-collections`) when several are selected.

@@ -4,19 +4,60 @@ This contract is owned by the orchestrator. The server stores **only** collectio
 
 All paths are under `/api`. JSON uses the snake_case field names from `frontend/src/lib/types.ts`. Errors look like `{"detail": "<code>", "message": "<human text>"}`.
 
-## Auth (single user)
+## Accounts and authentication
 
-| Method | Path | Body / result |
+All session and People responses use `Cache-Control: no-store`. Timestamps are ISO 8601 UTC strings.
+
+| Method | Path | Body and response |
 |---|---|---|
-| POST | `/api/auth/login` | `{"password": "..."}` → `204`, sets the session cookie. `401 invalid_password`. `429 too_many_attempts` with `Retry-After`. |
-| POST | `/api/auth/logout` | → `204`, clears the cookie and deletes the server session |
-| GET | `/api/auth/session` | → `{"authenticated": bool, "expires_at": ts \| null}` (never 401) |
+| POST | `/api/auth/login` | `{"password":"..."}` → `204` with the owner session cookie. `401 invalid_password` or `429 too_many_attempts` with `Retry-After`. |
+| POST | `/api/auth/join` | `{"code":"ABCD-1234","device_label":"iPhone"}` → `204` with a helper session cookie. Omit the label or pass `null` to leave it unnamed. A string label is trimmed and allows up to 80 characters. `401 invalid_join_code` covers wrong, expired, used and superseded codes. `422 invalid_device_label` signals a malformed label. `429 too_many_attempts` includes `Retry-After`. |
+| POST | `/api/auth/logout` | No body → `204`. Revokes this session and clears its cookie. |
+| GET | `/api/auth/session` | `200 {"authenticated":true,"expires_at":"2026-12-25T18:00:00.000Z","user":{"id":"owner","name":"Owner","is_owner":true}}` or `200 {"authenticated":false,"expires_at":null,"user":null}`. A helper's `id` is an uppercase ULID and `is_owner` is false. |
 
-- **Cookie.** It is called `__Host-kc_session` when `CAPTURE_PUBLIC_ORIGIN` is https, and `kc_session` in http dev. It is HttpOnly, SameSite=Strict, Path=/, and also Secure when on https. The value is a random 32-byte token. The server stores only its SHA-256, in the `sessions` table. A session lasts 30 days, sliding, and is renewed when less than 15 days remain.
-- **Password.** It is checked against the argon2id `CAPTURE_PASSWORD_HASH`. In dev, when the hash is unset, `CAPTURE_DEV_PASSWORD` is accepted, but only when the origin is http://127.0.0.1 or localhost.
-- **Login backoff.** It is counted per client IP, using Traefik's `X-Forwarded-For` (uvicorn runs with proxy headers). After 5 failures within 15 minutes, the server returns 429 with exponential delays capped at 15 minutes.
-- **CSRF.** Every unsafe method (POST, PUT, PATCH, DELETE) needs the header `X-Capture-Request: 1`. When an `Origin` header is present, it must equal `CAPTURE_PUBLIC_ORIGIN`; otherwise the request fails with `403 csrf_failed`.
-- **Session required.** App routes require a session, with public health, authentication and static-file endpoints. Without one the response is `401 auth_required`.
+- **Cookie.** HTTPS uses `__Host-kc_session` with Secure. HTTP dev uses `kc_session`. Both are HttpOnly, SameSite=Strict and Path=/. SQLite stores the SHA-256 of the random 32-byte token. A successful sign-in revokes the browser's previous session. `GET /api/auth/session` renews both the cookie and the stored expiry. The owner session lasts 30 days and renews with less than 15 days left. A helper session lasts 180 days and renews with less than 150 days left.
+- **Owner password.** The server checks `CAPTURE_PASSWORD_HASH` using Argon2id. With the hash unset, `CAPTURE_DEV_PASSWORD` is available on loopback HTTP. The route stops accepting attempts from an IP after five failures from that IP in a rolling 15-minute window. It checks one password at a time. Throttled requests return `429 too_many_attempts` with `Retry-After`.
+- **Join code.** Eight characters are displayed as `XXXX-XXXX`. Input ignores case, whitespace and dashes. It treats O as 0 and I or L as 1. Only a successful POST consumes a code. Each code expires after ten minutes. The join route stops accepting attempts after 10 failures from one IP or 100 total in a rolling 15-minute window, independent of password failures. The browser reads the code from the `/join#CODE` fragment and submits it only after confirmation.
+- **CSRF.** POST, PUT, PATCH and DELETE require `X-Capture-Request: 1`. If present, `Origin` must match `CAPTURE_PUBLIC_ORIGIN`. Failure returns `403 csrf_failed`. Login, join, and People create and update accept JSON objects up to 4 KiB. Larger bodies return `413 request_too_large`. Invalid JSON or a value other than an object returns `422 invalid_request`.
+- **Session required.** Protected routes return `401 auth_required` for missing, expired, revoked and disabled sessions. If a helper database fails to open or migrate at startup, that helper's session check, protected requests and sign-in with a valid join code return `503 account_unavailable`. Health, auth and static files are public. The Agent API uses its separate bearer credential.
+
+### Account binding
+
+Send `X-Capture-Account: <bound account ID>` on sync, photo, collections, server-copy and export requests. An owner session may omit it for compatibility with older clients. A helper session without it receives `409 {"detail":"account_required"}`. A supplied value that differs from the current session's ID receives `409 {"detail":"account_mismatch"}`. These errors occur before reading or writing account data. Auth endpoints do not require this header. A non-owner session receives `403 {"detail":"owner_required"}` on People routes, even without the binding header.
+
+The client persists the device binding and stops data requests if the session belongs to a different account. For photo and export requests, use a credentialed fetch that carries the binding header. Use `cache: "no-store"` on photo fetches, including downloads and thumbnails, to bypass older HTTP cache entries created before account binding. Photo responses use `Cache-Control: private, no-store` and `Vary: Cookie, X-Capture-Account`.
+
+## People (owner only)
+
+| Method | Path | Body and response |
+|---|---|---|
+| GET | `/api/people` | `200` with an array of Person objects, including the owner first and disabled helpers. |
+| POST | `/api/people` | `{"name":"Volunteer"}` → `201` with the new Person. Creating a person leaves the account without an active join code. |
+| PATCH | `/api/people/{id}` | `{"name":"New name"}`, `{"disabled":true}`, `{"disabled":false}`, or both fields → `200` with the updated Person. Disabling revokes all its sessions and invalidates its active code. Enabling allows the owner to issue a fresh code. |
+| POST | `/api/people/{id}/code` | No body → `200 {"code":"ABCD-1234","expires_at":"2026-11-25T18:10:00.000Z","url":"https://capture.kufang.org/join#ABCD-1234"}`. Replaces any previously issued unused code for that person. Use the returned URL as the QR payload. |
+
+A Person object has this shape.
+
+```json
+{
+  "id": "01KAZS4644YQB55B1X87GHGC00",
+  "name": "Volunteer",
+  "is_owner": false,
+  "disabled": false,
+  "created_at": "2026-11-25T18:00:00.000Z",
+  "last_seen_at": null,
+  "last_change_at": null,
+  "rooms": 0,
+  "entries": 0,
+  "photos": 0,
+  "missing_originals": 0,
+  "device_count": 0
+}
+```
+
+`rooms` counts all synced collections. `entries` and `photos` count active records. `missing_originals` counts active photos without an acknowledged original whose item has at least one active entry. Each photo counts once. `device_count` counts active, unexpired sessions. `last_seen_at` records sign-in and later activity at one-minute granularity and stays visible after logout or disable. `last_change_at` is the latest persisted change timestamp where available.
+
+Names are trimmed, 1–40 Unicode characters long and unique case-insensitively. The owner can rename any account. API errors are `404 person_not_found`, `409 name_taken`, `409 owner_protected` for setting the owner's disabled status or issuing an owner code, `409 person_disabled` for issuing a code to a disabled helper, `422 invalid_name`, and `422 invalid_request` for invalid JSON, a non-boolean `disabled` or an empty or unknown-field PATCH. There is no delete operation.
 
 ## Sync
 
@@ -26,7 +67,7 @@ All paths are under `/api`. JSON uses the snake_case field names from `frontend/
 
 **Version guard.** `POST /api/sync/batch` requires `"schema": 2` in the body, and `GET /api/sync/changes` requires the query parameter `schema=2`. Without it, both answer `409 client_outdated` and write nothing. A schema-1 client keeps its outbox (items are cleared only on acknowledgment) and syncs again after it updates and migrates.
 
-The server keeps per-record integer `revision` (that is, the client's `server_revision`), `field_revisions` (`{field: revision}`), and a global, monotonically increasing change `seq` used as the pull cursor.
+The server keeps per-record integer `revision` (that is, the client's `server_revision`), `field_revisions` (`{field: revision}`), and an account-specific, monotonically increasing change `seq` used as the pull cursor.
 
 ### `POST /api/sync/batch`
 
@@ -36,7 +77,7 @@ The server keeps per-record integer `revision` (that is, the client's `server_re
   "base_revision": null, "fields": { } } ] }
 ```
 
-The client sends at most 200 mutations per batch, ordered collection, then item, then entry, then photo, and by outbox `created_at` within each entity. The server applies them in order, and each one in its own transaction.
+The request body must be a JSON object and is limited to 8 MiB. Larger bodies return `413 request_too_large`. Invalid JSON or a value other than an object returns `422 invalid_request`. The client sends at most 200 mutations per batch, ordered collection, then item, then entry, then photo, and by outbox `created_at` within each entity. The server applies them in order, and each one in its own transaction.
 
 **Client outbox rules.** A batch carries at most one mutation per record. Later changes wait until the earlier mutation has a result. The client merges local edits into a queued row up to its first send. An unsent create stays an upsert and carries the final value of `deleted_at`, so an entry or photo can be created directly in trash. On an existing record, an edit merges into the last queued delete or restore while preserving that operation. The last explicit delete or restore wins. Purges stay separate.
 
@@ -80,7 +121,7 @@ Returns `{ "changes": [ { "seq": 12, "entity": "entry", "id": "01J…", "record"
 - A collection whose server copy was removed is sent as `{"seq", "entity": "collection", "id", "removed": true}`. Items left with no entry are purged in the same step and sent as purged items and photos.
 - Changes for items and photos carry an empty `collection_id` internally; clients decide by the local entries that reference the item.
 
-The client merges each record unless the entity has a pending outbox item or an unresolved conflict. In that case it keeps the local values for the fields that are pending or in conflict and adopts the rest. A logged-in desktop browser therefore receives every synced collection. It never sees Local Only collections.
+The client merges each record unless the entity has a pending outbox item or an unresolved conflict. In that case it keeps the local values for the fields that are pending or in conflict and adopts the rest. A logged-in desktop browser therefore receives every synced collection in its account. It never sees Local Only collections.
 
 **Local Only wins locally.** A client never overwrites or deletes local data that belongs to a Local Only collection because of a pulled change: a collection `removed`/record for a local Local Only collection, and an item or photo change (record or purge) for an item that any local Local Only entry references, are ignored.
 
@@ -94,8 +135,9 @@ A removal or purge keeps the affected records and originals on the device if it 
 |---|---|---|
 | PUT | `/api/photos/{id}/original` | Raw body; see below |
 | HEAD | `/api/photos/{id}/original` | `200` with `ETag` = sha256 when stored and verified, `404` otherwise. Used to resume after the app is killed. |
-| PUT | `/api/photos/{id}/thumbnail` | Optional client JPEG, at most 1 MB, replaceable |
-| GET | `/api/photos/{id}/original`, `/thumbnail` | Authed; `Cache-Control: private, max-age=31536000, immutable`; `ETag` |
+| PUT | `/api/photos/{id}/thumbnail` | Optional client JPEG, PNG or WebP of at most 1 MiB. A new upload replaces the thumbnail |
+| GET | `/api/photos/{id}/original`, `/thumbnail` | Session and account binding required as above. Response includes `ETag`. If a thumbnail is missing, its URL serves the stored original when available. |
+| HEAD | `/api/photos/{id}/thumbnail` | Same status and headers as thumbnail GET, with an empty body. |
 
 `PUT …/original` sends the raw body with these headers:
 - `Content-Type`: the photo's mime type
@@ -118,7 +160,7 @@ The response is `201` (or `200` if it was already stored with the same hash), wi
 
 ## Exports (server, streamed)
 
-`GET /api/exports/all.zip?include_trash=0|1` and `GET /api/exports/collections/{id}.zip?include_trash=0|1` stream the archive. The layout is exactly as in [export-format.md](export-format.md), with `source: "server"`. They use STORE mode, built from the stored crc32 and size values, with no temp file. A photo whose original was never uploaded is listed in `manifest.json` under `missing_originals` (the photo id and path) and is not included. The response carries `Content-Disposition: attachment; filename="…"`.
+`GET /api/exports/all.zip?include_trash=0|1` and `GET /api/exports/collections/{id}.zip?include_trash=0|1` stream the signed-in account's archive. The layout is exactly as in [export-format.md](export-format.md), with `source: "server"`. They use STORE mode, built from the stored crc32 and size values, with no temp file. A photo whose original was never uploaded is listed in `manifest.json` under `missing_originals` (the photo id and path) and is not included. The response carries `Content-Disposition: attachment; filename="…"`.
 
 ## Agent API
 
@@ -131,7 +173,9 @@ app routes and bearer credentials apply to the Agent API. Every Agent API route 
 enabled. Responses use `Cache-Control: no-store`.
 
 - `GET /api/agent/v1/users` returns `{"schema":1,"server_version": "...","users":[{"id":"owner","name":"Owner","disabled":false,"cursor":0}]}`.
-  Each user's `cursor` is the latest sequence in their change log. An unknown user ID returns `404`.
+  Includes every account, with `disabled: true` for disabled helpers. Their data is still readable
+  with the Agent API bearer. Each user's `cursor` is the latest sequence in that account's change
+  log. An unknown user ID returns `404 {"detail":"user_not_found"}`.
 - `GET /api/agent/v1/users/{user_id}/changes?cursor=N&limit=500` returns
   `{"schema":1,"changes":[...],"cursor":M,"has_more":false,"latest":L,"server_time":"..."}`.
   The cursor defaults to zero and the page limit is clamped to 1–1000 change-log rows. The server
@@ -150,7 +194,7 @@ enabled. Responses use `Cache-Control: no-store`.
   `missing_originals_details` lists up to 200 of those photos in ID order, each with `photo_id`,
   `item_id`, and `entries` containing the active placements' `collection_name` and `sequence_number`.
   `last_change_at` reflects the latest persisted record update or sync purge timestamp, or
-  `null` when no timestamp is available. Server-copy removals have no timestamp in the current schema.
+  `null` when no timestamp is available. Server-copy removals recorded since migration 0005 also contribute.
 
 ## Clarifications (from the v1 server implementation)
 

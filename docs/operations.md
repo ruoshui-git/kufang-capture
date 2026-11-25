@@ -110,32 +110,52 @@ ssh kufang-prod 'sudo -u kufang-capture /srv/kufang-capture/bin/deploy rollback'
 
 Deploys keep the current and previous app images and prune older `kufang-capture:git-*` images.
 
-Each deploy is serialized by `state/deploy.lock`. If a database exists, the currently deployed image
-uses SQLite's online backup API to create `/data/snapshots/<UTC>-pre-deploy.sqlite3`; the newest
-three snapshots are retained. A failed health check restores the prior image configuration but never
-restores a database automatically. Review the failure and application compatibility before restoring
-data.
+Each deploy and image rollback is serialized by `state/deploy.lock`. The existing host script
+asks the running image to create `/data/snapshots/<UTC>-pre-deploy.sqlite3`, a plain SQLite backup
+of the owner's database. The account-enabled image also writes a companion
+`/data/snapshots/<UTC>-pre-deploy/` directory, with a more precise timestamp if the directory name
+is already in use. The directory contains a manifest listing every required database. Each copy
+uses SQLite's online backup API and passes an integrity check.
 
-To restore a snapshot manually, stop only this app, keep a copy of the live database **and its
-WAL/SHM files**, remove the WAL/SHM files (a stale write-ahead log must never be replayed onto a
-restored database), copy the snapshot in, and start again. Run as `kufang-capture` in
-`/srv/kufang-capture`:
+- `capture.sqlite3` holds the owner's data and hashed sessions in their original location.
+- `auth.sqlite3` holds account metadata, hashed helper sessions, hashed join codes and login attempts.
+- `users/<user_id>/capture.sqlite3` holds each helper's data, including disabled accounts.
+  Owner and helper media stay in their respective `media/` directories under the volume.
+
+The host script retains the three most recent owner files. The account-enabled snapshot utility
+independently retains the three most recent companion directories. A snapshot failure stops
+deployment before the image changes. Because the service stays up while the databases are copied,
+the databases in one set can reflect slightly different times.
+
+The account-enabled image migrates every registered database at startup. Both image versions use
+the owner's original session table, so active owner sessions survive an image rollback. An image
+rollback keeps the live database files in place. Helper data is accessible again when the service
+returns to an account-enabled image.
+A failed deploy restores the prior image configuration. Database restoration is a separate
+operator decision.
+
+For a manual database restore, use an account-enabled image and run as `kufang-capture` from
+`/srv/kufang-capture`. Replace `SNAPSHOT_NAME` with the directory name for a full restore or the
+SQLite filename for an owner-only data restore.
 
 ```sh
 c="docker compose -p kufang-capture -f compose.yaml --env-file .env --env-file image.env"
 $c stop capture
-$c run --rm --no-deps -T --label traefik.enable=false --entrypoint python capture -c "
-import pathlib, shutil
-d = pathlib.Path('/data'); keep = d / 'before-restore'; keep.mkdir(exist_ok=True)
-for n in ('capture.sqlite3', 'capture.sqlite3-wal', 'capture.sqlite3-shm'):
-    if (d / n).exists(): shutil.copy2(d / n, keep / n); (d / n).unlink()
-shutil.copy2(d / 'snapshots' / '<snapshot-name>', d / 'capture.sqlite3')"
+$c run --rm --no-deps -T --label traefik.enable=false capture \
+  python -m kufang_capture.snapshot --restore /data/snapshots/SNAPSHOT_NAME
 $c up -d --wait
 ```
 
-Replace `<snapshot-name>` with the exact file name, then check `deploy status` and
-`https://capture.kufang.org/api/health`. This is an operator-triggered deploy rollback aid, not a
-backup service; there are no scheduled or off-host backups.
+Run the start command after the restore succeeds, then check `deploy status` and
+`https://capture.kufang.org/api/health`. The restore verifies the selected snapshot before it
+sets aside the live databases and their WAL and SHM sidecars under `/data/before-restore-*/`.
+A full restore reinstates the account registry and sets aside databases for accounts added since
+the snapshot. An owner-only data restore preserves the current helper accounts and their inventory.
+Every restore clears all sessions and join codes in the installed copies. The owner signs in again
+with the owner password and issues fresh join codes for helpers. Media remains on disk and may
+have changed since the snapshot was taken.
+Protect both the snapshots and the set-aside files as sensitive data. There are no scheduled
+or off-host backups.
 
 ## Isolation guarantees
 

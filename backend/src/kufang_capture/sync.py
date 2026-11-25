@@ -1,6 +1,7 @@
 import json
 import re
 import sqlite3
+from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -210,10 +211,13 @@ def _reject(code: str, message: str, mutation: dict[str, Any]) -> dict[str, Any]
     }
 
 
-def apply_batch(data_dir, mutations: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], int]:
+def apply_batch(
+    data_dir: Path, mutations: list[dict[str, Any]], authorize: Callable[[], None]
+) -> tuple[list[dict[str, Any]], int]:
     results = []
     media_to_delete: list[str] = []
     with single_writer(), connect(data_dir) as db:
+        authorize()
         for mutation in mutations:
             db.execute("BEGIN IMMEDIATE")
             try:

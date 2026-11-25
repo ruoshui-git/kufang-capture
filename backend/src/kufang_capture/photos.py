@@ -3,6 +3,7 @@ import os
 import sqlite3
 import tempfile
 import zlib
+from collections.abc import Callable
 from pathlib import Path
 
 from fastapi import HTTPException, Request
@@ -44,7 +45,9 @@ def _recheck_upload_metadata(db: sqlite3.Connection, record: sqlite3.Row) -> sql
     return current
 
 
-async def upload_original(request: Request, data_dir: Path, max_bytes: int, min_free_bytes: int):
+async def upload_original(
+    request: Request, data_dir: Path, max_bytes: int, min_free_bytes: int, authorize: Callable[[], None]
+):
     photo_id = request.path_params["photo_id"]
     record = _upload_metadata(data_dir, photo_id)
     if record is None:
@@ -66,6 +69,7 @@ async def upload_original(request: Request, data_dir: Path, max_bytes: int, min_
     destination.parent.mkdir(parents=True, exist_ok=True)
     if record["stored_at"]:
         with single_writer(), connect(data_dir) as db:
+            authorize()
             db.execute("BEGIN IMMEDIATE")
             current = _recheck_upload_metadata(db, record)
             if (
@@ -106,6 +110,7 @@ async def upload_original(request: Request, data_dir: Path, max_bytes: int, min_
         ):
             raise HTTPException(422, detail="checksum_mismatch")
         with single_writer(), connect(data_dir) as db:
+            authorize()
             db.execute("BEGIN IMMEDIATE")
             _recheck_upload_metadata(db, record)
             os.replace(temp_path, destination)
@@ -140,7 +145,7 @@ def shutil_free(data_dir: Path) -> int:
     return shutil.disk_usage(data_dir).free
 
 
-async def upload_thumbnail(request: Request, data_dir: Path):
+async def upload_thumbnail(request: Request, data_dir: Path, authorize: Callable[[], None]):
     photo_id = request.path_params["photo_id"]
     record = _upload_metadata(data_dir, photo_id)
     if record is None:
@@ -163,6 +168,7 @@ async def upload_thumbnail(request: Request, data_dir: Path):
             output.flush()
             os.fsync(output.fileno())
         with single_writer(), connect(data_dir) as db:
+            authorize()
             db.execute("BEGIN IMMEDIATE")
             _recheck_upload_metadata(db, record)
             os.replace(temp, target)
@@ -183,19 +189,15 @@ def get_photo(data_dir: Path, photo_id: str, thumbnail: bool):
     else:
         path = data_dir / record["storage_key"] if record["storage_key"] else Path("/")
         mime = record["mime_type"]
-    cache = "private, max-age=31536000, immutable"
     if thumbnail and not path.is_file() and record["storage_key"]:
-        # No client thumbnail was uploaded: serve the original so lists still show the photo,
-        # but only cache briefly so a later thumbnail upload takes over.
+        # Serve the original while a client thumbnail is unavailable.
         path = data_dir / record["storage_key"]
         mime = record["mime_type"]
         thumbnail = False
-        cache = "private, max-age=300"
     if not path.is_file():
         raise HTTPException(404, detail="photo_not_stored")
     etag = record["sha256"] if not thumbnail else hashlib.sha256(path.read_bytes()).hexdigest()
-    response = FileResponse(path, media_type=mime, headers={"ETag": f'"{etag}"', "Cache-Control": cache})
-    return response
+    return FileResponse(path, media_type=mime, headers={"ETag": f'"{etag}"'})
 
 
 def head_original(data_dir: Path, photo_id: str):
@@ -205,4 +207,8 @@ def head_original(data_dir: Path, photo_id: str):
     path = data_dir / record["storage_key"]
     if not path.is_file():
         raise HTTPException(404, detail="photo_not_stored")
-    return {"ETag": f'"{record["sha256"]}"', "Cache-Control": "private, max-age=31536000, immutable"}
+    return {
+        "ETag": f'"{record["sha256"]}"',
+        "Content-Type": record["mime_type"],
+        "Content-Length": str(record["byte_size"]),
+    }

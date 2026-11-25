@@ -15,9 +15,9 @@ class ClosingConnection(sqlite3.Connection):
             self.close()
 
 
-def connect(data_dir: Path) -> sqlite3.Connection:
+def connect(data_dir: Path, filename: str = "capture.sqlite3") -> sqlite3.Connection:
     data_dir.mkdir(parents=True, exist_ok=True)
-    connection = sqlite3.connect(data_dir / "capture.sqlite3", timeout=5, factory=ClosingConnection)
+    connection = sqlite3.connect(data_dir / filename, timeout=5, factory=ClosingConnection)
     connection.row_factory = sqlite3.Row
     connection.execute("PRAGMA journal_mode=WAL")
     connection.execute("PRAGMA foreign_keys=ON")
@@ -33,9 +33,11 @@ def single_writer() -> Iterator[None]:
         yield
 
 
-def run_migrations(data_dir: Path, migrations_dir: Path | None = None) -> None:
+def run_migrations(
+    data_dir: Path, migrations_dir: Path | None = None, filename: str = "capture.sqlite3"
+) -> None:
     directory = migrations_dir or Path(__file__).with_name("migrations")
-    with connect(data_dir) as connection:
+    with connect(data_dir, filename) as connection:
         connection.execute(
             "CREATE TABLE IF NOT EXISTS schema_migrations "
             "(version TEXT PRIMARY KEY, applied_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)"

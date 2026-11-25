@@ -1,7 +1,7 @@
 # Kufang Capture — Product and Architecture Specification
 
 Status: Implementation-ready design, not yet implemented or deployed  
-Target: A single-operator, English-language, mobile-first inventory collection PWA  
+Target: An English-language, mobile-first inventory collection PWA with isolated accounts\
 Preferred URL: `https://capture.kufang.org` (the product name and domain must match)  
 Primary device: iPhone 15 Pro Max, installed to the iOS Home Screen  
 Potential hosting: Existing production VPS, in an **isolated** Docker Compose project  
@@ -210,12 +210,12 @@ Recommended production components:
 | --- | --- | --- |
 | Frontend | Static Svelte/Vite build | Tiny static container served through existing Traefik |
 | API | FastAPI + Python | REST/JSON for data, multipart upload/streaming for original photos |
-| Database | **SQLite (WAL mode)** | Metadata, revisions, collections, entries, photo references; sufficient for a single user and this workload |
+| Database | **SQLite (WAL mode)** | Metadata, revisions, collections, entries and photo references in one database per account |
 | Binary storage | Dedicated persistent server directory/volume | Original photo bytes + separately generated thumbnails; do not put photos in SQL columns |
 | Proxy/TLS | Existing Traefik | Same-origin `https://capture.kufang.org`, `/api` and app under one origin |
 | Deployment | Separate Docker Compose project | No dependency on Frappe, Redis, ERPNext, MariaDB, or Node at runtime |
 
-Do **not** introduce PostgreSQL by default. SQLite with WAL, a single API service/worker configuration, and a carefully managed persistent database file is enough. Use proper transactions, foreign keys, write serialization/retries where appropriate, and SQLite's supported online backup/snapshot procedure. The original photo library lives in a separate persistent filesystem volume. Do not simply copy a live SQLite database file without considering WAL consistency. The static frontend should be served without a production Node server.
+Do **not** introduce PostgreSQL by default. SQLite with WAL, a single API worker, and persistent databases are sufficient. Use proper transactions, foreign keys, write serialization/retries where appropriate, and SQLite's supported online backup/snapshot procedure. The original photo library lives in a separate persistent filesystem volume. Do not simply copy a live SQLite database file without considering WAL consistency. The static frontend should be served without a production Node server.
 
 Potential REST endpoints (agent may refine):
 
@@ -227,7 +227,18 @@ Potential REST endpoints (agent may refine):
 - `POST /api/sync/batch` for idempotent mutations with acknowledged revisions
 - `GET /api/exports` or `POST /api/exports` for full/per-collection export jobs
 
-Operations must be authorized server-side. Use HTTPS, secure HTTP-only session cookies, password hashing, CSRF protections as appropriate, photo access control, upload validation and bounded file sizes. Initial single-user auth is enough. Avoid complicated roles and public signup.
+Operations must be authorized server-side. Use HTTPS, secure HTTP-only session cookies, password hashing, CSRF protection, photo access control, upload validation and bounded file sizes.
+
+The owner signs in by password and manages helper accounts from People. Each helper signs in
+with a ten-minute, one-use code, which the owner can share as a short code or QR link. The
+owner can rename, disable and re-enable helpers. Disabling revokes their sessions and join
+code while keeping their data. The Agent API bearer allows read access to all server accounts.
+
+Each account has its own SQLite database, change cursor and media directory. Every protected
+data request resolves its account from the session. Device binding keeps a browser from
+syncing or accessing server photos with a session for a different account. Older owner
+clients can omit the binding header while they update. Local Only data stays on the device
+across account changes. See [API contract](api.md) for the HTTP interface.
 
 For the existing VPS: first inspect available RAM, free disk, current production services, Traefik routing, certificate issuance, and backup coverage. Estimate media space (e.g. 1,000 entries × 2 images × 3 MB ≈ 6 GB **before backups**). Use explicit new volumes and an isolated Compose project. Do not modify, replace, or stop current ERPNext production services without an explicit migration/deployment decision.
 
@@ -276,7 +287,7 @@ capture-export/
 
 **Must ship:** collection CRUD; immutable per-collection entry numbers; optional custom names; **inline editable Entry List** with quantity, notes, latest three photo thumbnails, and Add Photo per row; recoverable entry/photo deletion; multiple original photos; fast camera interaction and honest hardware-controls fallback; photo viewer; auto-save; offline shell/local persistence; Local Only / Sync to Server choice; reliable foreground sync/status for synced collections; local and desktop ZIP+CSV+media export; auth; off-VPS backups for server data; installed iOS PWA test.
 
-**Can follow after field testing:** voice transcription beyond iOS keyboard dictation; structured dimension/expiry prompts; barcode detection; OCR; AI item naming; duplicate detection; batch operations; visual search; item catalog; stock movements; multi-user role management; direct ERPNext API integration.
+**Can follow after field testing:** voice transcription beyond iOS keyboard dictation; structured dimension/expiry prompts; barcode detection; OCR; AI item naming; duplicate detection; batch operations; visual search; item catalog; stock movements; direct ERPNext API integration.
 
 Do **not** implement a full warehouse ERP, stock ledger, purchasing, cost accounting, or shipment flow. Do not silently equate an Entry with an ERPNext Item.
 

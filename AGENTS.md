@@ -33,6 +33,8 @@ Shared Codex/Claude guide. The product and architecture source of truth is [docs
 | `frontend/src/lib/{photos,export,sync,camera,summary}/` | Domain modules |
 | `frontend/src/{app,routes,components}/` | Shell, screens, UI components |
 | `backend/` | FastAPI + stdlib sqlite3 (WAL), managed with uv |
+| `backend/src/kufang_capture/` (`auth.py`, `people.py`, `auth_migrations/`) | Accounts, sessions, join codes and People API |
+| `backend/src/kufang_capture/migrations/`, `snapshot.py` | Per-account data migrations and multi-database deploy snapshots |
 | `deploy/` | Containerfile, compose, VPS deploy script, DNS manifest |
 | `tools/` | `verify-export.py` and other operator tools |
 | `docs/` | spec, API contract, export format, design, acceptance matrix, progress, iPhone checklist, operations |

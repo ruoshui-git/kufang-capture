@@ -1,5 +1,4 @@
 import hashlib
-import re
 import secrets
 import sqlite3
 from collections.abc import Callable
@@ -12,12 +11,12 @@ from fastapi import APIRouter, HTTPException, Request, Response
 from fastapi.responses import JSONResponse, StreamingResponse
 from starlette.background import BackgroundTask
 
+from .auth import ULID_RE, auth_connect, user_data_dir
 from .db import connect
 from .settings import Settings
 from .sync import SHA_RE, TABLES, now, public_record
 
 AGENT_PATH = "/api/agent"
-ULID_RE = re.compile(r"[0-7][0-9A-HJKMNP-TV-Z]{25}")
 READ_METHODS = {"GET", "HEAD"}
 
 
@@ -68,9 +67,11 @@ def agent_guard(
 
 
 def resolve_agent_user(config: Settings, user_id: str) -> Path:
-    if user_id != "owner":
+    with auth_connect(config.data_dir) as db:
+        known = db.execute("SELECT 1 FROM users WHERE id=?", (user_id,)).fetchone()
+    if known is None:
         raise HTTPException(404, detail="user_not_found")
-    return config.data_dir
+    return user_data_dir(config.data_dir, user_id)
 
 
 def latest_cursor(db: sqlite3.Connection) -> int:
@@ -83,13 +84,21 @@ def agent_router(config: Settings) -> APIRouter:
     @router.get("")
     @router.head("", include_in_schema=False)
     def users():
-        with connect(resolve_agent_user(config, "owner")) as db:
-            cursor = latest_cursor(db)
-        return {
-            "schema": 1,
-            "server_version": config.app_version,
-            "users": [{"id": "owner", "name": "Owner", "disabled": False, "cursor": cursor}],
-        }
+        with auth_connect(config.data_dir) as db:
+            rows = db.execute("SELECT * FROM users ORDER BY is_owner DESC,created_at,id").fetchall()
+        users = []
+        for row in rows:
+            with connect(user_data_dir(config.data_dir, row["id"])) as db:
+                cursor = latest_cursor(db)
+            users.append(
+                {
+                    "id": row["id"],
+                    "name": row["name"],
+                    "disabled": row["disabled_at"] is not None,
+                    "cursor": cursor,
+                }
+            )
+        return {"schema": 1, "server_version": config.app_version, "users": users}
 
     @router.get("/{user_id}/changes")
     @router.head("/{user_id}/changes", include_in_schema=False)
@@ -189,23 +198,46 @@ MISSING_ORIGINALS = """
 """
 
 
+def _read_account_stats(db: sqlite3.Connection) -> dict[str, object]:
+    counts = dict(
+        db.execute(
+            f"""
+            SELECT
+                (SELECT COUNT(*) FROM collections) AS collections,
+                (SELECT COUNT(*) FROM items) AS items,
+                (SELECT COUNT(*) FROM entries WHERE deleted_at IS NULL) AS entries,
+                (SELECT COUNT(*) FROM entries WHERE deleted_at IS NOT NULL) AS deleted_entries,
+                (SELECT COUNT(*) FROM photos WHERE deleted_at IS NULL) AS photos,
+                (SELECT COUNT(*) FROM photos WHERE deleted_at IS NOT NULL) AS deleted_photos,
+                (SELECT COUNT(*) {MISSING_ORIGINALS}) AS missing_originals
+            """
+        ).fetchone()
+    )
+    last_change_at = db.execute(
+        "SELECT MAX(at) FROM ("
+        "SELECT MAX(updated_at) AS at FROM collections UNION ALL "
+        "SELECT MAX(updated_at) FROM items UNION ALL "
+        "SELECT MAX(updated_at) FROM entries UNION ALL "
+        "SELECT MAX(updated_at) FROM photos UNION ALL "
+        "SELECT MAX(changed_at) FROM changes UNION ALL "
+        "SELECT MAX(applied_at) FROM applied_mutations "
+        "WHERE json_extract(result_json, '$.status')='applied' "
+        "AND json_type(result_json, '$.server_revision')='null'"
+        ")"
+    ).fetchone()[0]
+    return {**counts, "last_change_at": last_change_at}
+
+
+def account_stats(data_dir: Path) -> dict[str, object]:
+    with connect(data_dir) as db:
+        db.execute("BEGIN")
+        return _read_account_stats(db)
+
+
 def agent_summary(data_dir: Path) -> dict[str, object]:
     with connect(data_dir) as db:
         db.execute("BEGIN")
-        counts = dict(
-            db.execute(
-                f"""
-                SELECT
-                    (SELECT COUNT(*) FROM collections) AS collections,
-                    (SELECT COUNT(*) FROM items) AS items,
-                    (SELECT COUNT(*) FROM entries WHERE deleted_at IS NULL) AS entries,
-                    (SELECT COUNT(*) FROM entries WHERE deleted_at IS NOT NULL) AS deleted_entries,
-                    (SELECT COUNT(*) FROM photos WHERE deleted_at IS NULL) AS photos,
-                    (SELECT COUNT(*) FROM photos WHERE deleted_at IS NOT NULL) AS deleted_photos,
-                    (SELECT COUNT(*) {MISSING_ORIGINALS}) AS missing_originals
-                """
-            ).fetchone()
-        )
+        stats = _read_account_stats(db)
         missing = db.execute(
             f"SELECT p.id AS photo_id, p.item_id {MISSING_ORIGINALS} ORDER BY p.id LIMIT 200"
         ).fetchall()
@@ -224,15 +256,4 @@ def agent_summary(data_dir: Path) -> dict[str, object]:
             }
             for photo in missing
         ]
-        last_change_at = db.execute(
-            "SELECT MAX(at) FROM ("
-            "SELECT MAX(updated_at) AS at FROM collections UNION ALL "
-            "SELECT MAX(updated_at) FROM items UNION ALL "
-            "SELECT MAX(updated_at) FROM entries UNION ALL "
-            "SELECT MAX(updated_at) FROM photos UNION ALL "
-            "SELECT MAX(applied_at) FROM applied_mutations "
-            "WHERE json_extract(result_json, '$.status')='applied' "
-            "AND json_type(result_json, '$.server_revision')='null'"
-            ")"
-        ).fetchone()[0]
-    return {**counts, "missing_originals_details": details, "last_change_at": last_change_at}
+    return {**stats, "missing_originals_details": details}

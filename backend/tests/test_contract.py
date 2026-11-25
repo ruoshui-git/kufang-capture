@@ -150,7 +150,11 @@ def test_login_session_csrf_and_logout(tmp_path):
     http_login = client.post("/api/auth/login", json={"password": "test-password"}, headers=HEADERS)
     assert "Secure" not in http_login.headers["set-cookie"]
     assert client.post("/api/auth/logout", headers=HEADERS).status_code == 204
-    assert client.get("/api/auth/session").json() == {"authenticated": False, "expires_at": None}
+    assert client.get("/api/auth/session").json() == {
+        "authenticated": False,
+        "expires_at": None,
+        "user": None,
+    }
     assert client.get("/api/collections").status_code == 401
     assert client.post("/api/auth/login", json={"password": "wrong"}, headers=HEADERS).status_code == 401
     csrf = client.post("/api/auth/login", json={"password": "test-password"})
@@ -463,10 +467,11 @@ def test_photo_upload_verifies_hashes_and_supports_head(tmp_path, monkeypatch):
     downloaded = client.get(url)
     assert downloaded.content == data
     assert downloaded.headers["etag"] == f'"{digest}"'
-    # Without an uploaded thumbnail, the thumbnail URL serves the original, cached only briefly.
+    # The thumbnail URL serves the original when a derived file is unavailable.
     fallback = client.get("/api/photos/p1/thumbnail")
     assert fallback.status_code == 200 and fallback.content == data
-    assert fallback.headers["cache-control"] == "private, max-age=300"
+    assert fallback.headers["cache-control"] == "private, no-store"
+    assert "Cookie" in fallback.headers["vary"]
     archive = tmp_path / "uploaded-export.zip"
     archive.write_bytes(client.get("/api/exports/all.zip").content)
     verify = subprocess.run(
