@@ -367,6 +367,465 @@ describe('sync acceptance against an in-memory API server', () => {
     await fixture.db.delete()
   })
 
+  it('uses the current storage mode after hashing a new photo', async () => {
+    const server = new MemoryServer()
+    const { db, repo, collection, entry, engine } = await syncedEntry(server)
+    const blob = new NodeBlob(['private'], { type: 'image/jpeg' })
+    let entered!: () => void
+    let release!: () => void
+    const started = new Promise<void>((resolve) => (entered = resolve))
+    const gate = new Promise<void>((resolve) => (release = resolve))
+    const read = blob.arrayBuffer.bind(blob)
+    vi.spyOn(blob, 'arrayBuffer').mockImplementationOnce(async () => {
+      entered()
+      await gate
+      return read()
+    })
+    const capture = repo.addPhotos(entry.id, [{ blob: blob as Blob, source: 'photo_library' }])
+    await started
+    await repo.setStorageMode(collection.id, 'local_only', { consentToUploadExisting: false })
+    release()
+    const [photo] = await capture
+    expect(await db.collections.get(collection.id)).toMatchObject({ storage_mode: 'local_only' })
+    expect(await db.photos.get(photo!.id)).toMatchObject({ upload_state: 'not_needed' })
+    expect(await db.outbox.count()).toBe(0)
+    const offset = server.requests.length
+    await engine.syncNow()
+    expect(JSON.stringify(server.requests.slice(offset))).not.toContain(photo!.id)
+    await db.delete()
+  })
+
+  it.each(['archiveCollection', 'unarchiveCollection'] as const)(
+    '%s keeps a concurrent Local Only switch',
+    async (operation) => {
+      const { db, repo, collection } = await syncedEntry(new MemoryServer())
+      if (operation === 'unarchiveCollection') await repo.archiveCollection(collection.id)
+      // The mode write is queued before an archive that first does a standalone lookup.
+      await Promise.all([
+        repo[operation](collection.id),
+        repo.setStorageMode(collection.id, 'local_only', { consentToUploadExisting: false }),
+      ])
+      expect(await db.collections.get(collection.id)).toMatchObject({ storage_mode: 'local_only' })
+      expect(await db.outbox.count()).toBe(0)
+      await db.delete()
+    },
+  )
+
+  it.each(['collection', 'entry', 'item', 'photo'] as const)(
+    'preserves unsynced edits and originals through a remote %s removal',
+    async (entity) => {
+      const server = new MemoryServer()
+      const { name, db, repo, collection, entry, engine } = await syncedEntry(server)
+      const photo = await addPhoto(repo, entry.id)
+      const kept = await repo.createEntry(collection.id)
+      await repo.updateEntry(entry.id, { quantity: '27' })
+      const id = entity === 'collection' ? collection.id : entity === 'photo' ? photo.id : entry.id
+      // Leave local metadata queued and model a previously acknowledged photo whose bytes never arrived.
+      await db.outbox.where('collection_id').equals(collection.id).modify({
+        next_attempt_at: '2026-11-09T00:00:00.000Z',
+      })
+      await db.photos.update(photo.id, { server_revision: 1, upload_state: 'pending' })
+      if (entity === 'collection') {
+        // Server-copy removal logs orphan photo and item purges before the collection marker.
+        server.pushChange({ entity: 'photo', id: photo.id, purged: true })
+        server.pushChange({ entity: 'item', id: entry.item_id, purged: true })
+      }
+      server.pushChange({ entity, id, ...(entity === 'collection' ? { removed: true } : { purged: true }) })
+      await engine.runScheduledCycle()
+      expect(await (await repo.getPhotoBlob(photo.id))?.original.text()).toBe('photo-bytes')
+      expect((await repo.getEntry(entry.id))?.display_sync_state).toBe('error')
+      expect(await db.entries.get(entry.id)).toMatchObject({ quantity: '27' })
+      expect(await db.entries.get(kept.id)).toBeDefined()
+      const offset = server.requests.length
+      await makeEngine(name, server).syncNow()
+      expect(
+        server.requests
+          .slice(offset)
+          .some(({ url, body }) => url.includes(photo.id) || JSON.stringify(body ?? '').includes(id)),
+      ).toBe(false)
+      await db.delete()
+    },
+  )
+
+  it('keeps sent creates across Local Only and rebases the consented replacements on acknowledgment', async () => {
+    const server = new MemoryServer()
+    const name = dbName()
+    const repo = makeRepo(name)
+    const db = getCaptureDb(name)
+    const collection = await repo.createCollection({ name: 'Room', storage_mode: 'synced' })
+    const entry = await repo.createEntry(collection.id)
+    const photo = await addPhoto(repo, entry.id)
+    const batch = holdBatch(server)
+    const engine = makeEngine(name, server)
+    const syncing = engine.syncNow()
+    await batch.entered
+    try {
+      await repo.setStorageMode(collection.id, 'local_only', { consentToUploadExisting: false })
+      await repo.updateEntry(entry.id, { quantity: '12' })
+      await repo.setStorageMode(collection.id, 'synced', { consentToUploadExisting: true })
+    } finally {
+      batch.release()
+      await syncing
+    }
+    await engine.syncNow()
+    expect(server.records.get(server.key('entry', entry.id))?.quantity).toBe('12')
+    expect(await db.outbox.count()).toBe(0)
+    expect(server.stored.has(photo.id)).toBe(true)
+    await db.delete()
+  })
+
+  it.each(['delete', 'restore'] as const)('corrects a legacy sent upsert that lost its %s', async (op) => {
+    const server = new MemoryServer()
+    const { repo, db, entry, engine } = await syncedEntry(server)
+    if (op === 'restore') {
+      await repo.deleteEntry(entry.id)
+      await engine.syncNow()
+      await repo.restoreEntry(entry.id)
+    } else await repo.deleteEntry(entry.id)
+    const row = (await db.outbox.where('[entity+entity_id]').equals(['entry', entry.id]).first())!
+    const legacy = { ...row, op: 'upsert' as const, sent: true }
+    expect(server.applyMutation(legacy)).toMatchObject({ status: 'applied' })
+    await db.outbox.put(legacy)
+    await engine.syncNow()
+    const beforeCorrection = server.batchRequests.length
+    await engine.syncNow()
+    expect(server.batchRequests.slice(beforeCorrection).flat()).toContainEqual(
+      expect.objectContaining({ entity_id: entry.id, op, id: expect.not.stringMatching(row.id) }),
+    )
+    expect(server.records.get(server.key('entry', entry.id))?.deleted_at).toEqual(
+      op === 'delete' ? expect.any(String) : null,
+    )
+    expect(await db.outbox.count()).toBe(0)
+    await db.delete()
+  })
+
+  it.each(['ordinary full record', 'legacy restore'] as const)(
+    'handles a concurrent server deletion after queuing %s',
+    async (kind) => {
+      const server = new MemoryServer()
+      const { db, repo, entry, engine } = await syncedEntry(server)
+      if (kind === 'legacy restore') {
+        await repo.deleteEntry(entry.id)
+        await engine.syncNow()
+        await repo.restoreEntry(entry.id)
+      } else await repo.updateEntry(entry.id, { quantity: '9' })
+      const row = (await db.outbox.where('[entity+entity_id]').equals(['entry', entry.id]).first())!
+      await db.outbox.update(row.id, {
+        op: 'upsert',
+        sent: true,
+        ...(kind === 'ordinary full record'
+          ? { fields: { ...(await db.entries.get(entry.id)), ...row.fields, deleted_at: null } }
+          : {}),
+      })
+      server.externalUpdate('entry', entry.id, { deleted_at: '2026-11-08T13:00:00.000Z' })
+
+      await engine.syncNow()
+      await engine.syncNow()
+      expect(server.records.get(server.key('entry', entry.id))?.deleted_at).toBe('2026-11-08T13:00:00.000Z')
+      expect((await db.conflicts.toArray()).flatMap((conflict) => conflict.fields)).toEqual(
+        kind === 'legacy restore' ? ['deleted_at'] : [],
+      )
+      expect(await db.outbox.count()).toBe(0)
+      await db.delete()
+    },
+  )
+
+  it('waits for unacknowledged parents and replaces an id with a stored missing_parent rejection', async () => {
+    const server = new MemoryServer()
+    const name = dbName()
+    const repo = makeRepo(name)
+    const db = getCaptureDb(name)
+    const collection = await repo.createCollection({ name: 'Room', storage_mode: 'synced' })
+    const entry = await repo.createEntry(collection.id)
+    const photo = await addPhoto(repo, entry.id)
+    const rows = await db.outbox.toArray()
+    const parent = rows.find((row) => row.entity === 'collection')!
+    const child = rows.find((row) => row.entity === 'entry')!
+    const rejection = {
+      id: child.id,
+      status: 'rejected',
+      code: 'missing_parent',
+      message: 'Collection does not exist',
+      server_revision: null,
+    }
+    server.mutationResults.set(child.id, rejection)
+    await db.outbox.update(child.id, { sent: true, attempts: 1, last_error: rejection.message })
+    await db.outbox.update(parent.id, { next_attempt_at: '2026-11-09T00:00:00.000Z' })
+    const engine = makeEngine(name, server)
+    await engine.runScheduledCycle()
+    expect(server.batchRequests).toEqual([])
+    await engine.syncNow()
+    expect(server.batchRequests[0]?.map((mutation) => mutation.entity)).toEqual([
+      'collection',
+      'item',
+      'photo',
+    ])
+    await engine.syncNow()
+    expect(server.records.has(server.key('entry', entry.id))).toBe(true)
+    expect(server.batchRequests.flat().some((mutation) => mutation.id === child.id)).toBe(false)
+    expect(await db.outbox.count()).toBe(0)
+    expect(server.stored.has(photo.id)).toBe(true)
+    await db.delete()
+  })
+
+  it('rebases a follow-up delete separately from an unrelated conflicting field', async () => {
+    const server = new MemoryServer()
+    const { name, db, repo, entry } = await syncedEntry(server)
+    await repo.deleteEntry(entry.id)
+    await makeEngine(name, server).syncNow()
+    await repo.restoreEntry(entry.id)
+    const fetch = server.fetch
+    let entered!: () => void
+    let release!: () => void
+    const reached = new Promise<void>((resolve) => (entered = resolve))
+    const gate = new Promise<void>((resolve) => (release = resolve))
+    let hold = true
+    server.fetch = async (input, init) => {
+      if (hold && String(input) === '/api/sync/batch') {
+        hold = false
+        entered()
+        await gate
+      }
+      return fetch(input, init)
+    }
+    const engine = makeEngine(name, server)
+    const syncing = engine.syncNow()
+    await reached
+    try {
+      await repo.deleteEntry(entry.id)
+      await repo.updateEntry(entry.id, { quantity: '9' })
+      server.externalUpdate('entry', entry.id, { quantity: '6' })
+    } finally {
+      release()
+      await syncing
+    }
+    await engine.syncNow()
+    await engine.syncNow()
+    expect(server.records.get(server.key('entry', entry.id))?.deleted_at).toEqual(expect.any(String))
+    expect((await db.conflicts.toArray()).flatMap((conflict) => conflict.fields)).toEqual(['quantity'])
+    await db.delete()
+  })
+
+  it('leaves an ordinary legacy full-record update with deleted_at null as an upsert', async () => {
+    const { db, repo, entry } = await syncedEntry(new MemoryServer())
+    await repo.updateEntry(entry.id, { quantity: '9' })
+    const row = (await db.outbox.where('[entity+entity_id]').equals(['entry', entry.id]).first())!
+    await db.outbox.update(row.id, {
+      fields: { ...(await db.entries.get(entry.id)), ...row.fields, deleted_at: null },
+    })
+    await repairSyncQueue(db)
+    expect(await db.outbox.get(row.id)).toMatchObject({ op: 'upsert' })
+    await db.delete()
+  })
+
+  it('keeps a second tab without Web Locks from recovering a live upload', async () => {
+    expect(navigator.locks).toBeUndefined()
+    const server = new MemoryServer()
+    const { name, db, repo, entry } = await syncedEntry(server)
+    const photo = await addPhoto(repo, entry.id)
+    let release!: () => void
+    let entered!: () => void
+    const reached = new Promise<void>((resolve) => (entered = resolve))
+    const gate = new Promise<void>((resolve) => (release = resolve))
+    const engine = createSyncEngine({
+      repoDbName: name,
+      now: clock,
+      fetch: async (input, init) => {
+        if (String(input) === '/api/photos/' + photo.id + '/original' && init?.method === 'PUT') {
+          entered()
+          await gate
+        }
+        return server.fetch(input, init)
+      },
+    })
+    const first = engine.syncNow()
+    await reached
+    const second = makeEngine(name, server)
+    try {
+      const offset = server.requests.length
+      second.start()
+      await second.runScheduledCycle()
+      expect(server.requests.slice(offset)).toEqual([])
+      expect(await db.photos.get(photo.id)).toMatchObject({ upload_state: 'uploading' })
+    } finally {
+      second.stop()
+      release()
+      await first
+    }
+    expect(
+      server.requests.filter(({ method, url }) => method === 'PUT' && url.endsWith('/original')),
+    ).toHaveLength(1)
+    expect(await db.photos.get(photo.id)).toMatchObject({ upload_state: 'uploaded' })
+    await db.delete()
+  })
+
+  it('reclaims only expired claims and verifies a previously stored original by hash', async () => {
+    const server = new MemoryServer()
+    const { name, db, repo, entry, engine } = await syncedEntry(server)
+    const photo = await addPhoto(repo, entry.id)
+    await engine.syncNow()
+    await repo.updateEntry(entry.id, { quantity: '14' })
+    const row = (await db.outbox.where('[entity+entity_id]').equals(['entry', entry.id]).first())!
+    await db.outbox.update(row.id, { sent: true, in_flight: true })
+    await db.photos.update(photo.id, { upload_state: 'uploading' })
+    await db.settings.put({
+      key: 'sync_cycle_lease',
+      value: { owner: 'closed-tab', expiresAt: clock().getTime() + 1000 },
+    })
+    const runner = makeEngine(name, server)
+    const offset = server.requests.length
+    await runner.runScheduledCycle()
+    expect(server.requests.slice(offset)).toEqual([])
+    expect(await db.outbox.get(row.id)).toMatchObject({ in_flight: true })
+    expect(await db.photos.get(photo.id)).toMatchObject({ upload_state: 'uploading' })
+    fixedNow.value = new Date(clock().getTime() + 1001)
+    await runner.runScheduledCycle()
+    expect(server.batchRequests.at(-1)).toContainEqual(expect.objectContaining({ id: row.id }))
+    expect(await db.outbox.get(row.id)).toBeUndefined()
+    expect(await db.photos.get(photo.id)).toMatchObject({ upload_state: 'uploaded' })
+    expect(server.requests.slice(offset).filter(({ url }) => url.includes(photo.id))).toEqual([
+      expect.objectContaining({ method: 'HEAD' }),
+    ])
+    await db.delete()
+  })
+
+  it('fences a suspended tab when it returns after another tab reclaims the upload', async () => {
+    const server = new MemoryServer()
+    const { name, db, repo, entry } = await syncedEntry(server)
+    const photo = await addPhoto(repo, entry.id)
+    const url = '/api/photos/' + photo.id + '/original'
+    const tab = () => {
+      let reached!: () => void
+      let release!: () => void
+      const entered = new Promise<void>((resolve) => (reached = resolve))
+      const gate = new Promise<void>((resolve) => (release = resolve))
+      const engine = createSyncEngine({
+        repoDbName: name,
+        now: clock,
+        fetch: async (input, init) => {
+          if (String(input) === url && init?.method === 'HEAD') {
+            reached()
+            await gate
+          }
+          return server.fetch(input, init)
+        },
+      })
+      return { engine, entered, release }
+    }
+    const first = tab()
+    const second = tab()
+    const oldCycle = first.engine.syncNow()
+    await first.entered
+    fixedNow.value = new Date(clock().getTime() + 60_000)
+    const newCycle = second.engine.runScheduledCycle()
+    try {
+      await second.entered
+      first.release()
+      await oldCycle
+      expect(await db.photos.get(photo.id)).toMatchObject({ upload_state: 'uploading' })
+      expect(server.requests.filter((request) => request.url === url && request.method === 'PUT')).toEqual([])
+    } finally {
+      first.release()
+      second.release()
+      await Promise.all([oldCycle, newCycle])
+    }
+    expect(await db.photos.get(photo.id)).toMatchObject({ upload_state: 'uploaded' })
+    expect(server.requests.filter((request) => request.url === url && request.method === 'PUT')).toHaveLength(
+      1,
+    )
+    await db.delete()
+  })
+
+  it('removes an acknowledged, backed-up photo when its own purge comes back in the pull', async () => {
+    const server = new MemoryServer()
+    const { db, repo, collection, entry, engine } = await syncedEntry(server)
+    const photo = await addPhoto(repo, entry.id)
+    await engine.syncNow()
+    await repo.deletePhoto(photo.id)
+    await engine.syncNow()
+    const deleted = (await db.photos.get(photo.id))!
+    await db.transaction('rw', db.outbox, () =>
+      queueMutation(db, collection, 'photo', deleted, 'purge', {}, clock().toISOString()),
+    )
+    const apply = server.applyMutation.bind(server)
+    vi.spyOn(server, 'applyMutation').mockImplementation((mutation) => {
+      if (mutation.op !== 'purge') return apply(mutation)
+      server.pushChange({ entity: 'photo', id: photo.id, purged: true })
+      return { id: mutation.id, status: 'applied', server_revision: null, record: null }
+    })
+    await engine.syncNow()
+    expect(await db.photos.get(photo.id)).toBeUndefined()
+    expect(await repo.getPhotoBlob(photo.id)).toBeUndefined()
+    await db.delete()
+  })
+
+  it('protects an unbacked original even with no upload or metadata change queued', async () => {
+    const server = new MemoryServer()
+    const { db, repo, entry, engine } = await syncedEntry(server)
+    const photo = await addPhoto(repo, entry.id)
+    await engine.syncNow()
+    server.stored.delete(photo.id)
+    await db.photos.update(photo.id, { upload_state: 'not_needed' })
+    server.pushChange({ entity: 'photo', id: photo.id, purged: true })
+    await engine.runScheduledCycle()
+    expect((await repo.getEntry(entry.id))?.display_sync_state).toBe('error')
+    expect(await (await repo.getPhotoBlob(photo.id))?.original.text()).toBe('photo-bytes')
+    await db.delete()
+  })
+
+  it('preserves a removed placement without pausing its surviving shared item', async () => {
+    const server = new MemoryServer()
+    const { name, db, repo, collection, entry, engine } = await syncedEntry(server)
+    const other = await repo.createCollection({ name: 'Other', storage_mode: 'synced' })
+    const placements = await repo.importEntries(other.id, [entry.id])
+    await engine.syncNow()
+    await repo.updateEntry(entry.id, { quantity: '19' })
+    await db.outbox.where('[entity+entity_id]').equals(['entry', entry.id]).modify({
+      next_attempt_at: '2026-11-09T00:00:00.000Z',
+    })
+    server.pushChange({ entity: 'collection', id: collection.id, removed: true })
+    await engine.runScheduledCycle()
+    expect(await db.collections.get(collection.id)).toMatchObject({
+      storage_mode: 'synced',
+      sync_state: 'error',
+    })
+    expect(await db.entries.get(entry.id)).toMatchObject({ quantity: '19' })
+    expect(await db.entries.get(placements.created[0]!.id)).toBeDefined()
+    const photo = await addPhoto(repo, placements.created[0]!.id)
+    await makeEngine(name, server).syncNow()
+    expect(server.stored.has(photo.id)).toBe(true)
+    await db.delete()
+  })
+
+  it.each(['/api/sync/batch', '/api/sync/changes'])(
+    'halts on client_outdated from %s until Sync Now',
+    async (path) => {
+      const server = new MemoryServer()
+      const { name, db, repo, entry } = await syncedEntry(server)
+      await repo.updateEntry(entry.id, { quantity: '4' })
+      const fetch = server.fetch
+      let outdated = true
+      server.fetch = async (input, init) => {
+        if (String(input).startsWith(path) && outdated) {
+          server.requests.push({ url: String(input), method: init?.method ?? 'GET' })
+          return new Response(JSON.stringify({ detail: 'client_outdated' }), { status: 409 })
+        }
+        return fetch(input, init)
+      }
+      const engine = makeEngine(name, server)
+      await engine.syncNow()
+      expect(server.requests.at(-1)?.url).toMatch(new RegExp('^' + path))
+      const offset = server.requests.length
+      await engine.runScheduledCycle()
+      await engine.runScheduledCycle()
+      expect(server.requests.slice(offset)).toEqual([])
+      outdated = false
+      await engine.syncNow()
+      expect(await db.outbox.count()).toBe(0)
+      await db.delete()
+    },
+  )
+
   it('upgrades v2 databases without losing existing photo data and initializes retry metadata', async () => {
     const name = dbName()
     const legacy = new Dexie(name)
@@ -983,7 +1442,7 @@ describe('sync acceptance against an in-memory API server', () => {
     expect(mergedItem?.title).toBe('Server title')
     expect(server.pulls).toBeGreaterThan(1)
     await fixture.db.entries.put({ ...merged!, id: 'purged-entry', collection_id: fixture.collection.id })
-    await fixture.db.collections.put({ ...fixture.collection, id: 'removed-collection' })
+    await fixture.db.collections.put({ ...fixture.collection, id: 'removed-collection', server_revision: 1 })
     await fixture.db.entries.put({ ...merged!, id: 'removed-child', collection_id: 'removed-collection' })
     server.pushChange({ entity: 'entry', id: 'purged-entry', purged: true })
     server.pushChange({ entity: 'collection', id: 'removed-collection', removed: true })

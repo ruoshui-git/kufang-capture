@@ -40,9 +40,13 @@ The client sends at most 200 mutations per batch, ordered collection, then item,
 
 **Client outbox rules.** A batch carries at most one mutation per record. Later changes wait until the earlier mutation has a result. The client merges local edits into a queued row up to its first send. An unsent create stays an upsert and carries the final value of `deleted_at`, so an entry or photo can be created directly in trash. On an existing record, an edit merges into the last queued delete or restore while preserving that operation. The last explicit delete or restore wins. Purges stay separate.
 
-A sent mutation keeps the same id and payload on retry. On an `applied` or `duplicate` acknowledgment, the client rebases later unsent rows to the acknowledged `server_revision` if the acknowledged mutation wrote each field or the server's `field_revisions[f]` is at most the later row's base. An acknowledged create supplies the base for its follow-up edits. A stored rejection requires a fresh id for a corrected mutation. When a field conflict rejects a combined operation, the client queues the fields that did not conflict and uses an explicit delete or restore if the user chooses their own value for `deleted_at`.
+A sent mutation keeps its id and payload on retry, including across a temporary switch to Local Only. Sync pauses those rows until the user consents to sync again. An acknowledged create supplies the base for its follow-up edits. For updates, the client rebases fields that the acknowledgment wrote or whose server field revision is at most the follow-up's base. It sends separately any fields that must keep their older base for conflict detection.
 
-The client pushes metadata between photo originals and pulls changes regularly during the upload queue. Originals in trash follow the same upload rules. A 401 or 507 stops the current cycle. A 507 pauses uploads for five minutes across tabs and restarts. Sync Now can retry immediately. The client reports an error if neither the server nor the device has the original.
+Children wait for their parent create to be acknowledged or sent earlier in the same batch. A child with a stored missing-parent rejection waits for acknowledged parents and retries with a fresh id. If that retry still reports a missing parent, the row stays on the device with a sync error. When a field conflict rejects a combined operation, the client queues the fields that did not conflict and uses an explicit delete or restore if the user chooses their own value for `deleted_at`.
+
+The client repairs a legacy upsert carrying a lost delete. It recovers a legacy restore when the device still intends to restore the record and either a partial edit carries that restore or the server confirms that the record was deleted at the mutation's base revision. An acknowledged legacy upsert remains acknowledged. Any lifecycle correction uses its own mutation id.
+
+The client pushes metadata between photo originals and pulls changes regularly during the upload queue. Originals in trash follow the same upload rules. A 401 or 507 stops the current cycle. A 507 pauses uploads for five minutes across tabs and restarts. Sync Now can retry immediately. The client reports an error if neither the server nor the device has the original. Foreground cycles use a Web Lock where available and an IndexedDB lease across tabs. A tab can reclaim an expired lease and retry unfinished work. `client_outdated` stops automatic sync for the open app until Sync Now or an app reload.
 
 Each mutation gets one result: `{ "id", "status", "server_revision", "record", "code"?, "message"? }`.
 - `applied`: the change was stored. `record` is the full server record afterwards.
@@ -75,6 +79,8 @@ Returns `{ "changes": [ { "seq": 12, "entity": "entry", "id": "01J…", "record"
 The client merges each record unless the entity has a pending outbox item or an unresolved conflict. In that case it keeps the local values for the fields that are pending or in conflict and adopts the rest. A logged-in desktop browser therefore receives every synced collection. It never sees Local Only collections.
 
 **Local Only wins locally.** A client never overwrites or deletes local data that belongs to a Local Only collection because of a pulled change: a collection `removed`/record for a local Local Only collection, and an item or photo change (record or purge) for an item that any local Local Only entry references, are ignored.
+
+A removal or purge keeps the affected records and originals on the device if it would discard an unacknowledged change, an unresolved conflict, or an unbacked photo. The client shows “Removed on the server; kept on this device.” The retained records keep their storage mode so shared placements stay consistent. Sync skips removed records and their blocked changes. A healthy shared placement can still sync its surviving item. Retained data remains available for export.
 
 ### Photo bytes
 

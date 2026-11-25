@@ -1,4 +1,4 @@
-import { liveQuery } from 'dexie'
+import Dexie, { liveQuery } from 'dexie'
 import { createId } from '../ids'
 import {
   compareQueued,
@@ -10,8 +10,10 @@ import {
   readPhotoBlob,
   repairMissingCreate,
   repairSyncQueue,
+  SERVER_REMOVED_MESSAGE,
   syncedItemIds,
   type PhotoWithUploadRetry,
+  type RemoteRemoval,
 } from '../db'
 import {
   SETTING_KEYS,
@@ -26,7 +28,13 @@ import type { Watchable } from '../repo'
 import type { AuthClient, ServerClient, SyncConflict, SyncEngine, SyncStatus } from './api'
 
 type FetchLike = typeof fetch
-type ServerRecord = Record<string, unknown> & { id: Id; revision?: number; server_revision?: number }
+type ServerRecord = Record<string, unknown> & {
+  id: Id
+  revision?: number
+  server_revision?: number
+  deleted_at?: string | null
+  field_revisions?: Record<string, number>
+}
 type BatchResult = {
   id: Id
   status: 'applied' | 'duplicate' | 'conflict' | 'rejected'
@@ -36,6 +44,28 @@ type BatchResult = {
   message?: string
   conflicting_fields?: string[]
   duplicate?: boolean
+}
+type SyncLease = { owner: Id; expiresAt: number }
+const leaseKey = 'sync_cycle_lease'
+const leaseDuration = 30_000
+const updateRequired = 'Update the app to keep syncing.'
+
+function isCreate(row: OutboxItem) {
+  return row.op === 'upsert' && row.base_revision === null
+}
+
+function carriesLegacyDeletion(row: OutboxItem, server: ServerRecord) {
+  if (row.op !== 'upsert' || row.base_revision === null) return false
+  if (typeof row.fields.deleted_at === 'string') return true
+  // A partial edit only carries a null tombstone after an explicit restore.
+  // A legacy full-record upsert needs evidence it was based on a tombstone.
+  const revisions = server.field_revisions
+  return (
+    row.fields.deleted_at === null &&
+    typeof server.deleted_at === 'string' &&
+    (!Object.hasOwn(row.fields, 'id') ||
+      (revisions?.deleted_at !== undefined && revisions.deleted_at <= row.base_revision))
+  )
 }
 
 export interface SyncEngineOptions {
@@ -144,8 +174,10 @@ export function createSyncEngine(options: SyncEngineOptions = {}): SyncEngineWit
   let running: Promise<void> | null = null
   let rerun = false
   let uploadRetryAt = 0
-  let needsRepair = false
+  let needsRepair = true
   let authBlocked = false
+  let clientOutdated = false
+  let leaseOwner: Id | undefined
   let started = false
   let timer: ReturnType<typeof setInterval> | undefined
   let debounce: ReturnType<typeof setTimeout> | undefined
@@ -188,14 +220,19 @@ export function createSyncEngine(options: SyncEngineOptions = {}): SyncEngineWit
   }
 
   async function refreshStatus() {
-    const [collections, items, photos, conflictRows] = await Promise.all([
+    const [collections, items, photos, conflictRows, records] = await Promise.all([
       db.collections.toArray(),
       db.outbox.toArray(),
       db.photos.toArray(),
       db.conflicts.toArray(),
+      db.items.toArray(),
     ])
     const synced = collections.filter((item) => item.storage_mode === 'synced')
     const per: SyncStatus['per_collection'] = {}
+    let hasRemoval = false
+    const removedItems = new Set(
+      records.filter((record) => record.removed_on_server).map((record) => record.id),
+    )
     for (const collection of synced) {
       const ownEntries = await db.entries.where('collection_id').equals(collection.id).toArray()
       const ownItems = new Set(ownEntries.map((entry) => entry.item_id))
@@ -215,12 +252,17 @@ export function createSyncEngine(options: SyncEngineOptions = {}): SyncEngineWit
       const errors =
         mutations.filter((item) => item.last_error).length +
         pendingPhotos.filter((p) => p.upload_state === 'error').length
+      const removed =
+        collection.removed_on_server ||
+        ownEntries.some((entry) => entry.removed_on_server || removedItems.has(entry.item_id)) ||
+        photos.some((photo) => photo.removed_on_server && ownItems.has(photo.item_id))
+      hasRemoval ||= !!removed
       per[collection.id] = {
         collection_id: collection.id,
         pending_mutations: mutations.length,
         pending_uploads: pendingPhotos.length,
         pending_upload_bytes: pendingPhotos.reduce((sum, photo) => sum + photo.byte_size, 0),
-        errors,
+        errors: errors + Number(!!removed),
         conflicts: conflictRows.filter((item) => item.collection_id === collection.id).length,
         last_synced_at: null,
       }
@@ -231,6 +273,7 @@ export function createSyncEngine(options: SyncEngineOptions = {}): SyncEngineWit
       ...emptyStatus(),
       last_error:
         lastError ??
+        (hasRemoval ? SERVER_REMOVED_MESSAGE : null) ??
         photos.find((photo) => photo.upload_state === 'error' && photo.upload_error)?.upload_error ??
         null,
       pending_mutations: pendingMutations,
@@ -252,6 +295,36 @@ export function createSyncEngine(options: SyncEngineOptions = {}): SyncEngineWit
   const storageLow = 'Server storage is low'
   const storageRetryKey = 'photo_upload_storage_retry_at'
   const storedUploadRetryAt = async () => Number((await db.settings.get(storageRetryKey))?.value ?? 0)
+  const readLease = async () => (await db.settings.get(leaseKey))?.value as SyncLease | undefined
+
+  async function assertLease(owner = leaseOwner) {
+    const lease = await readLease()
+    if (lease && lease.owner === owner && lease.expiresAt > now().getTime()) return
+    controller.current?.abort()
+    throw new DOMException('The sync lease expired.', 'AbortError')
+  }
+
+  // Start the request while the IndexedDB snapshot is held. Await the network
+  // outside the transaction so saving locally never waits on the network.
+  function startRequest(url: string, init: RequestInit) {
+    const response = Dexie.ignoreTransaction(async () => fetcher(url, init))
+    void response.catch(() => {})
+    return { response }
+  }
+
+  async function outdatedResponse(response: Response) {
+    if (response.status !== 409) return false
+    const body = (await response
+      .clone()
+      .json()
+      .catch(() => null)) as { code?: string; detail?: string } | null
+    if ((body?.code ?? body?.detail) !== 'client_outdated') return false
+    clientOutdated = true
+    rerun = false
+    lastError = updateRequired
+    phase = 'error'
+    return true
+  }
 
   async function haltOnStatus(code: number) {
     if (code === 401) {
@@ -261,47 +334,92 @@ export function createSyncEngine(options: SyncEngineOptions = {}): SyncEngineWit
     } else if (code === 507) {
       uploadRetryAt = now().getTime() + 300_000
       lastError = storageLow
-      await db.settings.put({ key: storageRetryKey, value: uploadRetryAt })
+      await db.transaction('rw', db.settings, async () => {
+        await assertLease()
+        await db.settings.put({ key: storageRetryKey, value: uploadRetryAt })
+      })
     } else return false
     return true
   }
 
   async function push(signal: AbortSignal) {
     const deviceId = await db.settings.get(SETTING_KEYS.deviceId)
-    // Select and claim in one transaction so an edit cannot coalesce into the request
-    // while it is being prepared, and a storage-mode change cannot leave a stale selection.
+    // Commit the claim before sending so a later edit cannot coalesce into this request.
     const selected = await db.transaction(
       'rw',
-      [db.collections, db.entries, db.photos, db.outbox],
+      [db.collections, db.items, db.entries, db.photos, db.outbox, db.settings],
       async () => {
+        await assertLease()
         const rows = await db.outbox.toArray()
         if (signal.aborted || !rows.length) return []
         const collections = await db.collections.toArray()
-        const allowed = new Set(collections.filter((c) => c.storage_mode === 'synced').map((c) => c.id))
+        const allowed = new Map(
+          collections
+            .filter((c) => c.storage_mode === 'synced' && !c.removed_on_server)
+            .map((c) => [c.id, c]),
+        )
         const syncedItems = await syncedItemIds(db, collections)
         const priority = { collection: 0, item: 1, entry: 2, photo: 3 }
         rows.sort((a, b) => priority[a.entity] - priority[b.entity] || compareQueued(a, b))
+        const createHeads = new Set<string>()
+        const keys = new Set<string>()
+        for (const row of rows) {
+          const key = `${row.entity}:${row.entity_id}`
+          if (!keys.has(key) && isCreate(row)) createHeads.add(key)
+          keys.add(key)
+        }
+        const selectedCreates = new Set<string>()
+        const parentReady = (
+          key: string,
+          parent: { server_revision: number | null; removed_on_server?: true } | undefined,
+          acknowledgedOnly: boolean,
+        ) =>
+          !!parent &&
+          !parent.removed_on_server &&
+          ((!createHeads.has(key) && parent.server_revision !== null) ||
+            (!acknowledgedOnly && selectedCreates.has(key)))
         const seen = new Set<string>()
         const result: typeof rows = []
         const at = timestamp()
-        for (const row of rows) {
+        for (let row of rows) {
           const key = `${row.entity}:${row.entity_id}`
           if (seen.has(key)) continue
           seen.add(key)
+          const collection = allowed.get(row.collection_id)
+          if (!collection || row.in_flight || row.last_error === SERVER_REMOVED_MESSAGE) continue
+          const missingParent =
+            row.rejected_missing_parent ||
+            ['Collection does not exist', 'Item does not exist'].includes(row.last_error ?? '')
+          if (missingParent && row.retried_missing_parent) continue
+          if (!missingParent && row.next_attempt_at && row.next_attempt_at > at) continue
           if (
-            !allowed.has(row.collection_id) ||
-            row.in_flight ||
-            (row.next_attempt_at && row.next_attempt_at > at)
+            (row.entity === 'item' || row.entity === 'entry') &&
+            !parentReady(`collection:${collection.id}`, collection, !!missingParent)
           )
             continue
-          if (row.entity === 'item' && !syncedItems.has(row.entity_id)) continue
+          if (row.entity === 'item') {
+            if (!syncedItems.has(row.entity_id) || (await db.items.get(row.entity_id))?.removed_on_server)
+              continue
+          }
           if (row.entity === 'entry' || row.entity === 'photo') {
             const record = await (row.entity === 'entry' ? db.entries : db.photos).get(row.entity_id)
+            if (record?.removed_on_server) continue
             const itemId = record?.item_id ?? row.fields.item_id
-            if (typeof itemId === 'string' && !syncedItems.has(itemId)) continue
+            if (
+              typeof itemId === 'string' &&
+              (!syncedItems.has(itemId) ||
+                !parentReady(`item:${itemId}`, await db.items.get(itemId), !!missingParent))
+            )
+              continue
             if (typeof itemId !== 'string' && row.op !== 'purge') continue
           }
+          if (missingParent) {
+            await db.outbox.delete(row.id)
+            row = { ...newMutationId(row), retried_missing_parent: true }
+            await db.outbox.add(row)
+          }
           result.push(row)
+          if (isCreate(row)) selectedCreates.add(key)
           if (result.length === 200) break
         }
         if (signal.aborted) return []
@@ -310,53 +428,73 @@ export function createSyncEngine(options: SyncEngineOptions = {}): SyncEngineWit
       },
     )
     if (!selected.length) return true
-    try {
-      signal.throwIfAborted()
-      const response = await fetcher('/api/sync/batch', {
-        signal,
-        method: 'POST',
-        credentials: 'same-origin',
-        headers: requestHeaders('POST', { 'Content-Type': 'application/json' }),
-        body: JSON.stringify({
-          schema: 2,
-          device_id: deviceId?.value ?? 'local-device',
-          mutations: selected.map((item) => ({
-            id: item.id,
-            entity: item.entity,
-            entity_id: item.entity_id,
-            collection_id: item.collection_id,
-            op: item.op,
-            base_revision: item.base_revision,
-            fields: item.fields,
-          })),
-        }),
-      })
-      if (await haltOnStatus(response.status)) {
-        await db.transaction('rw', db.outbox, async () => {
-          for (const item of selected) await db.outbox.update(item.id, { in_flight: false })
-        })
-        return false
-      }
-      if (response.status === 409) {
-        let code = ''
-        try {
-          const body = (await response.clone().json()) as { code?: string; detail?: string }
-          code = body.code ?? body.detail ?? ''
-        } catch {
-          /* ignored */
-        }
-        if (code === 'client_outdated') {
-          await db.transaction('rw', db.outbox, async () => {
-            for (const item of selected)
-              await db.outbox.update(item.id, {
-                in_flight: false,
-                last_error: 'Update the app to keep syncing.',
-              })
+    async function releaseClaims(message?: string) {
+      await db.transaction('rw', [db.outbox, db.settings], async () => {
+        await assertLease()
+        for (const item of selected) {
+          await db.outbox.update(item.id, {
+            in_flight: false,
+            ...(message ? { last_error: message } : {}),
           })
-          lastError = 'Update the app to keep syncing.'
-          phase = 'error'
-          return true
         }
+      })
+    }
+    try {
+      const body = JSON.stringify({
+        schema: 2,
+        device_id: deviceId?.value ?? 'local-device',
+        mutations: selected.map((item) => ({
+          id: item.id,
+          entity: item.entity,
+          entity_id: item.entity_id,
+          collection_id: item.collection_id,
+          op: item.op,
+          base_revision: item.base_revision,
+          fields: item.fields,
+        })),
+      })
+      const request = await db.transaction(
+        'r',
+        [db.collections, db.entries, db.photos, db.outbox, db.settings],
+        async () => {
+          await assertLease()
+          const collections = await db.collections.toArray()
+          const allowed = new Set(
+            collections.filter((c) => c.storage_mode === 'synced' && !c.removed_on_server).map((c) => c.id),
+          )
+          const current = await db.outbox.bulkGet(selected.map((row) => row.id))
+          if (current.some((row) => !row?.in_flight || !allowed.has(row.collection_id))) return
+          const syncedItems = await syncedItemIds(db, collections)
+          for (const row of selected) {
+            if (row.entity === 'collection') continue
+            const record =
+              row.entity === 'entry'
+                ? await db.entries.get(row.entity_id)
+                : row.entity === 'photo'
+                  ? await db.photos.get(row.entity_id)
+                  : undefined
+            const itemId = row.entity === 'item' ? row.entity_id : (record?.item_id ?? row.fields.item_id)
+            if (record?.removed_on_server || (typeof itemId === 'string' && !syncedItems.has(itemId))) return
+          }
+          signal.throwIfAborted()
+          return startRequest('/api/sync/batch', {
+            signal,
+            method: 'POST',
+            credentials: 'same-origin',
+            headers: requestHeaders('POST', { 'Content-Type': 'application/json' }),
+            body,
+          })
+        },
+      )
+      if (!request) {
+        await releaseClaims()
+        return true
+      }
+      const response = await request.response
+      const outdated = await outdatedResponse(response)
+      if (outdated || (await haltOnStatus(response.status))) {
+        await releaseClaims(outdated ? updateRequired : undefined)
+        return false
       }
       if (!response.ok)
         throw Object.assign(new Error(`Sync request failed (${response.status}).`), {
@@ -371,7 +509,8 @@ export function createSyncEngine(options: SyncEngineOptions = {}): SyncEngineWit
       }
       return true
     } catch (error) {
-      await db.transaction('rw', db.outbox, async () => {
+      await db.transaction('rw', [db.outbox, db.settings], async () => {
+        await assertLease()
         for (const item of selected) {
           const current = await db.outbox.get(item.id)
           if (!current) continue
@@ -409,8 +548,9 @@ export function createSyncEngine(options: SyncEngineOptions = {}): SyncEngineWit
         : result
     await db.transaction(
       'rw',
-      [db.collections, db.items, db.entries, db.photos, db.outbox, db.conflicts],
+      [db.collections, db.items, db.entries, db.photos, db.outbox, db.conflicts, db.settings],
       async () => {
+        await assertLease()
         const current = await db.outbox.get(item.id)
         if (!current) return
         const table =
@@ -421,27 +561,92 @@ export function createSyncEngine(options: SyncEngineOptions = {}): SyncEngineWit
               : item.entity === 'entry'
                 ? db.entries
                 : db.photos
-        const record = (await table.get(item.entity_id)) as Collection | Item | Entry | Photo | undefined
+        const record = await table.get(item.entity_id)
+        const collection = await db.collections.get(item.collection_id)
+        const localOnly = collection?.storage_mode === 'local_only'
+        const remaining = (
+          await db.outbox.where('[entity+entity_id]').equals([item.entity, item.entity_id]).toArray()
+        ).filter((row) => row.id !== item.id)
+        const recoverLegacyDeletion = async (queuePart = current.queue_part) => {
+          const server = outcome.record
+          if (
+            localOnly ||
+            !record ||
+            !('deleted_at' in record) ||
+            !server ||
+            outcome.server_revision === null ||
+            !carriesLegacyDeletion(item, server) ||
+            remaining.some((row) => row.op !== 'upsert' || carriesLegacyDeletion(row, server))
+          )
+            return false
+          const lifecycle = deletionOperation(item.fields)
+          if (
+            !lifecycle ||
+            lifecycle !== deletionOperation(record) ||
+            lifecycle === deletionOperation(server)
+          )
+            return false
+          const revisions = server.field_revisions
+          await db.outbox.add({
+            ...newMutationId(current),
+            queue_part: queuePart,
+            op: lifecycle,
+            base_revision:
+              (revisions?.deleted_at ?? 0) <= (item.base_revision ?? 0)
+                ? outcome.server_revision
+                : item.base_revision,
+            fields: { deleted_at: record.deleted_at },
+          })
+          return true
+        }
         if (outcome.status === 'applied' || outcome.status === 'duplicate') {
           await db.outbox.delete(item.id)
+          // The pull applies an acknowledged purge across its local deletion scope.
+          // Keep the last acknowledged record revision for that safety check.
+          if (item.op === 'purge') return
           if (record) {
-            const remaining = await db.outbox
-              .where('[entity+entity_id]')
-              .equals([item.entity, item.entity_id])
-              .toArray()
             if (outcome.record && outcome.server_revision !== null) {
-              const revisions = (outcome.record.field_revisions ?? {}) as Record<string, number>
+              const revision = outcome.server_revision
+              const revisions = outcome.record.field_revisions ?? {}
               for (const row of remaining) {
-                if (!isUnsent(row) || (row.base_revision ?? 0) >= outcome.server_revision) continue
-                const safeToRebase =
-                  (row.base_revision === null && item.op === 'upsert' && item.base_revision === null) ||
-                  Object.keys(row.fields).every(
-                    (field) => field in item.fields || (revisions[field] ?? 0) <= (row.base_revision ?? 0),
-                  )
-                if (safeToRebase) await db.outbox.put({ ...row, base_revision: outcome.server_revision })
+                if (!isUnsent(row) || (row.base_revision ?? 0) >= revision) continue
+                if (row.base_revision === null && isCreate(item)) {
+                  await db.outbox.put({ ...row, base_revision: revision })
+                  continue
+                }
+                const fields = Object.entries(row.fields)
+                const safe = fields.filter(
+                  ([field]) =>
+                    (field in item.fields &&
+                      (field !== 'deleted_at' || item.op !== 'upsert' || isCreate(item))) ||
+                    (revisions[field] ?? 0) <= (row.base_revision ?? 0),
+                )
+                if (safe.length === fields.length) {
+                  await db.outbox.put({ ...row, base_revision: revision })
+                } else if (safe.length && row.op !== 'purge') {
+                  const rebased = Object.fromEntries(safe)
+                  const unrebased = Object.fromEntries(fields.filter(([field]) => !(field in rebased)))
+                  const op = (patch: typeof row.fields) =>
+                    row.op !== 'upsert' && 'deleted_at' in patch ? row.op : 'upsert'
+                  const part = row.queue_part ?? ''
+                  await db.outbox.put({
+                    ...row,
+                    queue_part: part + '0',
+                    op: op(rebased),
+                    base_revision: revision,
+                    fields: rebased,
+                  })
+                  await db.outbox.add({
+                    ...newMutationId(row),
+                    queue_part: part + '1',
+                    op: op(unrebased),
+                    fields: unrebased,
+                  })
+                }
               }
             }
-            const stillPending = remaining.length > 0
+            const recovered = await recoverLegacyDeletion()
+            const stillPending = remaining.length > 0 || recovered
             await table.put({
               ...record,
               server_revision:
@@ -449,16 +654,22 @@ export function createSyncEngine(options: SyncEngineOptions = {}): SyncEngineWit
                   ? null
                   : Math.max(record.server_revision ?? 0, outcome.server_revision),
               sync_state:
-                (await db.conflicts
-                  .where('[entity+entity_id]')
-                  .equals([item.entity, item.entity_id])
-                  .count()) > 0
-                  ? 'conflict'
-                  : stillPending
-                    ? record.sync_state
-                    : 'synced',
+                localOnly || record.removed_on_server
+                  ? record.sync_state
+                  : (await db.conflicts
+                        .where('[entity+entity_id]')
+                        .equals([item.entity, item.entity_id])
+                        .count()) > 0
+                    ? 'conflict'
+                    : stillPending
+                      ? record.sync_state
+                      : 'synced',
             } as never)
           }
+          return
+        }
+        if (localOnly) {
+          await db.outbox.update(item.id, { in_flight: false })
           return
         }
         if (outcome.status === 'conflict' && outcome.code === 'field_conflict' && record) {
@@ -483,9 +694,13 @@ export function createSyncEngine(options: SyncEngineOptions = {}): SyncEngineWit
             Object.entries(item.fields).filter(([field]) => !fields.includes(field)),
           )
           if (item.op === 'upsert') delete rest.deleted_at
-          if (Object.keys(rest).length && item.op !== 'purge') {
+          const hasRest = Object.keys(rest).length > 0 && item.op !== 'purge'
+          const part = current.queue_part ?? ''
+          const recovered = await recoverLegacyDeletion(hasRest ? part + '1' : current.queue_part)
+          if (hasRest) {
             await db.outbox.add({
               ...newMutationId(current),
+              queue_part: recovered ? part + '0' : current.queue_part,
               op: deletionOperation(rest) ?? 'upsert',
               base_revision: outcome.server_revision,
               fields: rest,
@@ -495,7 +710,6 @@ export function createSyncEngine(options: SyncEngineOptions = {}): SyncEngineWit
           return
         }
         if (outcome.status === 'conflict' && outcome.code === 'sequence_taken' && item.entity === 'entry') {
-          const collection = await db.collections.get(item.collection_id)
           const serverNext = Number(outcome.record?.next_sequence_number ?? 1)
           if (collection && record && !record.server_revision) {
             const next = Math.max(collection.next_sequence_number, serverNext)
@@ -525,11 +739,12 @@ export function createSyncEngine(options: SyncEngineOptions = {}): SyncEngineWit
             }
             await db.outbox.delete(item.id)
             await db.outbox.put(replacement)
+            return
           }
-          return
         }
         if (
           outcome.code === 'missing_parent' &&
+          outcome.message === 'Record does not exist' &&
           current.base_revision === null &&
           (current.op === 'delete' || current.op === 'restore') &&
           (current.entity === 'entry' || current.entity === 'photo') &&
@@ -543,6 +758,8 @@ export function createSyncEngine(options: SyncEngineOptions = {}): SyncEngineWit
         await db.outbox.put({
           ...current,
           in_flight: false,
+          rejected_missing_parent:
+            outcome.code === 'missing_parent' && outcome.message !== 'Record does not exist',
           attempts: current.attempts + 1,
           next_attempt_at: new Date(
             now().getTime() + Math.min(300_000, 5_000 * 2 ** Math.min(current.attempts, 6)),
@@ -554,39 +771,71 @@ export function createSyncEngine(options: SyncEngineOptions = {}): SyncEngineWit
     )
   }
 
-  async function canUpload(itemId: Id) {
-    const entries = await db.entries.where('item_id').equals(itemId).toArray()
+  async function canUpload(photoId: Id, itemId: Id, uploading = false) {
+    const [photo, item, entries] = await Promise.all([
+      db.photos.get(photoId),
+      db.items.get(itemId),
+      db.entries.where('item_id').equals(itemId).toArray(),
+    ])
+    if (!photo || photo.removed_on_server || !item || item.removed_on_server || item.server_revision == null)
+      return false
+    if (uploading && photo.upload_state !== 'uploading') return false
     const collections = await db.collections.bulkGet(entries.map((entry) => entry.collection_id))
     return (
-      collections.some((collection) => collection?.storage_mode === 'synced') &&
-      !collections.some((collection) => collection?.storage_mode === 'local_only')
+      collections.some(
+        (collection, index) =>
+          collection?.storage_mode === 'synced' &&
+          !collection.removed_on_server &&
+          !entries[index]?.removed_on_server,
+      ) && !collections.some((collection) => collection?.storage_mode === 'local_only')
     )
   }
 
   async function upload(photoId: Id, signal: AbortSignal) {
-    const photo = await db.transaction('rw', [db.photos, db.entries, db.collections], async () => {
-      const current = await db.photos.get(photoId)
-      if (
-        signal.aborted ||
-        !current ||
-        current.server_revision === null ||
-        !['pending', 'error'].includes(current.upload_state) ||
-        (current.upload_next_attempt_at && current.upload_next_attempt_at > timestamp()) ||
-        !(await canUpload(current.item_id))
-      )
-        return
-      await db.photos.update(photoId, { upload_state: 'uploading' })
-      return current
-    })
+    const photo = await db.transaction(
+      'rw',
+      [db.photos, db.items, db.entries, db.collections, db.settings],
+      async () => {
+        await assertLease()
+        const current = await db.photos.get(photoId)
+        if (
+          signal.aborted ||
+          !current ||
+          current.server_revision === null ||
+          !['pending', 'error'].includes(current.upload_state) ||
+          (current.upload_next_attempt_at && current.upload_next_attempt_at > timestamp()) ||
+          !(await canUpload(photoId, current.item_id))
+        )
+          return
+        await db.photos.update(photoId, { upload_state: 'uploading' })
+        return current
+      },
+    )
     if (!photo) return true
 
     const url = `/api/photos/${encodeURIComponent(photoId)}`
     const updateClaim = (patch: Partial<PhotoWithUploadRetry>) =>
-      db.photos
-        .where('id')
-        .equals(photoId)
-        .filter((photo) => photo.upload_state === 'uploading')
-        .modify(patch)
+      db.transaction('rw', [db.photos, db.settings], async () => {
+        await assertLease()
+        await db.photos
+          .where('id')
+          .equals(photoId)
+          .filter((photo) => photo.upload_state === 'uploading')
+          .modify(patch)
+      })
+    const sendPhoto = async (kind: 'original' | 'thumbnail', init: RequestInit) => {
+      const request = await db.transaction(
+        'r',
+        [db.photos, db.items, db.entries, db.collections, db.settings],
+        async () => {
+          await assertLease()
+          if (!(await canUpload(photoId, photo.item_id, kind === 'original'))) return
+          signal.throwIfAborted()
+          return startRequest(`${url}/${kind}`, { ...init, signal, credentials: 'same-origin' })
+        },
+      )
+      return request?.response
+    }
     const markUploaded = (serverKey?: string) =>
       updateClaim({
         upload_state: 'uploaded',
@@ -605,13 +854,12 @@ export function createSyncEngine(options: SyncEngineOptions = {}): SyncEngineWit
       lastError ??= message
     }
     try {
-      signal.throwIfAborted()
-      const head = await fetcher(`${url}/original`, {
+      const head = await sendPhoto('original', {
         method: 'HEAD',
         cache: 'no-store',
-        credentials: 'same-origin',
-        signal,
       })
+      if (!head) return true
+      if (await outdatedResponse(head)) return false
       if (await haltOnStatus(head.status)) {
         if (head.status === 507) await markFailed(storageLow, uploadRetryAt, photo.upload_attempts ?? 0)
         return false
@@ -622,19 +870,17 @@ export function createSyncEngine(options: SyncEngineOptions = {}): SyncEngineWit
       }
       if (!head.ok && head.status !== 404) throw new Error(`Photo check failed (${head.status}).`)
       const blob = await readPhotoBlob(photo.id, options.repoDbName)
-      if (!(await canUpload(photo.item_id))) return true
       if (!blob) throw new Error('The original photo is missing from this device.')
-      signal.throwIfAborted()
-      const put = await fetcher(`${url}/original`, {
+      const put = await sendPhoto('original', {
         method: 'PUT',
-        credentials: 'same-origin',
-        signal,
         headers: requestHeaders('PUT', {
           'Content-Type': photo.mime_type,
           'X-Content-SHA256': photo.sha256,
         }),
         body: blob.original,
       })
+      if (!put) return true
+      if (await outdatedResponse(put)) return false
       if (await haltOnStatus(put.status)) {
         if (put.status === 507) await markFailed(storageLow, uploadRetryAt, photo.upload_attempts ?? 0)
         return false
@@ -644,17 +890,14 @@ export function createSyncEngine(options: SyncEngineOptions = {}): SyncEngineWit
       if (result.sha256 !== photo.sha256 || result.byte_size !== photo.byte_size)
         throw new Error('The uploaded photo did not match its local checksum.')
       await markUploaded(result.server_storage_key)
-      if (!blob.thumbnail || signal.aborted || !(await canUpload(photo.item_id))) return true
+      if (!blob.thumbnail || signal.aborted) return true
       try {
-        signal.throwIfAborted()
-        const thumb = await fetcher(`${url}/thumbnail`, {
+        const thumb = await sendPhoto('thumbnail', {
           method: 'PUT',
-          credentials: 'same-origin',
-          signal,
           headers: requestHeaders('PUT', { 'Content-Type': 'image/jpeg' }),
           body: blob.thumbnail,
         })
-        if (await haltOnStatus(thumb.status)) return false
+        if (thumb && ((await outdatedResponse(thumb)) || (await haltOnStatus(thumb.status)))) return false
       } catch {
         // Thumbnails are optional and can be regenerated.
       }
@@ -675,21 +918,13 @@ export function createSyncEngine(options: SyncEngineOptions = {}): SyncEngineWit
     let cursor = await db.settings.get(SETTING_KEYS.syncCursor).then((row) => Number(row?.value ?? 0))
     let more = true
     while (more && !signal.aborted) {
+      await assertLease()
+      signal.throwIfAborted()
       const response = await fetcher(`/api/sync/changes?cursor=${cursor}&limit=500&schema=2`, {
         credentials: 'same-origin',
         signal,
       })
-      if (await haltOnStatus(response.status)) return false
-      if (response.status === 409) {
-        let detail = ''
-        try {
-          const body = (await response.clone().json()) as { code?: string; detail?: string }
-          detail = body.code ?? body.detail ?? ''
-        } catch {
-          // Keep the status fallback for malformed responses.
-        }
-        if (detail === 'client_outdated') throw new Error('Update the app to keep syncing.')
-      }
+      if ((await outdatedResponse(response)) || (await haltOnStatus(response.status))) return false
       if (!response.ok) throw new Error(`Changes request failed (${response.status}).`)
       const page = (await response.json()) as {
         changes: Array<{
@@ -703,13 +938,107 @@ export function createSyncEngine(options: SyncEngineOptions = {}): SyncEngineWit
         cursor: number
         has_more: boolean
       }
-      signal.throwIfAborted()
-      for (const change of page.changes) await mergeChange(change)
+      for (const change of page.changes) {
+        signal.throwIfAborted()
+        await mergeChange(change)
+      }
       cursor = page.cursor
-      await db.settings.put({ key: SETTING_KEYS.syncCursor, value: cursor })
+      await db.transaction('rw', db.settings, async () => {
+        await assertLease()
+        signal.throwIfAborted()
+        await db.settings.put({ key: SETTING_KEYS.syncCursor, value: cursor })
+      })
       more = page.has_more
     }
     return !signal.aborted
+  }
+
+  /** Run inside the same transaction as the pull merge. Inspect the entire deletion scope
+   * before deleting anything, including originals that an orphan-item cascade would remove. */
+  async function mergeRemoval(
+    change: { entity: 'collection' | 'item' | 'entry' | 'photo'; id: Id },
+    old: ((Collection | Item | Entry | Photo) & RemoteRemoval) | undefined,
+  ) {
+    if (change.entity === 'collection' && (old as Collection | undefined)?.storage_mode === 'local_only')
+      return
+
+    const oldEntry = change.entity === 'entry' ? (old as (Entry & RemoteRemoval) | undefined) : undefined
+    if (oldEntry && (await db.collections.get(oldEntry.collection_id))?.storage_mode === 'local_only') return
+
+    const oldPhoto = change.entity === 'photo' ? (old as PhotoWithUploadRetry | undefined) : undefined
+    const linkedItem = change.entity === 'item' ? change.id : oldPhoto?.item_id
+    const linkedEntries = linkedItem ? await db.entries.where('item_id').equals(linkedItem).toArray() : []
+    if (linkedEntries.length) {
+      const owners = await db.collections.bulkGet(linkedEntries.map((entry) => entry.collection_id))
+      if (owners.some((owner) => owner?.storage_mode === 'local_only')) return
+    }
+    const entries =
+      change.entity === 'collection'
+        ? await db.entries.where('collection_id').equals(change.id).toArray()
+        : change.entity === 'item'
+          ? linkedEntries
+          : oldEntry
+            ? [oldEntry]
+            : []
+    const entryIds = new Set(entries.map((entry) => entry.id))
+    const itemIds: Id[] = []
+    if (change.entity === 'item') itemIds.push(change.id)
+    else {
+      const candidates = [...new Set(entries.map((entry) => entry.item_id))]
+      const linked = await db.entries.where('item_id').anyOf(candidates).toArray()
+      const stillUsed = new Set(
+        linked.filter((entry) => !entryIds.has(entry.id)).map((entry) => entry.item_id),
+      )
+      itemIds.push(...candidates.filter((id) => !stillUsed.has(id)))
+    }
+    const items = (await db.items.bulkGet(itemIds)).filter((item) => item !== undefined)
+    const photos = oldPhoto ? [oldPhoto] : await db.photos.where('item_id').anyOf(itemIds).toArray()
+    const photoIds = photos.map((photo) => photo.id)
+    const keys = [
+      [change.entity, change.id],
+      ...entries.map((entry) => ['entry', entry.id]),
+      ...itemIds.map((id) => ['item', id]),
+      ...photoIds.map((id) => ['photo', id]),
+    ]
+    const [directRows, attributedRows, conflictCount, blobs] = await Promise.all([
+      db.outbox.where('[entity+entity_id]').anyOf(keys).toArray(),
+      change.entity === 'collection' ? db.outbox.where('collection_id').equals(change.id).toArray() : [],
+      db.conflicts.where('[entity+entity_id]').anyOf(keys).count(),
+      db.photoBlobs.where('photo_id').anyOf(photoIds).primaryKeys(),
+    ])
+    const rows = [...new Map([...directRows, ...attributedRows].map((row) => [row.id, row])).values()]
+    const withBlob = new Set(blobs)
+    const records = [old, ...entries, ...items, ...photos].filter((record) => record !== undefined)
+    if (
+      records.some((record) => record.server_revision == null || record.removed_on_server) ||
+      rows.some((row) => row.op !== 'purge') ||
+      conflictCount ||
+      photos.some(
+        (photo) =>
+          photo.upload_state !== 'uploaded' &&
+          (withBlob.has(photo.id) || ['pending', 'uploading', 'error'].includes(photo.upload_state)),
+      )
+    ) {
+      const retained = { removed_on_server: true, sync_state: 'error' } as const
+      if (change.entity === 'collection' && old) await db.collections.update(change.id, retained)
+      await db.entries.bulkUpdate(entries.map(({ id }) => ({ key: id, changes: retained })))
+      await db.items.bulkUpdate(items.map(({ id }) => ({ key: id, changes: retained })))
+      await db.photos.bulkUpdate(photos.map(({ id }) => ({ key: id, changes: retained })))
+      await db.outbox.bulkUpdate(
+        rows.map(({ id }) => ({
+          key: id,
+          changes: { in_flight: false, last_error: SERVER_REMOVED_MESSAGE },
+        })),
+      )
+      return
+    }
+
+    await db.entries.bulkDelete([...entryIds])
+    await db.items.bulkDelete(itemIds)
+    await db.photos.bulkDelete(photoIds)
+    await db.photoBlobs.bulkDelete(photoIds)
+    await db.outbox.bulkDelete(rows.map((row) => row.id))
+    if (change.entity === 'collection') await db.collections.delete(change.id)
   }
 
   async function mergeChange(change: {
@@ -721,15 +1050,9 @@ export function createSyncEngine(options: SyncEngineOptions = {}): SyncEngineWit
   }) {
     await db.transaction(
       'rw',
-      [db.collections, db.items, db.entries, db.photos, db.photoBlobs, db.outbox, db.conflicts],
+      [db.collections, db.items, db.entries, db.photos, db.photoBlobs, db.outbox, db.conflicts, db.settings],
       async () => {
-        const deleteUnusedItem = async (itemId: Id) => {
-          if (await db.entries.where('item_id').equals(itemId).count()) return
-          const photoIds = await db.photos.where('item_id').equals(itemId).primaryKeys()
-          await db.photoBlobs.bulkDelete(photoIds)
-          await db.photos.bulkDelete(photoIds)
-          await db.items.delete(itemId)
-        }
+        await assertLease()
         const table =
           change.entity === 'collection'
             ? db.collections
@@ -738,51 +1061,19 @@ export function createSyncEngine(options: SyncEngineOptions = {}): SyncEngineWit
               : change.entity === 'entry'
                 ? db.entries
                 : db.photos
-        const old = (await table.get(change.id)) as Collection | Item | Entry | Photo | undefined
+        const old = await table.get(change.id)
         if (change.purged || change.removed) {
-          if (
-            change.entity === 'collection' &&
-            (old as Collection | undefined)?.storage_mode === 'local_only'
-          )
-            return
-          if (change.entity === 'entry' && old) {
-            const owner = await db.collections.get((old as Entry).collection_id)
-            if (owner?.storage_mode === 'local_only') return
-          }
-          if ((change.entity === 'item' || change.entity === 'photo') && old) {
-            const itemId = change.entity === 'item' ? change.id : (old as Photo).item_id
-            const linked = await db.entries.where('item_id').equals(itemId).toArray()
-            const owners = await Promise.all(linked.map((entry) => db.collections.get(entry.collection_id)))
-            if (owners.some((owner) => owner?.storage_mode === 'local_only')) return
-          }
-          if (change.entity === 'collection') {
-            const entries = await db.entries.where('collection_id').equals(change.id).toArray()
-            await db.entries.bulkDelete(entries.map((entry) => entry.id))
-            for (const entry of entries) await deleteUnusedItem(entry.item_id)
-            await db.outbox.where('collection_id').equals(change.id).delete()
-          } else if (change.entity === 'entry') {
-            const entry = old as Entry | undefined
-            if (entry) await db.entries.delete(entry.id)
-            if (entry) await deleteUnusedItem(entry.item_id)
-          } else {
-            if (change.entity === 'item') {
-              const entryIds = await db.entries.where('item_id').equals(change.id).primaryKeys()
-              await db.entries.bulkDelete(entryIds)
-              const photoIds = await db.photos.where('item_id').equals(change.id).primaryKeys()
-              await db.photoBlobs.bulkDelete(photoIds)
-              await db.photos.bulkDelete(photoIds)
-              await db.items.delete(change.id)
-            } else await db.photoBlobs.delete(change.id)
-          }
-          if (change.entity === 'collection') {
-            const entries = await db.entries.where('collection_id').equals(change.id).toArray()
-            await db.entries.bulkDelete(entries.map((entry) => entry.id))
-            for (const entry of entries) await deleteUnusedItem(entry.item_id)
-          }
-          await table.delete(change.id)
+          await mergeRemoval(change, old)
           return
         }
+        if (old?.removed_on_server) return
         if (!change.record) return
+        if (
+          old?.server_revision != null &&
+          change.record.revision != null &&
+          change.record.revision < old.server_revision
+        )
+          return
         if (change.entity === 'collection' && (old as Collection | undefined)?.storage_mode === 'local_only')
           return
         const incoming: ServerRecord = {
@@ -802,10 +1093,13 @@ export function createSyncEngine(options: SyncEngineOptions = {}): SyncEngineWit
             localEntries.map((entry) => db.collections.get(entry.collection_id)),
           )
           if (localCollections.some((collection) => collection?.storage_mode === 'local_only')) return
+          if (change.entity === 'photo' && (await db.items.get(String(incoming.item_id)))?.removed_on_server)
+            return
         }
         if (change.entity === 'entry') {
           const collection = await db.collections.get(collectionId)
-          if (!collection || collection.storage_mode !== 'synced') return
+          if (!collection || collection.storage_mode !== 'synced' || collection.removed_on_server) return
+          if ((await db.items.get(String(incoming.item_id)))?.removed_on_server) return
         }
         const pending = await db.outbox
           .where('[entity+entity_id]')
@@ -839,7 +1133,15 @@ export function createSyncEngine(options: SyncEngineOptions = {}): SyncEngineWit
           return
         }
         const pendingFields = new Set([
-          ...pending.flatMap((item) => Object.keys(item.fields)),
+          ...pending.flatMap((item) =>
+            Object.keys(item.fields).filter(
+              (field) =>
+                field !== 'deleted_at' ||
+                item.op !== 'upsert' ||
+                isCreate(item) ||
+                carriesLegacyDeletion(item, incoming),
+            ),
+          ),
           ...conflictRows.flatMap((row) => row.fields),
         ])
         const merged = {
@@ -864,10 +1166,6 @@ export function createSyncEngine(options: SyncEngineOptions = {}): SyncEngineWit
   }
 
   async function sync(signal: AbortSignal) {
-    if (needsRepair) {
-      await repairSyncQueue(db)
-      needsRepair = false
-    }
     if (authBlocked) {
       phase = 'signed_out'
       return
@@ -877,13 +1175,14 @@ export function createSyncEngine(options: SyncEngineOptions = {}): SyncEngineWit
       return
     }
 
+    await assertLease()
     signal.throwIfAborted()
     phase = 'syncing'
     uploadRetryAt = await storedUploadRetryAt()
     signal.throwIfAborted()
     lastError = uploadRetryAt > now().getTime() ? storageLow : null
     const response = await fetcher('/api/auth/session', { credentials: 'same-origin', method: 'GET', signal })
-    if (await haltOnStatus(response.status)) return
+    if ((await outdatedResponse(response)) || (await haltOnStatus(response.status))) return
     if (!response.ok) throw new Error(`Session request failed (${response.status}).`)
     authenticated = ((await response.json()) as { authenticated: boolean }).authenticated
     if (!authenticated) {
@@ -899,6 +1198,7 @@ export function createSyncEngine(options: SyncEngineOptions = {}): SyncEngineWit
         .filter(
           (photo) =>
             syncedItems.has(photo.item_id) &&
+            !photo.removed_on_server &&
             photo.server_revision !== null &&
             ['pending', 'error'].includes(photo.upload_state) &&
             (!photo.upload_next_attempt_at || photo.upload_next_attempt_at <= timestamp()),
@@ -914,7 +1214,59 @@ export function createSyncEngine(options: SyncEngineOptions = {}): SyncEngineWit
     lastSuccess = timestamp()
   }
 
+  async function withLease(abort: AbortController) {
+    const owner = createId()
+    const acquisition = await db.transaction('rw', db.settings, async () => {
+      const existing = await readLease()
+      const at = now().getTime()
+      if (abort.signal.aborted || (existing && existing.expiresAt > at)) return
+      await db.settings.put({ key: leaseKey, value: { owner, expiresAt: at + leaseDuration } })
+      return { expired: !!existing }
+    })
+    if (!acquisition) return
+    leaseOwner = owner
+    const heartbeat = setInterval(() => {
+      if (abort.signal.aborted) return
+      void db
+        .transaction('rw', db.settings, async () => {
+          await assertLease(owner)
+          await db.settings.put({
+            key: leaseKey,
+            value: { owner, expiresAt: now().getTime() + leaseDuration },
+          })
+        })
+        .catch(() => abort.abort())
+    }, leaseDuration / 3)
+    try {
+      if (needsRepair || acquisition.expired) {
+        await db.transaction(
+          'rw',
+          [db.settings, db.collections, db.entries, db.photos, db.outbox],
+          async () => {
+            await assertLease()
+            await repairSyncQueue(db)
+          },
+        )
+        needsRepair = false
+      }
+      await sync(abort.signal)
+    } finally {
+      clearInterval(heartbeat)
+      try {
+        await db.transaction('rw', db.settings, async () => {
+          const current = await readLease()
+          if (current?.owner === owner && current.expiresAt > now().getTime()) {
+            await db.settings.delete(leaseKey)
+          }
+        })
+      } finally {
+        leaseOwner = undefined
+      }
+    }
+  }
+
   async function runCycle() {
+    if (clientOutdated) return
     if (running) {
       rerun = true
       return running
@@ -923,12 +1275,11 @@ export function createSyncEngine(options: SyncEngineOptions = {}): SyncEngineWit
     controller.current = abort
     running = (async () => {
       try {
-        // A second browser tab must not recover an active upload or send it again.
         if (typeof navigator !== 'undefined' && navigator.locks) {
           await navigator.locks.request(`capture-sync:${db.name}`, { signal: abort.signal }, () =>
-            sync(abort.signal),
+            withLease(abort),
           )
-        } else await sync(abort.signal)
+        } else await withLease(abort)
       } catch (error) {
         if (!abort.signal.aborted) {
           lastError = userError(error)
@@ -964,10 +1315,12 @@ export function createSyncEngine(options: SyncEngineOptions = {}): SyncEngineWit
     })
   }
   const retryNow = async () => {
+    clientOutdated = false
     await clearBackoff(true)
     await runCycle()
   }
   const onOnline = () => {
+    if (clientOutdated) return
     void clearBackoff(false).then(runCycle)
   }
   const onVisibility = () => {
@@ -998,7 +1351,7 @@ export function createSyncEngine(options: SyncEngineOptions = {}): SyncEngineWit
       if (navigator.onLine && document.visibilityState === 'visible') void runCycle()
     }, options.intervalMs ?? 30_000)
     const outboxSubscription = liveQuery(() => db.outbox.toArray()).subscribe((rows) => {
-      if (!rows.length || !started) return
+      if (!rows.length || !started || clientOutdated) return
       clearTimeout(debounce)
       debounce = setTimeout(() => {
         void runCycle()
