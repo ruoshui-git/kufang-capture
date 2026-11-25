@@ -53,6 +53,10 @@
   --size-rail: 260px;
   --size-panel: min(520px, 40vw);
   --size-content: 1200px;
+  --size-sync-slot: 56px;
+  --size-sync-chip: 192px;
+  --size-sync-action: 112px;
+  --size-status-copy: 72px;
   --size-bottom-bar: calc(64px + env(safe-area-inset-bottom));
   --radius-sm: 4px;
   --radius-md: 6px;

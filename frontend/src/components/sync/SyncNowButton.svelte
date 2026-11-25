@@ -13,4 +13,14 @@
   }
 </script>
 
-<Button variant="quiet" disabled={busy} onclick={() => void sync()}>{busy ? 'Syncing…' : label}</Button>
+<span class="sync-now-button"
+  ><Button variant="quiet" disabled={busy} onclick={() => void sync()}>{busy ? 'Syncing…' : label}</Button
+  ></span
+>
+
+<style>
+  .sync-now-button :global(.button) {
+    min-width: var(--size-sync-action);
+    white-space: nowrap;
+  }
+</style>

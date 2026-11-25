@@ -20,6 +20,7 @@
   import ExportSheet from '../../components/sync/ExportSheet.svelte'
   import MergeCollectionsSheet from '../../components/collection/MergeCollectionsSheet.svelte'
   import { collectionMatches } from './collectionSearch'
+  import { accountAuthenticated } from '$lib/sync/account'
 
   let summaries = $state<CollectionSummary[]>([])
   let includeArchived = $state(false)
@@ -209,12 +210,22 @@
           storage_mode: storageMode,
         })
         await repo.setSetting(SETTING_KEYS.lastStorageMode, storageMode)
-        if (storageMode === 'synced')
-          showToast({
-            message: 'Created locally. Sign in to start syncing.',
-            actionLabel: 'Sign in',
-            action: () => navigate(`/login?return=${encodeURIComponent(`/c/${created.id}`)}`),
-          })
+        if (storageMode === 'synced') {
+          if ($accountAuthenticated === false) {
+            showToast({
+              message: 'Created locally. Sign in to start syncing.',
+              actionLabel: 'Sign in',
+              action: () => navigate(`/login?return=${encodeURIComponent(`/c/${created.id}`)}`),
+            })
+          } else {
+            showToast({
+              message:
+                $accountAuthenticated === true
+                  ? 'Created. Syncs automatically.'
+                  : 'Created. Will sync when online.',
+            })
+          }
+        }
         void repo.requestPersistentStorage()
         sheetOpen = false
         navigate(`/c/${created.id}`)

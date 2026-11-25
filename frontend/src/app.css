@@ -599,13 +599,17 @@ h2 {
   }
 }
 
-/* Global sync bar: shown only for actionable states (pending, error, sign-in needed). */
+/* Reserved sync area stays in the same place and size for every status transition. */
 .global-sync {
+  box-sizing: border-box;
   display: flex;
   align-items: center;
   gap: var(--space-3);
   margin: var(--space-4) var(--space-5) 0;
-  padding: var(--space-3) var(--space-4);
+  padding: var(--space-2) var(--space-4);
+  height: var(--size-sync-slot);
+  min-width: 0;
+  overflow: hidden;
   border: 1px solid var(--color-line);
   border-radius: var(--radius-md);
   background: var(--color-card);
@@ -615,6 +619,29 @@ h2 {
 .global-sync > span:nth-child(2) {
   flex: 1;
   min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--text-sm);
+}
+.global-sync > a,
+.global-sync .button,
+.sync-action-placeholder {
+  flex: 0 0 var(--size-sync-action);
+  width: var(--size-sync-action);
+  min-width: var(--size-sync-action);
+  text-align: center;
+  white-space: nowrap;
+}
+.global-sync > a {
+  min-height: var(--size-touch);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+.global-sync .button {
+  padding: 0 var(--space-2);
+  font-size: var(--text-sm);
 }
 .global-sync-dot {
   width: 8px;
@@ -628,6 +655,13 @@ h2 {
 }
 .global-sync.danger .global-sync-dot {
   background: var(--color-danger);
+}
+.global-sync.empty .global-sync-dot {
+  visibility: hidden;
+}
+.global-sync.empty {
+  border-color: transparent;
+  background: transparent;
 }
 @media (min-width: 900px) {
   .global-sync {

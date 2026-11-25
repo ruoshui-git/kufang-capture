@@ -1,15 +1,23 @@
-import { cleanup, fireEvent, render, screen } from '@testing-library/svelte'
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/svelte'
 import { createRawSnippet } from 'svelte'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-const { fakeRepo, navigateSpy } = vi.hoisted(() => ({
+const { fakeRepo, navigateSpy, shared } = vi.hoisted(() => ({
   fakeRepo: { watchCollectionSummaries: vi.fn() },
   navigateSpy: vi.fn(),
+  shared: { statusListener: undefined as ((value: unknown) => void) | undefined },
 }))
 vi.mock('$lib/db', () => ({ repo: fakeRepo }))
 vi.mock('$lib/sync', () => ({
   authClient: { session: () => Promise.resolve({ authenticated: false }) },
-  syncEngine: { status: { subscribe: () => () => {} } },
+  syncEngine: {
+    status: {
+      subscribe: (listener: (value: unknown) => void) => {
+        shared.statusListener = listener
+        return () => {}
+      },
+    },
+  },
 }))
 vi.mock('./router.svelte', async (importOriginal) => {
   const actual = await importOriginal<typeof import('./router.svelte')>()
@@ -17,6 +25,7 @@ vi.mock('./router.svelte', async (importOriginal) => {
 })
 import Layout from './Layout.svelte'
 import { router } from './router.svelte'
+import { accountAuthenticated } from '$lib/sync/account'
 
 function summary(id: string, name: string, folder = '') {
   return {
@@ -56,6 +65,28 @@ function railRow(name: string) {
 }
 
 describe('Desktop rail search', () => {
+  it('keeps the polite sync slot mounted while its message changes', async () => {
+    const { container } = render(Layout, { children })
+    const slot = container.querySelector('.global-sync')
+    expect(slot).toHaveAttribute('aria-live', 'polite')
+    await waitFor(() => expect(shared.statusListener).toBeTypeOf('function'))
+    shared.statusListener?.({
+      phase: 'syncing',
+      online: true,
+      authenticated: true,
+      last_success_at: null,
+      last_error: null,
+      pending_mutations: 1,
+      pending_uploads: 0,
+      pending_upload_bytes: 0,
+      conflicts: 0,
+      per_collection: {},
+    })
+    accountAuthenticated.set(true)
+    expect(container.querySelector('.global-sync')).toBe(slot)
+    await waitFor(() => expect(slot).toHaveTextContent('Syncing'))
+  })
+
   it('filters rows and hides folder labels without matches', async () => {
     render(Layout, { children })
     expect(railRow('A04')).toBeInTheDocument()

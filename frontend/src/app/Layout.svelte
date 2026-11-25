@@ -8,24 +8,30 @@
   import type { CollectionSummary } from '$lib/types'
   import type { SyncStatus } from '$lib/sync/api'
   import SyncNowButton from '../components/sync/SyncNowButton.svelte'
+  import { accountAuthenticated, startAccountState } from '$lib/sync/account'
   import StarredPage from '../routes/starred/StarredPage.svelte'
   import { collectionMatches } from '../routes/collections/collectionSearch'
   let { children, header, bottomBar }: { children: Snippet; header?: Snippet; bottomBar?: Snippet } = $props()
   let collections = $state<CollectionSummary[]>([])
   let search = $state('')
-  let signedIn = $state(false)
   let syncStatus = $state<SyncStatus | null>(null)
+  let online = $state(typeof navigator === 'undefined' ? true : navigator.onLine)
   const pending = $derived((syncStatus?.pending_uploads ?? 0) + (syncStatus?.pending_mutations ?? 0))
-  // Only actionable sync states get a bar; Local Only work needs no banner.
   const syncMessage = $derived.by(() => {
-    if (!syncStatus || pending === 0) return ''
-    if (!signedIn) return 'Sign in to sync your Sync to Server collections'
-    if (syncStatus.phase === 'error') return 'Sync error. Check your connection, then retry.'
+    if (!syncStatus) return ''
+    if (!online || syncStatus.phase === 'offline')
+      return pending ? 'Saved on this device. Will sync when online.' : ''
+    if (syncStatus.phase === 'error')
+      return syncStatus.last_error || 'Sync error. Check your connection, then retry.'
+    if ($accountAuthenticated === false && syncStatus.phase === 'signed_out')
+      return 'Sign in to sync your Sync to Server collections'
+    if (pending === 0) return syncStatus.last_error ?? ''
+    if ($accountAuthenticated === false) return 'Sign in to sync your Sync to Server collections'
     if (syncStatus.pending_uploads)
       return `${syncStatus.pending_uploads} ${syncStatus.pending_uploads === 1 ? 'photo' : 'photos'} pending (${(syncStatus.pending_upload_bytes / 1048576).toFixed(1)} MB)`
     return syncStatus.phase === 'syncing' ? 'Syncing' : 'Changes waiting to sync'
   })
-  const syncTone = $derived(syncStatus?.phase === 'error' && pending > 0 ? 'danger' : 'info')
+  const syncTone = $derived(syncStatus?.phase === 'error' ? 'danger' : 'info')
   const filteredCollections = $derived(
     search.trim() ? collections.filter((item) => collectionMatches(item, search)) : collections,
   )
@@ -42,9 +48,14 @@
     return groups
   })
   onMount(() => {
+    startAccountState()
+    const onOnline = () => (online = true)
+    const onOffline = () => (online = false)
+    window.addEventListener('online', onOnline)
+    window.addEventListener('offline', onOffline)
     let stopStatus: (() => void) | undefined
     void import('$lib/sync')
-      .then(({ authClient, syncEngine }) => {
+      .then(({ syncEngine }) => {
         const statusSub = syncEngine.status.subscribe((value) => (syncStatus = value))
         stopStatus =
           typeof statusSub === 'function'
@@ -52,11 +63,12 @@
             : statusSub?.unsubscribe
               ? () => statusSub.unsubscribe()
               : undefined
-        return authClient.session().then((value) => (signedIn = value.authenticated))
       })
-      .catch(() => (signedIn = false))
+      .catch(() => {})
     return () => {
       stopStatus?.()
+      window.removeEventListener('online', onOnline)
+      window.removeEventListener('offline', onOffline)
     }
   })
   $effect(() => {
@@ -117,26 +129,27 @@
       {/each}
       <a class="rail-new" href="/?new=1">+ New collection</a>
       <nav class="rail-account" aria-label="Account">
-        {#if signedIn}<a href="/server">Server exports</a>{:else}<a href="/login?return=%2Fserver">Sign in</a
-          >{/if}
+        {#if $accountAuthenticated === true}<a href="/server">Server exports</a
+          >{:else if $accountAuthenticated === false}<a href="/login?return=%2Fserver">Sign in</a>{/if}
         <a href="/settings">Settings</a>
       </nav>
     </aside>
   {/if}
   <div class="app-main">
     {#if header}<header class="app-header">{@render header()}</header>{/if}
-    {#if syncMessage}
-      <div
-        class="global-sync"
-        class:danger={syncTone === 'danger'}
-        role="status"
-        aria-label="Sync status"
-        aria-live="polite"
-      >
-        <span class="global-sync-dot" aria-hidden="true"></span><span>{syncMessage}</span>
-        {#if !signedIn}<a href="/login">Sign in</a>{:else}<SyncNowButton />{/if}
-      </div>
-    {/if}
+    <div
+      class="global-sync"
+      class:empty={!syncMessage}
+      class:danger={syncTone === 'danger'}
+      aria-label="Sync status"
+      aria-live="polite"
+    >
+      <span class="global-sync-dot" aria-hidden="true"></span><span>{syncMessage}</span>
+      {#if $accountAuthenticated === false && (pending > 0 || syncStatus?.phase === 'signed_out')}<a
+          href="/login">Sign in</a
+        >{:else if pending > 0 || syncStatus?.phase === 'error' || syncStatus?.phase === 'offline'}<SyncNowButton
+        />{:else}<span class="sync-action-placeholder" aria-hidden="true"></span>{/if}
+    </div>
     <main>
       {#if router.route.name === 'starred'}<StarredPage />{:else}{@render children()}{/if}
     </main>

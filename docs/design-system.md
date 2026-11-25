@@ -97,6 +97,10 @@ Layout sizes:
 | `--size-rail` | `260px` |
 | `--size-panel` | `min(520px, 40vw)` |
 | `--size-content` | `1200px` |
+| `--size-sync-slot` | `56px` reserved app-shell sync area |
+| `--size-sync-chip` | `192px` one-line collection status chip |
+| `--size-sync-action` | `112px` stable sign-in or retry action width |
+| `--size-status-copy` | `72px` stable row photo count width |
 | `--size-bottom-bar` | `64px` + `env(safe-area-inset-bottom)` |
 
 ## Shape, elevation and layers
@@ -141,6 +145,8 @@ These live as classes in `app.css` or as components in `src/components/ui`. Reus
 | **Menu** | A popover with `--color-card`, `--border`, `--radius-lg`, `--shadow-overlay` and `--z-menu`. Items are `--size-touch` tall. |
 | **Toast** | `--color-ink` background, `--color-on-ink` text, radius `--radius-lg`, sitting above the bottom bar. The action button uses ballpoint text on ink. |
 | **Status line** | `--text-sm`: a dot (8px, `--radius-round`) plus words, coloured by the status mapping above. |
+| **Global sync slot** | A permanently reserved 56px row in the app shell. Status copy truncates on one line and its action has a fixed width, so status updates keep page geometry stable. |
+| **Summary lines** | Summary and quantity chips each occupy one `--size-touch` line and scroll horizontally. Keep the line when it has no optional chips. |
 
 ## Breakpoints
 

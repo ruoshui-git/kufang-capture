@@ -44,12 +44,21 @@
   })
 </script>
 
-<span class="status-chip {chipState.kind}" role="status">{chipState.text}</span>
+<span class="status-chip {chipState.kind}" role="status" aria-label={chipState.text} title={chipState.text}
+  >{chipState.text}</span
+>
 
 <style>
   .status-chip {
+    box-sizing: border-box;
     display: inline-flex;
+    width: 100%;
+    min-width: 0;
+    max-width: var(--size-sync-chip);
     align-items: center;
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
     border: 1px solid var(--color-line);
     border-radius: var(--radius-pill);
     padding: var(--space-2) var(--space-3);

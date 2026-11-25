@@ -3,13 +3,20 @@
   import type { ServerCollection } from '$lib/sync/api'
   import { navigate } from '../../app/router.svelte'
   import Button from '../../components/ui/Button.svelte'
+  import { accountAuthenticated, startAccountState } from '$lib/sync/account'
   let collections = $state<ServerCollection[]>([])
   let includeTrash = $state(false)
   let loading = $state(true)
   let error = $state('')
   let serverClient: typeof import('$lib/sync').serverClient | null = null
   onMount(() => {
-    void load()
+    startAccountState()
+  })
+  $effect(() => {
+    if ($accountAuthenticated === true) void load()
+    else if ($accountAuthenticated === false) {
+      navigate(`/login?return=${encodeURIComponent('/server')}`)
+    }
   })
   async function load() {
     loading = true
@@ -17,11 +24,6 @@
     try {
       const sync = await import('$lib/sync')
       serverClient = sync.serverClient
-      const session = await sync.authClient.session()
-      if (!session.authenticated) {
-        navigate(`/login?return=${encodeURIComponent('/server')}`)
-        return
-      }
       collections = await serverClient.listCollections()
     } catch (cause) {
       error = 'Could not load server collections. Check your connection and try again.'
@@ -50,7 +52,9 @@
     disabled={loading || !!error || collections.length === 0}
     onclick={() => window.location.assign(url('all'))}>Download everything</Button
   >
-  {#if loading}<p>Loading server collections…</p>{:else if error}<p class="error" role="alert">{error}</p>
+  {#if $accountAuthenticated === null}<p>Checking sign-in…</p>{:else if loading}<p>
+      Loading server collections…
+    </p>{:else if error}<p class="error" role="alert">{error}</p>
     <Button variant="quiet" onclick={() => void load()}>Try again</Button
     >{:else if collections.length === 0}<p>No synced collections on the server.</p>{:else}
     <div class="collection-list">

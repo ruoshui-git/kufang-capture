@@ -5,13 +5,13 @@
   import Sheet from '../ui/Sheet.svelte'
   import Button from '../ui/Button.svelte'
   import { navigate } from '../../app/router.svelte'
+  import { accountAuthenticated, startAccountState } from '$lib/sync/account'
   let {
     item,
     open = $bindable(false),
     onchanged,
   }: { item: CollectionSummary; open?: boolean; onchanged?: () => void } = $props()
   let consent = $state(false)
-  let signedIn = $state(false)
   let confirming = $state('')
   let busy = $state(false)
   let error = $state('')
@@ -21,6 +21,7 @@
   let blockers = $state<import('$lib/repo').SharedModeBlocker[]>([])
   let checking = $state(false)
   onMount(() => {
+    startAccountState()
     void repo
       .readForExport([item.collection.id])
       .then((data) => {
@@ -29,10 +30,6 @@
         uploadBytes = data.photos.reduce((sum, photo) => sum + photo.byte_size, 0)
       })
       .catch(() => {})
-    void import('$lib/sync')
-      .then(({ authClient }) => authClient.session())
-      .then((session) => (signedIn = session.authenticated))
-      .catch(() => (signedIn = false))
   })
   const mb = $derived((uploadBytes / (1024 * 1024)).toFixed(1))
   // Primitives, so live summary updates (counts, sync status) do not re-run the check: a re-check
@@ -58,7 +55,7 @@
     return `${blocker.shared_items} ${noun} shared with ${modeName} collection '${blocker.collection_name}'. Remove them from one side, or switch both.`
   }
   async function enableSync() {
-    if (!signedIn) {
+    if ($accountAuthenticated !== true) {
       navigate(`/login?return=${encodeURIComponent(location.pathname)}`)
       return
     }
@@ -109,10 +106,13 @@
 <Sheet bind:open title="Change storage mode">
   {#snippet children()}
     {#if item.collection.storage_mode === 'local_only'}
-      {#if !signedIn}<p>Sign in first. This collection can stay Local Only while you sign in.</p>
+      {#if $accountAuthenticated === false}<p>
+          Sign in first. This collection can stay Local Only while you sign in.
+        </p>
         <Button onclick={() => navigate(`/login?return=${encodeURIComponent(location.pathname)}`)}
           >Sign in</Button
         >{:else}
+        {#if $accountAuthenticated === null}<p>Checking account…</p>{/if}
         <p>
           Upload this collection's {uploadEntryCount} entries and {uploadPhotoCount} photos ({mb} MB) to capture.kufang.org?
         </p>
@@ -123,7 +123,7 @@
           photos to the server.</label
         >
         <Button
-          disabled={!consent || busy || checking || blockers.length > 0}
+          disabled={$accountAuthenticated !== true || !consent || busy || checking || blockers.length > 0}
           onclick={() => void enableSync()}>{busy ? 'Saving…' : 'Sync to Server'}</Button
         >
       {/if}

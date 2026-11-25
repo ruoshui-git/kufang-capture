@@ -1,7 +1,7 @@
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/svelte'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-const { fakeRepo, navigateSpy, exportFromDevice } = vi.hoisted(() => ({
+const { fakeRepo, navigateSpy, exportFromDevice, showToastSpy } = vi.hoisted(() => ({
   fakeRepo: {
     watchCollectionSummaries: vi.fn(),
     getSetting: vi.fn(),
@@ -15,11 +15,14 @@ const { fakeRepo, navigateSpy, exportFromDevice } = vi.hoisted(() => ({
   },
   navigateSpy: vi.fn(),
   exportFromDevice: vi.fn(),
+  showToastSpy: vi.fn(),
 }))
 vi.mock('$lib/db', () => ({ repo: fakeRepo }))
 vi.mock('../../app/router.svelte', () => ({ navigate: navigateSpy }))
+vi.mock('../../app/toasts.svelte', () => ({ showToast: showToastSpy }))
 vi.mock('$lib/export/device', () => ({ exportFromDevice }))
 import CollectionsPage from './CollectionsPage.svelte'
+import { accountAuthenticated } from '$lib/sync/account'
 
 const sample = {
   collection: {
@@ -43,6 +46,7 @@ const sample = {
 afterEach(() => cleanup())
 beforeEach(() => {
   vi.clearAllMocks()
+  accountAuthenticated.set(null)
   window.history.replaceState({}, '', '/')
   exportFromDevice.mockResolvedValue({ delivery: 'download', filename: 'export.zip', byteSize: 1 })
   fakeRepo.watchCollectionSummaries.mockReturnValue({
@@ -89,6 +93,38 @@ describe('Collections page', () => {
     expect(fakeRepo.setSetting).toHaveBeenCalledWith('last_storage_mode', 'synced')
     expect(fakeRepo.requestPersistentStorage).toHaveBeenCalledOnce()
     expect(navigateSpy).toHaveBeenCalledWith('/c/created-room')
+  })
+
+  it('offers sign-in only when the account is definitely signed out', async () => {
+    accountAuthenticated.set(false)
+    render(CollectionsPage)
+    await fireEvent.click(screen.getByRole('button', { name: 'New collection' }))
+    await fireEvent.input(screen.getByLabelText('Name'), { target: { value: 'Synced room' } })
+    await fireEvent.click(screen.getByLabelText(/Sync to Server/))
+    await fireEvent.click(screen.getByRole('button', { name: 'Create collection' }))
+    await waitFor(() => expect(showToastSpy).toHaveBeenCalled())
+    expect(showToastSpy).toHaveBeenCalledWith(
+      expect.objectContaining({
+        message: 'Created locally. Sign in to start syncing.',
+        actionLabel: 'Sign in',
+      }),
+    )
+  })
+
+  it.each([true, null])('uses automatic-sync copy when authenticated state is %s', async (state) => {
+    accountAuthenticated.set(state)
+    render(CollectionsPage)
+    await fireEvent.click(screen.getByRole('button', { name: 'New collection' }))
+    await fireEvent.input(screen.getByLabelText('Name'), { target: { value: 'Synced room' } })
+    await fireEvent.click(screen.getByLabelText(/Sync to Server/))
+    await fireEvent.click(screen.getByRole('button', { name: 'Create collection' }))
+    await waitFor(() => expect(showToastSpy).toHaveBeenCalled())
+    expect(showToastSpy).toHaveBeenCalledWith(
+      expect.objectContaining({
+        message: state === true ? 'Created. Syncs automatically.' : 'Created. Will sync when online.',
+      }),
+    )
+    expect(showToastSpy.mock.calls[0]?.[0]).not.toHaveProperty('actionLabel')
   })
   it('groups folders alphabetically and persists collapsed folder state', async () => {
     const base = sample as unknown as Record<string, unknown>

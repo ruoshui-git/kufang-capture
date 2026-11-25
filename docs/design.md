@@ -60,6 +60,7 @@ This is not a stretched phone. Above 900px, Collections becomes a persistent **l
 - **Add Photo**: a filled ballpoint button with a camera glyph and label. Add from Photos is an outlined icon button with the label `Add from Photos` (visible text on desktop, accessible name on phone).
 - **Inputs**: 16–17px, a 1px line border, and 6px corners. The focus ring is ballpoint. Saving shows no spinner. The state line changes to `Saving…` and then to `Saved on this device` within 300–400 ms.
 - **Status line and chips**: dot plus words, with no icon-only states. `Backed up` (ok), `Syncing` (ballpoint), `3 photos pending, 24 MB` (warn), `Sync error — tap to retry` (danger), `Local Only` (local).
+- The app shell reserves one fixed-height sync status slot, even when it has no message. Routine sync changes never add or remove page-flow content. The collection status chip stays one line and truncates long text. Summary and quantity chips each use one reserved, horizontally scrollable line.
 - **Toast**: an ink bar above New Entry: `Deleted (o#0042)  [Undo]`. It lasts 8 seconds and can be stacked.
 - **Incomplete**: the tag gets a small warn-coloured corner fold. The row is never blocked.
 
@@ -79,6 +80,7 @@ There are no ambient animations. Honour `prefers-reduced-motion`.
 - Use `inputmode="decimal"` on quantity, and set `enterkeyhint` on inputs.
 - Set `autocapitalize="sentences"` on notes and titles, and `autocomplete="off"`.
 - Keep the focused input visible above the keyboard. Autosave or sync must never re-mount a row, or the input loses focus and caret position.
+- While a row control has focus, keep existing row order and filter membership stable as live data changes. New entries appear immediately; deleted or moved entries disappear immediately. User scrolling or changing a list query releases the frozen order.
 
 ## Copy
 

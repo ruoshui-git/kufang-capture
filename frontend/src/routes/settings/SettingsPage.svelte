@@ -8,11 +8,11 @@
   import ExportSheet from '../../components/sync/ExportSheet.svelte'
   import type { CollectionSummary } from '$lib/types'
   import { navigate } from '../../app/router.svelte'
+  import { accountAuthenticated, startAccountState } from '$lib/sync/account'
 
   let captureMode = $state<CaptureMode>('native')
   let storage = $state<StorageEstimate | null>(null)
   let storageMessage = $state('')
-  let signedIn = $state<boolean | null>(null)
   let summaries = $state<CollectionSummary[]>([])
   let exportOpen = $state(false)
   let accountMessage = $state('')
@@ -27,6 +27,7 @@
   )
 
   onMount(() => {
+    startAccountState()
     void (async () => {
       captureMode = await repo.getSetting<CaptureMode>(SETTING_KEYS.captureMode, 'native')
       storage = await repo.estimateStorage()
@@ -34,10 +35,6 @@
     const sub = repo
       .watchCollectionSummaries({ includeArchived: true })
       .subscribe((items) => (summaries = items))
-    void import('$lib/sync')
-      .then(({ authClient }) => authClient.session())
-      .then((session) => (signedIn = session.authenticated))
-      .catch(() => (signedIn = false))
     return () => (typeof sub === 'function' ? sub() : sub.unsubscribe())
   })
 
@@ -57,7 +54,6 @@
     try {
       const { authClient } = await import('$lib/sync')
       await authClient.logout()
-      signedIn = false
       accountMessage = 'Signed out.'
     } catch (cause) {
       accountMessage = 'Could not sign out. Check your connection and try again.'
@@ -83,7 +79,7 @@
   <div class="page-heading"><h1>Settings</h1></div>
   <section class="settings-card" aria-labelledby="account-heading">
     <h2 id="account-heading">Account &amp; sync</h2>
-    {#if signedIn === null}<p>Checking sign-in…</p>{:else if signedIn}<p>
+    {#if $accountAuthenticated === null}<p>Checking sign-in…</p>{:else if $accountAuthenticated}<p>
         Signed in. Synced collections upload in the background.
       </p>
       <div class="settings-actions">

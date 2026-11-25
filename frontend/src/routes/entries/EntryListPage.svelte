@@ -30,6 +30,7 @@
   let summary = $state<CollectionSummary | undefined>()
   let rows = $state<EntryRow[]>([])
   let unitRows = $state<EntryRow[]>([])
+  let unitRowsLoaded = $state(false)
   let filter = $state<EntryFilter>('all')
   let sort = $state<EntrySort>('newest')
   let search = $state('')
@@ -49,6 +50,10 @@
   let conflictOpen = $state(false)
   let ConflictSheetView: typeof import('../../components/sync/ConflictSheet.svelte').default | null =
     $state(null)
+  let frozenRowIds = $state<string[] | null>(null)
+  let frozenRowSnapshot = $state<EntryRow[]>([])
+  let initialAllRowIds = $state<string[]>([])
+  let lastQueryKey = ''
 
   async function openConflicts() {
     ConflictSheetView = (await import('../../components/sync/ConflictSheet.svelte')).default
@@ -64,6 +69,7 @@
       .subscribe((items) => {
         rows = items
         loaded = true
+        freezeVisibleOrder()
         if (!restoredScroll) {
           restoredScroll = true
           limit = Math.max(limit, revealedRows.get(collectionId) ?? 0)
@@ -77,6 +83,12 @@
     sort
     collectionId
     subscribeRows()
+  })
+
+  $effect(() => {
+    const key = `${collectionId}\u0000${filter}\u0000${sort}\u0000${appliedSearch}`
+    if (lastQueryKey && lastQueryKey !== key) unfreezeVisibleOrder()
+    lastQueryKey = key
   })
 
   $effect(() => {
@@ -98,7 +110,14 @@
   $effect(() => {
     const subscription = repo
       .watchEntryRows(collectionId, { search: '', filter: 'all', sort: 'newest' })
-      .subscribe((items) => (unitRows = items))
+      .subscribe((items) => {
+        unitRows = items
+        unitRowsLoaded = true
+        if (frozenRowIds) {
+          const newCount = items.filter((row) => !initialAllRowIds.includes(row.entry.id)).length
+          if (newCount) limit = Math.max(limit, frozenRowIds.length + newCount)
+        }
+      })
     return () => {
       if (typeof subscription === 'function') subscription()
       else subscription.unsubscribe()
@@ -152,10 +171,27 @@
     appliedSearch = ''
     search = ''
   }
+  // The order and membership of the list stay put from its first load until the filter, sort, search or
+  // collection changes, so an edit or a sync never moves the row under the finger. New rows still show
+  // at once and deleted rows still disappear; contents update live.
+  function freezeVisibleOrder() {
+    if (!frozenRowIds) {
+      frozenRowSnapshot = rows
+      frozenRowIds = rows.map((row) => row.entry.id)
+      initialAllRowIds = (unitRowsLoaded ? unitRows : rows).map((row) => row.entry.id)
+    }
+  }
+  function unfreezeVisibleOrder() {
+    frozenRowIds = null
+    frozenRowSnapshot = []
+    initialAllRowIds = []
+  }
   async function createEntry() {
     const focusOrigin = document.activeElement
+    unfreezeVisibleOrder()
     if (filter === 'deleted') filter = 'all'
     const entry = await repo.createEntry(collectionId)
+    if (sort === 'oldest') limit = Math.max(limit, rows.length + 1)
     showAllEntries()
     await tick()
     void focusNewEntry(entry.id, focusOrigin)
@@ -163,21 +199,27 @@
 
   async function focusNewEntry(entryId: string, focusOrigin: Element | null, attempts = 0) {
     await tick()
-    if (document.activeElement !== focusOrigin) return
+    const shouldTakeFocus =
+      document.activeElement === focusOrigin ||
+      (focusOrigin instanceof HTMLButtonElement && focusOrigin.textContent?.includes('New Entry'))
     // Oldest first puts the new entry last, possibly beyond the rows revealed so far.
     const index = rows.findIndex((row) => row.entry.id === entryId)
     if (index >= limit) {
       limit = index + 1
       await tick()
+    } else if (index < 0 && sort === 'oldest') {
+      limit = Math.max(limit, rows.length + 1)
     }
     const row = listElement?.querySelector(`[data-entry-id="${entryId}"]`)
     if (!row && attempts < 30) {
       setTimeout(() => void focusNewEntry(entryId, focusOrigin, attempts + 1), 20)
       return
     }
-    row?.scrollIntoView({ block: 'center', behavior: 'smooth' })
+    if (!row) return
+    if (!shouldTakeFocus) return
     const titleInput = row?.querySelector('[aria-label="Entry title"]') as HTMLInputElement | null
     titleInput?.focus()
+    row?.scrollIntoView({ block: 'center', behavior: 'auto' })
   }
   async function deleteRow(row: EntryRow) {
     await repo.deleteEntry(row.entry.id)
@@ -206,7 +248,26 @@
   const units = $derived(
     [...new Set(unitRows.map(({ entry }) => entry.unit.trim()).filter(Boolean))].slice(0, 12),
   )
-  const visibleRows = $derived(rows.slice(0, limit))
+  const stableRows = $derived.by(() => {
+    if (!frozenRowIds) return rows
+    const byId = new Map(unitRows.map((row) => [row.entry.id, row]))
+    const matching = new Map(rows.map((row) => [row.entry.id, row]))
+    const snapshot = new Map(frozenRowSnapshot.map((row) => [row.entry.id, row]))
+    const frozen = frozenRowIds.flatMap((id) => {
+      const row = byId.get(id) ?? (unitRowsLoaded ? undefined : snapshot.get(id))
+      return row ? [matching.get(id) ?? row] : []
+    })
+    const seen = new Set(initialAllRowIds)
+    const additions = unitRows.filter(
+      (row) => !seen.has(row.entry.id) && (!narrowed || matching.has(row.entry.id)),
+    )
+    // Rows that started matching the filter later join at the end, above nothing.
+    const frozenIds = new Set(frozenRowIds)
+    const joined = rows.filter((row) => seen.has(row.entry.id) && !frozenIds.has(row.entry.id))
+    if (sort === 'oldest') return [...frozen, ...joined, ...additions]
+    return [...additions, ...frozen, ...joined]
+  })
+  const visibleRows = $derived(stableRows.slice(0, limit))
   const narrowed = $derived(filter !== 'all' || appliedSearch !== '')
   const incompleteLabel = $derived(
     filter === 'missing_quantity'
@@ -247,24 +308,21 @@
       <div class="summary-chips">
         <Chip>{summary.entry_count} {summary.entry_count === 1 ? 'entry' : 'entries'}</Chip>
         <Chip>{summary.photo_count} {summary.photo_count === 1 ? 'photo' : 'photos'}</Chip>
-        {#if summary.incomplete_count > 0}
-          <button class="summary-filter" onclick={() => (filter = 'incomplete')}
-            ><Chip>{summary.incomplete_count} incomplete</Chip></button
-          >
-        {/if}
+        {#if summary.incomplete_count > 0}<button
+            class="summary-filter"
+            onclick={() => (filter = 'incomplete')}><Chip>{summary.incomplete_count} incomplete</Chip></button
+          >{/if}
         {#if summary.needs_review_count > 0}<button
             class="summary-filter"
             onclick={() => (filter = 'needs_review')}
             ><Chip>{summary.needs_review_count} needs review</Chip></button
           >{/if}
-      </div>
-      {#if summary.quantity_by_unit.length > 0}
         <div class="quantity-chips" aria-label="Quantities by unit">
           {#each summary.quantity_by_unit as quantity (quantity.unit)}<Chip variant="quantity"
               >{quantity.total} {quantity.unit || 'no unit'}</Chip
             >{/each}
         </div>
-      {/if}
+      </div>
     {/if}
     <div class="toolbar">
       <div class="filter-row">
@@ -458,6 +516,16 @@
   .heading-title h1 {
     overflow-wrap: anywhere;
   }
+  .status-trigger {
+    flex: none;
+    width: min(var(--size-sync-chip), 42vw);
+    min-width: 0;
+    min-height: var(--size-touch);
+    padding: 0;
+    border: 0;
+    background: transparent;
+    text-align: left;
+  }
   .back {
     display: inline-block;
     flex-basis: 100%;
@@ -467,15 +535,26 @@
   .summary-chips {
     display: flex;
     gap: var(--space-3);
-    flex-wrap: wrap;
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    scrollbar-width: none;
+    align-items: center;
     margin: var(--space-4) 0 var(--space-2);
+    min-height: var(--size-touch);
     min-width: 0;
+  }
+  .summary-chips::-webkit-scrollbar {
+    display: none;
+  }
+  .summary-chips :global(.chip),
+  .quantity-chips :global(.chip),
+  .summary-filter {
+    flex: none;
   }
   .quantity-chips {
     display: flex;
-    flex-wrap: wrap;
+    flex: none;
     gap: var(--space-2);
-    margin-bottom: var(--space-4);
   }
   .quantity-chips:global(.chip) {
     background: color-mix(in srgb, var(--color-tag) 28%, var(--color-card));
@@ -483,6 +562,7 @@
     color: var(--color-ink);
   }
   .summary-filter {
+    flex: none;
     background: none;
     border: 0;
     padding: 0;

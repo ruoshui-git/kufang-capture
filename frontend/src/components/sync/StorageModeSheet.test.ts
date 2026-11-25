@@ -1,16 +1,21 @@
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/svelte'
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 const { repo, authClient } = vi.hoisted(() => ({
   repo: { setStorageMode: vi.fn(), readForExport: vi.fn(), checkStorageMode: vi.fn() },
   authClient: { session: vi.fn() },
 }))
 vi.mock('$lib/db', () => ({ repo }))
-vi.mock('$lib/sync', () => ({ authClient }))
+vi.mock('$lib/sync', () => ({
+  authClient,
+  syncEngine: { status: { subscribe: () => () => {} } },
+}))
 
 import StorageModeSheet from './StorageModeSheet.svelte'
+import { accountAuthenticated } from '$lib/sync/account'
 
 afterEach(cleanup)
+beforeEach(() => accountAuthenticated.set(true))
 
 const item = {
   collection: { id: 'room', name: 'Room A', storage_mode: 'local_only' },

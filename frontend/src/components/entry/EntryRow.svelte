@@ -67,7 +67,6 @@
   })
   let quantityError = $state(false)
   let status = $state('Saved on this device')
-  let syncPhase = $state('idle')
   let mode = $state<CaptureMode>('native')
   let cameraOpen = $state(false)
   let moveOpen = $state(false)
@@ -107,22 +106,11 @@
   onMount(() => {
     void repo.getSetting<CaptureMode>('capture_mode', 'native').then((value) => (mode = value))
     const flush = () => void autosave.flush()
-    let unsubscribeStatus: (() => void) | undefined
-    void import('$lib/sync').then(({ syncEngine }) => {
-      const subscription = syncEngine.status.subscribe((value) => (syncPhase = value.phase))
-      unsubscribeStatus =
-        typeof subscription === 'function'
-          ? subscription
-          : subscription?.unsubscribe
-            ? () => subscription.unsubscribe()
-            : undefined
-    })
     window.addEventListener('pagehide', flush)
     document.addEventListener('visibilitychange', flush)
     return () => {
       window.removeEventListener('pagehide', flush)
       document.removeEventListener('visibilitychange', flush)
-      unsubscribeStatus?.()
     }
   })
 
@@ -194,17 +182,15 @@
     if (next) onviewer(row.entry.id, next.id)
   }
   const syncLabel = $derived(
-    syncPhase === 'syncing' && row.entry.display_sync_state === 'pending'
-      ? 'Syncing'
-      : row.entry.display_sync_state === 'conflict'
-        ? 'Conflict'
-        : row.entry.display_sync_state === 'error'
-          ? 'Sync error'
-          : row.entry.display_sync_state === 'synced'
-            ? 'Backed up'
-            : row.entry.display_sync_state === 'pending'
-              ? 'Pending sync'
-              : 'Saved on this device',
+    row.entry.display_sync_state === 'conflict'
+      ? 'Conflict'
+      : row.entry.display_sync_state === 'error'
+        ? 'Sync error'
+        : row.entry.display_sync_state === 'synced'
+          ? 'Backed up'
+          : row.entry.display_sync_state === 'pending'
+            ? 'Pending sync'
+            : 'Saved on this device',
   )
 </script>
 
@@ -353,15 +339,13 @@
     >
     <div class="row-status" aria-live="polite">
       <StatusLine
-        tone={syncLabel === 'Syncing'
-          ? 'syncing'
-          : row.entry.display_sync_state === 'conflict' || row.entry.display_sync_state === 'error'
-            ? 'danger'
-            : row.entry.display_sync_state === 'synced'
-              ? 'ok'
-              : row.entry.display_sync_state === 'pending'
-                ? 'warn'
-                : 'muted'}
+        tone={row.entry.display_sync_state === 'conflict' || row.entry.display_sync_state === 'error'
+          ? 'danger'
+          : row.entry.display_sync_state === 'synced'
+            ? 'ok'
+            : row.entry.display_sync_state === 'pending'
+              ? 'warn'
+              : 'muted'}
         >{status === 'Saving…' || status === 'Could not add photos' ? status : syncLabel}</StatusLine
       ><span class="photo-count">{row.photo_count} {row.photo_count === 1 ? 'photo' : 'photos'}</span>
     </div>
@@ -429,6 +413,7 @@
 
 <style>
   .entry-row {
+    position: relative;
     min-width: 0;
     background: var(--color-card);
     border: 1px solid var(--color-line);
@@ -586,6 +571,7 @@
   }
   .fields {
     grid-area: fields;
+    position: relative;
     min-width: 0;
     display: grid;
     grid-template-columns: minmax(0, 0.7fr) minmax(0, 1.5fr) minmax(0, 1.8fr);
@@ -596,7 +582,15 @@
     min-width: 0;
   }
   .fields .error {
-    grid-column: 1 / -1;
+    /* Floats below the fields so a typing slip never moves the row. */
+    position: absolute;
+    top: 100%;
+    left: 0;
+    z-index: var(--z-bottom-bar);
+    padding: var(--space-1) var(--space-2);
+    border: 1px solid var(--color-danger);
+    border-radius: var(--radius-sm);
+    background: var(--color-card);
   }
   datalist {
     display: none;
@@ -645,7 +639,7 @@
     flex: 1;
     min-width: 0;
     display: flex;
-    justify-content: center;
+    justify-content: space-between;
     gap: var(--space-2);
     overflow: hidden;
     white-space: nowrap;
@@ -654,8 +648,14 @@
   }
   .row-status :global(.status-line) {
     min-width: 0;
+    flex: 1 1 auto;
     overflow: hidden;
     text-overflow: ellipsis;
+  }
+  .photo-count {
+    flex: 0 0 var(--size-status-copy);
+    width: var(--size-status-copy);
+    text-align: right;
   }
   .extra {
     grid-area: extra;
