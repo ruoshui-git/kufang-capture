@@ -5,6 +5,7 @@ const { repo, showToast } = vi.hoisted(() => ({
   repo: {
     watchImportSources: vi.fn(),
     watchImportCandidates: vi.fn(),
+    watchImportSearch: vi.fn(),
     importEntries: vi.fn(),
     deleteEntry: vi.fn(),
   },
@@ -20,6 +21,7 @@ const source = { id: 'source', name: 'Shelf A', status: 'active' }
 const candidate = (id: string, already_here = false) => ({
   entry: {
     id,
+    item_id: `item-${id}`,
     sequence_number: 7,
     title: 'Candles',
     quantity: '3',
@@ -84,5 +86,52 @@ describe('ImportEntriesSheet', () => {
     await showToast.mock.calls[0]![0].action()
     expect(repo.deleteEntry).toHaveBeenCalledWith('created')
     expect(repo.deleteEntry).toHaveBeenCalledWith('restored')
+  })
+
+  it('keeps selection across global search queries and collection navigation, importing each item once', async () => {
+    repo.watchImportSources.mockReturnValue(watch([source]))
+    const first = {
+      ...candidate('first'),
+      entry: { ...candidate('first').entry, item_id: 'same-item' },
+      placements: [],
+      archived: false,
+    }
+    const second = {
+      ...candidate('second'),
+      entry: { ...candidate('second').entry, item_id: 'another-item', title: 'Incense' },
+      placements: [],
+      archived: false,
+    }
+    const many = Array.from({ length: 49 }, (_, index) => ({
+      ...candidate(`extra-${index}`),
+      entry: { ...candidate(`extra-${index}`).entry, item_id: `extra-item-${index}` },
+      placements: [],
+      archived: false,
+    }))
+    repo.watchImportSearch.mockImplementation((_target: string, query: string) =>
+      watch(query === 'lamp' ? [first] : [first, second, ...many]),
+    )
+    repo.watchImportCandidates.mockReturnValue(watch([candidate('other')]))
+    repo.importEntries.mockResolvedValue({ created: [], restored: [], skipped: [] })
+    render(ImportEntriesSheet, {
+      props: { targetCollectionId: 'target', storageMode: 'local_only', open: true },
+    })
+    const input = await screen.findByRole('textbox', { name: 'Search all collections' })
+    await fireEvent.input(input, { target: { value: 'lamp' } })
+    await waitFor(() => expect(repo.watchImportSearch).toHaveBeenCalledWith('target', 'lamp'))
+    await screen.findByText('Candles')
+    await fireEvent.click(screen.getByRole('checkbox'))
+    await fireEvent.input(input, { target: { value: 'candles' } })
+    await waitFor(() => expect(repo.watchImportSearch).toHaveBeenCalledWith('target', 'candles'))
+    await fireEvent.click(screen.getByText('Incense'))
+    await fireEvent.click(screen.getByRole('button', { name: 'Show more' }))
+    expect(screen.getAllByRole('checkbox')).toHaveLength(51)
+    await fireEvent.input(input, { target: { value: '' } })
+    await fireEvent.click(screen.getByRole('button', { name: 'Shelf A' }))
+    await screen.findByText('Search items')
+    await fireEvent.click(screen.getByRole('button', { name: /Back/ }))
+    expect(screen.getByText('2 selected')).toBeInTheDocument()
+    await fireEvent.click(screen.getByRole('button', { name: 'Import 2' }))
+    await waitFor(() => expect(repo.importEntries).toHaveBeenCalledWith('target', ['first', 'second']))
   })
 })

@@ -1,6 +1,18 @@
 import { liveQuery } from 'dexie'
 import { createId } from '../ids'
-import { getCaptureDb, readPhotoBlob } from '../db'
+import {
+  compareQueued,
+  deletionOperation,
+  getCaptureDb,
+  isUnsent,
+  newMutationId,
+  queueMutation,
+  readPhotoBlob,
+  repairMissingCreate,
+  repairSyncQueue,
+  syncedItemIds,
+  type PhotoWithUploadRetry,
+} from '../db'
 import {
   SETTING_KEYS,
   type Collection,
@@ -14,12 +26,11 @@ import type { Watchable } from '../repo'
 import type { AuthClient, ServerClient, SyncConflict, SyncEngine, SyncStatus } from './api'
 
 type FetchLike = typeof fetch
-type RetriablePhoto = Photo & { upload_attempts?: number; upload_next_attempt_at?: string | null }
 type ServerRecord = Record<string, unknown> & { id: Id; revision?: number; server_revision?: number }
 type BatchResult = {
   id: Id
   status: 'applied' | 'duplicate' | 'conflict' | 'rejected'
-  server_revision: number
+  server_revision: number | null
   record?: ServerRecord
   code?: string
   message?: string
@@ -123,7 +134,6 @@ export type SyncEngineWithSchedule = SyncEngine & { runScheduledCycle(): Promise
 export function createSyncEngine(options: SyncEngineOptions = {}): SyncEngineWithSchedule {
   const db = getCaptureDb(options.repoDbName)
   const fetcher = options.fetch ?? fetch
-  const clients = makeClients(fetcher)
   const now = options.now ?? (() => new Date())
   const timestamp = () => now().toISOString()
   const controller = { current: null as AbortController | null }
@@ -133,7 +143,8 @@ export function createSyncEngine(options: SyncEngineOptions = {}): SyncEngineWit
   let lastError: string | null = null
   let running: Promise<void> | null = null
   let rerun = false
-  let uploadsPaused = false
+  let uploadRetryAt = 0
+  let needsRepair = false
   let authBlocked = false
   let started = false
   let timer: ReturnType<typeof setInterval> | undefined
@@ -218,6 +229,10 @@ export function createSyncEngine(options: SyncEngineOptions = {}): SyncEngineWit
     const pendingPhotos = Object.values(per).reduce((sum, item) => sum + item.pending_uploads, 0)
     statusValue = {
       ...emptyStatus(),
+      last_error:
+        lastError ??
+        photos.find((photo) => photo.upload_state === 'error' && photo.upload_error)?.upload_error ??
+        null,
       pending_mutations: pendingMutations,
       pending_uploads: pendingPhotos,
       pending_upload_bytes: Object.values(per).reduce((sum, item) => sum + item.pending_upload_bytes, 0),
@@ -234,43 +249,71 @@ export function createSyncEngine(options: SyncEngineOptions = {}): SyncEngineWit
     return true
   }).subscribe()
 
-  async function eligibleItems(): Promise<OutboxItem[]> {
-    const collections = await db.collections.toArray()
-    const allowed = new Set(collections.filter((c) => c.storage_mode === 'synced').map((c) => c.id))
-    return (await db.outbox.toArray())
-      .filter((item) => allowed.has(item.collection_id))
-      .sort((a, b) => {
-        const priority = { collection: 0, item: 1, entry: 2, photo: 3 }
-        return priority[a.entity] - priority[b.entity] || a.created_at.localeCompare(b.created_at)
-      })
+  const storageLow = 'Server storage is low'
+  const storageRetryKey = 'photo_upload_storage_retry_at'
+  const storedUploadRetryAt = async () => Number((await db.settings.get(storageRetryKey))?.value ?? 0)
+
+  async function haltOnStatus(code: number) {
+    if (code === 401) {
+      authBlocked = true
+      authenticated = false
+      phase = 'signed_out'
+    } else if (code === 507) {
+      uploadRetryAt = now().getTime() + 300_000
+      lastError = storageLow
+      await db.settings.put({ key: storageRetryKey, value: uploadRetryAt })
+    } else return false
+    return true
   }
 
-  async function push() {
-    const all = await eligibleItems()
-    const blocked = new Set(
-      all.filter((item) => item.in_flight).map((item) => `${item.entity}:${item.entity_id}`),
-    )
-    const selected: OutboxItem[] = []
-    const seenRecords = new Set<string>()
-    for (const item of all) {
-      const key = `${item.entity}:${item.entity_id}`
-      if (blocked.has(key) || seenRecords.has(key)) continue
-      seenRecords.add(key)
-      if (item.in_flight || (item.next_attempt_at && item.next_attempt_at > timestamp())) continue
-      selected.push(item)
-      if (selected.length === 200) break
-    }
-    const collections = await db.collections.toArray()
-    const modes = new Map(collections.map((collection) => [collection.id, collection.storage_mode]))
-    if (selected.some((item) => modes.get(item.collection_id) !== 'synced'))
-      throw new Error('Safety check failed: Local Only data cannot be sent.')
-    if (!selected.length) return
-    await db.transaction('rw', db.outbox, async () => {
-      for (const item of selected) await db.outbox.update(item.id, { in_flight: true, sent: true })
-    })
+  async function push(signal: AbortSignal) {
     const deviceId = await db.settings.get(SETTING_KEYS.deviceId)
+    // Select and claim in one transaction so an edit cannot coalesce into the request
+    // while it is being prepared, and a storage-mode change cannot leave a stale selection.
+    const selected = await db.transaction(
+      'rw',
+      [db.collections, db.entries, db.photos, db.outbox],
+      async () => {
+        const rows = await db.outbox.toArray()
+        if (signal.aborted || !rows.length) return []
+        const collections = await db.collections.toArray()
+        const allowed = new Set(collections.filter((c) => c.storage_mode === 'synced').map((c) => c.id))
+        const syncedItems = await syncedItemIds(db, collections)
+        const priority = { collection: 0, item: 1, entry: 2, photo: 3 }
+        rows.sort((a, b) => priority[a.entity] - priority[b.entity] || compareQueued(a, b))
+        const seen = new Set<string>()
+        const result: typeof rows = []
+        const at = timestamp()
+        for (const row of rows) {
+          const key = `${row.entity}:${row.entity_id}`
+          if (seen.has(key)) continue
+          seen.add(key)
+          if (
+            !allowed.has(row.collection_id) ||
+            row.in_flight ||
+            (row.next_attempt_at && row.next_attempt_at > at)
+          )
+            continue
+          if (row.entity === 'item' && !syncedItems.has(row.entity_id)) continue
+          if (row.entity === 'entry' || row.entity === 'photo') {
+            const record = await (row.entity === 'entry' ? db.entries : db.photos).get(row.entity_id)
+            const itemId = record?.item_id ?? row.fields.item_id
+            if (typeof itemId === 'string' && !syncedItems.has(itemId)) continue
+            if (typeof itemId !== 'string' && row.op !== 'purge') continue
+          }
+          result.push(row)
+          if (result.length === 200) break
+        }
+        if (signal.aborted) return []
+        for (const row of result) await db.outbox.update(row.id, { in_flight: true, sent: true })
+        return result
+      },
+    )
+    if (!selected.length) return true
     try {
+      signal.throwIfAborted()
       const response = await fetcher('/api/sync/batch', {
+        signal,
         method: 'POST',
         credentials: 'same-origin',
         headers: requestHeaders('POST', { 'Content-Type': 'application/json' }),
@@ -288,12 +331,11 @@ export function createSyncEngine(options: SyncEngineOptions = {}): SyncEngineWit
           })),
         }),
       })
-      if (response.status === 401) {
-        authBlocked = true
-        authenticated = false
-        phase = 'signed_out'
-        for (const item of selected) await db.outbox.update(item.id, { in_flight: false })
-        return
+      if (await haltOnStatus(response.status)) {
+        await db.transaction('rw', db.outbox, async () => {
+          for (const item of selected) await db.outbox.update(item.id, { in_flight: false })
+        })
+        return false
       }
       if (response.status === 409) {
         let code = ''
@@ -313,7 +355,7 @@ export function createSyncEngine(options: SyncEngineOptions = {}): SyncEngineWit
           })
           lastError = 'Update the app to keep syncing.'
           phase = 'error'
-          return
+          return true
         }
       }
       if (!response.ok)
@@ -321,65 +363,39 @@ export function createSyncEngine(options: SyncEngineOptions = {}): SyncEngineWit
           status: response.status,
         })
       const data = (await response.json()) as { results: BatchResult[] }
-      for (const result of data.results)
-        await applyResult(
-          selected.find((item) => item.id === result.id)!,
-          result,
-        )
-    } catch (error) {
-      const statusCode = (error as { status?: number }).status
-      if (statusCode === 401) {
-        authBlocked = true
-        authenticated = false
-        phase = 'signed_out'
+      const results = new Map(data.results.map((result) => [result.id, result]))
+      for (const item of selected) {
+        const result = results.get(item.id)
+        if (!result) throw new Error('The server did not acknowledge every change.')
+        await applyResult(item, result)
       }
+      return true
+    } catch (error) {
       await db.transaction('rw', db.outbox, async () => {
         for (const item of selected) {
           const current = await db.outbox.get(item.id)
           if (!current) continue
+          if (signal.aborted) {
+            await db.outbox.update(item.id, { in_flight: false })
+            continue
+          }
           const attempts = current.attempts + 1
           const delay = Math.min(300_000, 2_000 * 2 ** Math.min(attempts - 1, 8))
           await db.outbox.put({
             ...current,
             in_flight: false,
             attempts,
-            next_attempt_at: new Date(now().getTime() + delay * (0.75 + Math.random() * 0.5)).toISOString(),
+            next_attempt_at: new Date(now().getTime() + delay).toISOString(),
             last_error: userError(error),
           })
         }
       })
-      lastError = userError(error)
-      if (statusCode !== 401) phase = 'error'
+      if (!signal.aborted) {
+        lastError = userError(error)
+        phase = 'error'
+      }
+      return false
     }
-  }
-
-  async function queueCollectionCounter(collection: Collection) {
-    const matches = await db.outbox
-      .where('[entity+entity_id]')
-      .equals(['collection', collection.id])
-      .toArray()
-    const existing = matches.find((row) => !row.in_flight && !row.sent && row.attempts === 0)
-    if (existing) {
-      await db.outbox.put({
-        ...existing,
-        fields: { ...existing.fields, next_sequence_number: collection.next_sequence_number },
-      })
-      return
-    }
-    await db.outbox.add({
-      id: createId(),
-      collection_id: collection.id,
-      entity: 'collection',
-      entity_id: collection.id,
-      op: 'upsert',
-      base_revision: collection.server_revision,
-      fields: { next_sequence_number: collection.next_sequence_number },
-      created_at: timestamp(),
-      attempts: 0,
-      in_flight: false,
-      last_error: null,
-      next_attempt_at: null,
-    })
   }
 
   async function applyResult(item: OutboxItem, result: BatchResult) {
@@ -413,20 +429,34 @@ export function createSyncEngine(options: SyncEngineOptions = {}): SyncEngineWit
               .where('[entity+entity_id]')
               .equals([item.entity, item.entity_id])
               .toArray()
-            if (outcome.record) {
+            if (outcome.record && outcome.server_revision !== null) {
               const revisions = (outcome.record.field_revisions ?? {}) as Record<string, number>
               for (const row of remaining) {
-                const safeToRebase = Object.keys(row.fields).every(
-                  (field) => field in item.fields || (revisions[field] ?? 0) <= (row.base_revision ?? 0),
-                )
+                if (!isUnsent(row) || (row.base_revision ?? 0) >= outcome.server_revision) continue
+                const safeToRebase =
+                  (row.base_revision === null && item.op === 'upsert' && item.base_revision === null) ||
+                  Object.keys(row.fields).every(
+                    (field) => field in item.fields || (revisions[field] ?? 0) <= (row.base_revision ?? 0),
+                  )
                 if (safeToRebase) await db.outbox.put({ ...row, base_revision: outcome.server_revision })
               }
             }
             const stillPending = remaining.length > 0
             await table.put({
               ...record,
-              server_revision: outcome.server_revision,
-              sync_state: stillPending ? record.sync_state : 'synced',
+              server_revision:
+                outcome.server_revision === null
+                  ? null
+                  : Math.max(record.server_revision ?? 0, outcome.server_revision),
+              sync_state:
+                (await db.conflicts
+                  .where('[entity+entity_id]')
+                  .equals([item.entity, item.entity_id])
+                  .count()) > 0
+                  ? 'conflict'
+                  : stillPending
+                    ? record.sync_state
+                    : 'synced',
             } as never)
           }
           return
@@ -434,6 +464,7 @@ export function createSyncEngine(options: SyncEngineOptions = {}): SyncEngineWit
         if (outcome.status === 'conflict' && outcome.code === 'field_conflict' && record) {
           const fields = outcome.conflicting_fields ?? []
           const serverRecord: ServerRecord = outcome.record ?? { id: item.entity_id }
+          if (outcome.server_revision === null) throw new Error('The conflict has no server revision.')
           const conflict: SyncConflict = {
             id: createId(),
             collection_id: item.collection_id,
@@ -447,6 +478,19 @@ export function createSyncEngine(options: SyncEngineOptions = {}): SyncEngineWit
           }
           await db.conflicts.put(conflict)
           await db.outbox.delete(item.id)
+          // The server rejects the whole mutation, including otherwise safe edits.
+          const rest = Object.fromEntries(
+            Object.entries(item.fields).filter(([field]) => !fields.includes(field)),
+          )
+          if (item.op === 'upsert') delete rest.deleted_at
+          if (Object.keys(rest).length && item.op !== 'purge') {
+            await db.outbox.add({
+              ...newMutationId(current),
+              op: deletionOperation(rest) ?? 'upsert',
+              base_revision: outcome.server_revision,
+              fields: rest,
+            })
+          }
           await table.put({ ...record, sync_state: 'conflict' } as never)
           return
         }
@@ -463,20 +507,36 @@ export function createSyncEngine(options: SyncEngineOptions = {}): SyncEngineWit
               sync_state: 'pending' as const,
             }
             await db.collections.put(updatedCollection)
-            await queueCollectionCounter(updatedCollection)
+            await queueMutation(
+              db,
+              updatedCollection,
+              'collection',
+              updatedCollection,
+              'upsert',
+              {
+                next_sequence_number: updatedCollection.next_sequence_number,
+              },
+              timestamp(),
+            )
             await db.entries.put({ ...(record as Entry), sequence_number: next, sync_state: 'pending' })
             const replacement = {
-              ...current,
-              id: createId(),
+              ...newMutationId(current),
               fields: { ...current.fields, sequence_number: next },
-              in_flight: false,
-              attempts: 0,
-              next_attempt_at: null,
-              last_error: null,
             }
             await db.outbox.delete(item.id)
             await db.outbox.put(replacement)
           }
+          return
+        }
+        if (
+          outcome.code === 'missing_parent' &&
+          current.base_revision === null &&
+          (current.op === 'delete' || current.op === 'restore') &&
+          (current.entity === 'entry' || current.entity === 'photo') &&
+          record?.server_revision === null
+        ) {
+          await db.outbox.delete(current.id)
+          await db.outbox.add(repairMissingCreate(newMutationId(current), record as Entry | Photo))
           return
         }
         const message = outcome.message ?? 'The server rejected this change.'
@@ -494,141 +554,132 @@ export function createSyncEngine(options: SyncEngineOptions = {}): SyncEngineWit
     )
   }
 
-  async function upload() {
-    if (uploadsPaused) return
-    const collections = await db.collections.toArray()
-    const modes = new Map(collections.map((c) => [c.id, c.storage_mode]))
-    const entries = await db.entries.toArray()
-    const photos = (await db.photos.toArray())
-      .filter(
-        (photo) =>
-          entries.some(
-            (entry) => entry.item_id === photo.item_id && modes.get(entry.collection_id) === 'synced',
-          ) &&
-          !entries.some(
-            (entry) => entry.item_id === photo.item_id && modes.get(entry.collection_id) === 'local_only',
-          ) &&
-          ['pending', 'error'].includes(photo.upload_state) &&
-          photo.server_revision !== null &&
-          (!(photo as RetriablePhoto).upload_next_attempt_at ||
-            (photo as RetriablePhoto).upload_next_attempt_at! <= timestamp()),
+  async function canUpload(itemId: Id) {
+    const entries = await db.entries.where('item_id').equals(itemId).toArray()
+    const collections = await db.collections.bulkGet(entries.map((entry) => entry.collection_id))
+    return (
+      collections.some((collection) => collection?.storage_mode === 'synced') &&
+      !collections.some((collection) => collection?.storage_mode === 'local_only')
+    )
+  }
+
+  async function upload(photoId: Id, signal: AbortSignal) {
+    const photo = await db.transaction('rw', [db.photos, db.entries, db.collections], async () => {
+      const current = await db.photos.get(photoId)
+      if (
+        signal.aborted ||
+        !current ||
+        current.server_revision === null ||
+        !['pending', 'error'].includes(current.upload_state) ||
+        (current.upload_next_attempt_at && current.upload_next_attempt_at > timestamp()) ||
+        !(await canUpload(current.item_id))
       )
-      .sort((a, b) => a.created_at.localeCompare(b.created_at))
-    for (const photo of photos) {
-      if (controller.current?.signal.aborted) return
-      const entry = await db.entries.where('item_id').equals(photo.item_id).first()
-      const collection = entry ? await db.collections.get(entry.collection_id) : undefined
-      if (!collection || collection.storage_mode !== 'synced') continue
-      if (!entry || photo.server_revision === null) continue
+        return
+      await db.photos.update(photoId, { upload_state: 'uploading' })
+      return current
+    })
+    if (!photo) return true
+
+    const url = `/api/photos/${encodeURIComponent(photoId)}`
+    const updateClaim = (patch: Partial<PhotoWithUploadRetry>) =>
+      db.photos
+        .where('id')
+        .equals(photoId)
+        .filter((photo) => photo.upload_state === 'uploading')
+        .modify(patch)
+    const markUploaded = (serverKey?: string) =>
+      updateClaim({
+        upload_state: 'uploaded',
+        ...(serverKey ? { server_storage_key: serverKey } : {}),
+        upload_attempts: 0,
+        upload_next_attempt_at: null,
+        upload_error: null,
+      })
+    const markFailed = async (message: string, retryAt: number, attempts: number) => {
+      await updateClaim({
+        upload_state: 'error',
+        upload_attempts: attempts,
+        upload_next_attempt_at: new Date(retryAt).toISOString(),
+        upload_error: message,
+      })
+      lastError ??= message
+    }
+    try {
+      signal.throwIfAborted()
+      const head = await fetcher(`${url}/original`, {
+        method: 'HEAD',
+        cache: 'no-store',
+        credentials: 'same-origin',
+        signal,
+      })
+      if (await haltOnStatus(head.status)) {
+        if (head.status === 507) await markFailed(storageLow, uploadRetryAt, photo.upload_attempts ?? 0)
+        return false
+      }
+      if (head.ok && head.headers.get('ETag')?.replaceAll('"', '') === photo.sha256) {
+        await markUploaded()
+        return true
+      }
+      if (!head.ok && head.status !== 404) throw new Error(`Photo check failed (${head.status}).`)
+      const blob = await readPhotoBlob(photo.id, options.repoDbName)
+      if (!(await canUpload(photo.item_id))) return true
+      if (!blob) throw new Error('The original photo is missing from this device.')
+      signal.throwIfAborted()
+      const put = await fetcher(`${url}/original`, {
+        method: 'PUT',
+        credentials: 'same-origin',
+        signal,
+        headers: requestHeaders('PUT', {
+          'Content-Type': photo.mime_type,
+          'X-Content-SHA256': photo.sha256,
+        }),
+        body: blob.original,
+      })
+      if (await haltOnStatus(put.status)) {
+        if (put.status === 507) await markFailed(storageLow, uploadRetryAt, photo.upload_attempts ?? 0)
+        return false
+      }
+      if (!put.ok) throw new Error(`Photo upload failed (${put.status}).`)
+      const result = (await put.json()) as { sha256: string; byte_size: number; server_storage_key: string }
+      if (result.sha256 !== photo.sha256 || result.byte_size !== photo.byte_size)
+        throw new Error('The uploaded photo did not match its local checksum.')
+      await markUploaded(result.server_storage_key)
+      if (!blob.thumbnail || signal.aborted || !(await canUpload(photo.item_id))) return true
       try {
-        const response = await fetcher(`/api/photos/${encodeURIComponent(photo.id)}/original`, {
-          method: 'HEAD',
-          credentials: 'same-origin',
-          signal: controller.current?.signal,
-        })
-        if (response.status === 401) {
-          authBlocked = true
-          authenticated = false
-          phase = 'signed_out'
-          return
-        }
-        if (response.ok && response.headers.get('ETag')?.replaceAll('"', '') === photo.sha256) {
-          await db.photos.update(photo.id, {
-            upload_state: 'uploaded',
-            upload_attempts: 0,
-            upload_next_attempt_at: null,
-          })
-          continue
-        }
-        if (!response.ok && response.status !== 404)
-          throw new Error(`Photo check failed (${response.status}).`)
-        const blob = await readPhotoBlob(photo.id, options.repoDbName)
-        if (!blob) continue
-        await db.photos.update(photo.id, { upload_state: 'uploading' })
-        const put = await fetcher(`/api/photos/${encodeURIComponent(photo.id)}/original`, {
+        signal.throwIfAborted()
+        const thumb = await fetcher(`${url}/thumbnail`, {
           method: 'PUT',
           credentials: 'same-origin',
-          signal: controller.current?.signal,
-          headers: requestHeaders('PUT', {
-            'Content-Type': photo.mime_type,
-            'X-Content-SHA256': photo.sha256,
-          }),
-          body: blob.original,
+          signal,
+          headers: requestHeaders('PUT', { 'Content-Type': 'image/jpeg' }),
+          body: blob.thumbnail,
         })
-        if (put.status === 507) {
-          uploadsPaused = true
-          await db.photos.update(photo.id, { upload_state: 'error' })
-          lastError = 'Server storage is low'
-          return
-        }
-        if (put.status === 401) {
-          authBlocked = true
-          authenticated = false
-          phase = 'signed_out'
-          await db.photos.update(photo.id, { upload_state: 'pending' })
-          return
-        }
-        if (!put.ok) throw new Error(`Photo upload failed (${put.status}).`)
-        const result = (await put.json()) as {
-          sha256: string
-          byte_size: number
-          server_storage_key: string
-        }
-        if (result.sha256 !== photo.sha256 || result.byte_size !== photo.byte_size)
-          throw new Error('The uploaded photo did not match its local checksum.')
-        await db.photos.update(photo.id, {
-          upload_state: 'uploaded',
-          server_storage_key: result.server_storage_key,
-          upload_attempts: 0,
-          upload_next_attempt_at: null,
-        })
-        if (blob.thumbnail) {
-          try {
-            await fetcher(`/api/photos/${encodeURIComponent(photo.id)}/thumbnail`, {
-              method: 'PUT',
-              credentials: 'same-origin',
-              signal: controller.current?.signal,
-              headers: requestHeaders('PUT', { 'Content-Type': 'image/jpeg' }),
-              body: blob.thumbnail,
-            })
-          } catch {
-            /* Thumbnails are optional and can be regenerated. */
-          }
-        }
-      } catch (error) {
-        if (controller.current?.signal.aborted) return
-        const current = (await db.photos.get(photo.id)) as RetriablePhoto | undefined
-        if (current) {
-          const attempts = (current.upload_attempts ?? 0) + 1
-          const delay = Math.min(300_000, 2_000 * 2 ** Math.min(attempts - 1, 8))
-          await db.photos.update(photo.id, {
-            upload_state: 'error',
-            upload_attempts: attempts,
-            upload_next_attempt_at: new Date(
-              now().getTime() + delay * (0.75 + Math.random() * 0.5),
-            ).toISOString(),
-          })
-        }
-        lastError = userError(error)
-        return
+        if (await haltOnStatus(thumb.status)) return false
+      } catch {
+        // Thumbnails are optional and can be regenerated.
       }
+      return true
+    } catch (error) {
+      if (signal.aborted) return false
+      const attempts = (photo.upload_attempts ?? 0) + 1
+      const delay = Math.min(300_000, 2_000 * 2 ** Math.min(attempts - 1, 8))
+      await markFailed(userError(error), now().getTime() + delay, attempts)
+      // A transport failure can affect the whole queue. A per-photo error lets other photos proceed.
+      return !(error instanceof TypeError)
+    } finally {
+      await updateClaim({ upload_state: photo.upload_state })
     }
   }
 
-  async function pull() {
+  async function pull(signal: AbortSignal) {
     let cursor = await db.settings.get(SETTING_KEYS.syncCursor).then((row) => Number(row?.value ?? 0))
     let more = true
-    while (more && !controller.current?.signal.aborted) {
+    while (more && !signal.aborted) {
       const response = await fetcher(`/api/sync/changes?cursor=${cursor}&limit=500&schema=2`, {
         credentials: 'same-origin',
-        signal: controller.current?.signal,
+        signal,
       })
-      if (response.status === 401) {
-        authBlocked = true
-        authenticated = false
-        phase = 'signed_out'
-        return
-      }
+      if (await haltOnStatus(response.status)) return false
       if (response.status === 409) {
         let detail = ''
         try {
@@ -652,11 +703,13 @@ export function createSyncEngine(options: SyncEngineOptions = {}): SyncEngineWit
         cursor: number
         has_more: boolean
       }
+      signal.throwIfAborted()
       for (const change of page.changes) await mergeChange(change)
       cursor = page.cursor
       await db.settings.put({ key: SETTING_KEYS.syncCursor, value: cursor })
       more = page.has_more
     }
+    return !signal.aborted
   }
 
   async function mergeChange(change: {
@@ -778,7 +831,9 @@ export function createSyncEngine(options: SyncEngineOptions = {}): SyncEngineWit
             ...(collectionNextSequence === undefined ? {} : { next_sequence_number: collectionNextSequence }),
             server_revision: incoming.revision ?? incoming.server_revision ?? null,
             sync_state: conflictRows.length ? 'conflict' : 'synced',
-            ...(change.entity === 'photo' ? { upload_state: 'uploaded' } : {}),
+            ...(change.entity === 'photo'
+              ? { upload_state: incoming.server_storage_key ? 'uploaded' : 'pending' }
+              : {}),
           }
           await table.put(merged as never)
           return
@@ -795,8 +850,9 @@ export function createSyncEngine(options: SyncEngineOptions = {}): SyncEngineWit
           ...(change.entity === 'photo'
             ? {
                 upload_state: (old as Photo).upload_state,
-                upload_attempts: (old as RetriablePhoto).upload_attempts,
-                upload_next_attempt_at: (old as RetriablePhoto).upload_next_attempt_at,
+                upload_attempts: (old as PhotoWithUploadRetry)?.upload_attempts,
+                upload_next_attempt_at: (old as PhotoWithUploadRetry)?.upload_next_attempt_at,
+                upload_error: (old as PhotoWithUploadRetry)?.upload_error,
               }
             : {}),
           server_revision: incoming.revision ?? incoming.server_revision ?? old.server_revision,
@@ -807,51 +863,79 @@ export function createSyncEngine(options: SyncEngineOptions = {}): SyncEngineWit
     )
   }
 
+  async function sync(signal: AbortSignal) {
+    if (needsRepair) {
+      await repairSyncQueue(db)
+      needsRepair = false
+    }
+    if (authBlocked) {
+      phase = 'signed_out'
+      return
+    }
+    if (typeof navigator !== 'undefined' && !navigator.onLine) {
+      phase = 'offline'
+      return
+    }
+
+    signal.throwIfAborted()
+    phase = 'syncing'
+    uploadRetryAt = await storedUploadRetryAt()
+    signal.throwIfAborted()
+    lastError = uploadRetryAt > now().getTime() ? storageLow : null
+    const response = await fetcher('/api/auth/session', { credentials: 'same-origin', method: 'GET', signal })
+    if (await haltOnStatus(response.status)) return
+    if (!response.ok) throw new Error(`Session request failed (${response.status}).`)
+    authenticated = ((await response.json()) as { authenticated: boolean }).authenticated
+    if (!authenticated) {
+      await haltOnStatus(401)
+      return
+    }
+    if (!(await push(signal)) || !(await pull(signal))) return
+
+    if (uploadRetryAt <= now().getTime()) {
+      const collections = await db.collections.toArray()
+      const syncedItems = await syncedItemIds(db, collections)
+      const photos = (await db.photos.toArray())
+        .filter(
+          (photo) =>
+            syncedItems.has(photo.item_id) &&
+            photo.server_revision !== null &&
+            ['pending', 'error'].includes(photo.upload_state) &&
+            (!photo.upload_next_attempt_at || photo.upload_next_attempt_at <= timestamp()),
+        )
+        .sort((a, b) => a.created_at.localeCompare(b.created_at) || a.id.localeCompare(b.id))
+      for (const [index, photo] of photos.entries()) {
+        if (signal.aborted || authBlocked || !(await upload(photo.id, signal)) || !(await push(signal)))
+          return
+        if ((index % 2 === 1 || index === photos.length - 1) && !(await pull(signal))) return
+      }
+    }
+    phase = lastError ? 'error' : 'idle'
+    lastSuccess = timestamp()
+  }
+
   async function runCycle() {
     if (running) {
       rerun = true
       return running
     }
+    const abort = new AbortController()
+    controller.current = abort
     running = (async () => {
-      if (authBlocked) {
-        phase = 'signed_out'
-        await refreshStatus()
-        return
-      }
-      if (typeof navigator !== 'undefined' && !navigator.onLine) {
-        phase = 'offline'
-        await refreshStatus()
-        return
-      }
-      phase = 'syncing'
-      lastError = null
-      controller.current = new AbortController()
       try {
-        const session = await clients.authClient.session()
-        authenticated = session.authenticated
-        if (!session.authenticated) {
-          authBlocked = true
-          phase = 'signed_out'
-          return
-        }
-        await push()
-        if ((phase as SyncStatus['phase']) === 'signed_out') return
-        await upload()
-        if ((phase as SyncStatus['phase']) === 'signed_out') return
-        await pull()
-        if ((phase as SyncStatus['phase']) !== 'signed_out') {
-          phase = 'idle'
-          lastSuccess = timestamp()
-        }
+        // A second browser tab must not recover an active upload or send it again.
+        if (typeof navigator !== 'undefined' && navigator.locks) {
+          await navigator.locks.request(`capture-sync:${db.name}`, { signal: abort.signal }, () =>
+            sync(abort.signal),
+          )
+        } else await sync(abort.signal)
       } catch (error) {
-        if (!controller.current?.signal.aborted) {
-          await db.photos.toCollection().modify((photo) => {
-            if (photo.upload_state === 'uploading') photo.upload_state = 'error'
-          })
+        if (!abort.signal.aborted) {
           lastError = userError(error)
           phase = 'error'
         }
       } finally {
+        if (phase === 'syncing') phase = lastError ? 'error' : 'idle'
         controller.current = null
         await refreshStatus()
       }
@@ -865,24 +949,26 @@ export function createSyncEngine(options: SyncEngineOptions = {}): SyncEngineWit
     return running
   }
 
-  // Backoff protects the server from hot loops, but when connectivity returns or the user taps
-  // Sync Now, everything waiting should be retried immediately (spec §5).
-  const clearBackoff = async () => {
-    await db.transaction('rw', db.outbox, db.photos, async () => {
+  // Connectivity changes can clear transport backoff. Only Sync Now can override a 507.
+  const clearBackoff = async (force: boolean) => {
+    await db.transaction('rw', [db.outbox, db.photos, db.settings], async () => {
       await db.outbox
         .filter((item) => !item.in_flight && !!item.next_attempt_at)
         .modify({ next_attempt_at: null })
-      await db.photos
-        .filter((photo) => !!(photo as RetriablePhoto).upload_next_attempt_at)
-        .modify({ upload_next_attempt_at: null } as Partial<RetriablePhoto>)
+      if (force || (await storedUploadRetryAt()) <= now().getTime()) {
+        await db.settings.delete(storageRetryKey)
+        await db.photos
+          .filter((photo) => !!photo.upload_next_attempt_at)
+          .modify({ upload_next_attempt_at: null })
+      }
     })
   }
   const retryNow = async () => {
-    await clearBackoff()
+    await clearBackoff(true)
     await runCycle()
   }
   const onOnline = () => {
-    void retryNow()
+    void clearBackoff(false).then(runCycle)
   }
   const onVisibility = () => {
     if (document.visibilityState === 'visible') void runCycle()
@@ -895,6 +981,7 @@ export function createSyncEngine(options: SyncEngineOptions = {}): SyncEngineWit
     authBlocked = true
     authenticated = false
     phase = 'signed_out'
+    controller.current?.abort()
     void refreshStatus()
   }
   window.addEventListener('capture:authenticated', onAuthenticated)
@@ -902,15 +989,7 @@ export function createSyncEngine(options: SyncEngineOptions = {}): SyncEngineWit
   function start() {
     if (started) return
     started = true
-    const recoverOutbox = db.outbox.toCollection().modify((item) => {
-      if (item.in_flight) {
-        item.in_flight = false
-        item.sent = true
-      }
-    })
-    void db.photos.toCollection().modify((photo) => {
-      if (photo.upload_state === 'uploading') photo.upload_state = 'pending'
-    })
+    needsRepair = true
     window.addEventListener('online', onOnline)
     window.addEventListener('capture:authenticated', onAuthenticated)
     window.addEventListener('capture:signed-out', onSignedOut)
@@ -926,10 +1005,11 @@ export function createSyncEngine(options: SyncEngineOptions = {}): SyncEngineWit
       }, 1_500)
     })
     unsubscribeOutbox = () => outboxSubscription.unsubscribe()
-    void recoverOutbox.then(() => runCycle())
+    void runCycle()
   }
   function stop() {
     started = false
+    rerun = false
     window.removeEventListener('online', onOnline)
     document.removeEventListener('visibilitychange', onVisibility)
     window.removeEventListener('capture:authenticated', onAuthenticated)
@@ -971,33 +1051,21 @@ export function createSyncEngine(options: SyncEngineOptions = {}): SyncEngineWit
               return
             }
             const fields = { ...conflict.local_values }
-            const pending = (
-              await db.outbox
-                .where('[entity+entity_id]')
-                .equals([conflict.entity, conflict.entity_id])
-                .toArray()
-            ).find((item) => !item.in_flight)
-            if (pending) {
-              await db.outbox.put({ ...pending, fields: { ...pending.fields, ...fields } })
-            } else {
-              await db.outbox.add({
-                id: createId(),
-                collection_id: conflict.collection_id,
-                entity: conflict.entity,
-                entity_id: conflict.entity_id,
-                op: 'upsert',
-                base_revision: conflict.server_revision,
-                fields,
-                created_at: timestamp(),
-                attempts: 0,
-                in_flight: false,
-                last_error: null,
-                next_attempt_at: null,
-              })
-            }
+            await queueMutation(
+              db,
+              collection,
+              conflict.entity,
+              record,
+              deletionOperation(fields) ?? 'upsert',
+              fields,
+              timestamp(),
+              conflict.server_revision,
+              false,
+            )
             await table.put({
               ...record,
-              server_revision: conflict.server_revision,
+              ...fields,
+              server_revision: Math.max(record.server_revision ?? 0, conflict.server_revision),
               sync_state: 'pending',
             } as never)
           }

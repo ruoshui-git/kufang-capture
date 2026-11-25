@@ -8,6 +8,7 @@ import type {
   ClearCheck,
   StorageEstimate,
   Watchable,
+  ImportSearchRow,
 } from '../repo'
 import type {
   Collection,
@@ -28,6 +29,7 @@ import type {
 import { ENTRY_FIELDS, ITEM_FIELDS, byCoverThenNewest, formatSequence } from '../types'
 import { createId } from '../ids'
 import { addDecimals, isIncomplete, normalizeUnit } from '../summary'
+import { buildImportSearchRows } from '../entries/importSearch'
 import {
   configurePhotoBlobLoader,
   crc32,
@@ -46,10 +48,13 @@ interface RepoOptions {
   binaryStorage?: 'auto' | 'bytes'
 }
 
-interface PhotoWithUploadRetry extends Photo {
+export interface PhotoWithUploadRetry extends Photo {
   upload_attempts?: number
   upload_next_attempt_at?: string | null
+  upload_error?: string | null
 }
+
+type QueuedMutation = OutboxItem & { queue_order?: Id }
 
 /**
  * Schema v1: collections by id/status; entries by id, collection/sequence (unique),
@@ -68,7 +73,7 @@ class CaptureDb extends Dexie {
   entries!: Table<Entry, Id>
   photos!: Table<PhotoWithUploadRetry, Id>
   photoBlobs!: Table<StoredPhotoBlobRow, Id>
-  outbox!: Table<OutboxItem, Id>
+  outbox!: Table<QueuedMutation, Id>
   settings!: Table<Setting, string>
   conflicts!: Table<import('../sync/api').SyncConflict, Id>
   items!: Table<Item, Id>
@@ -298,6 +303,165 @@ export async function hasLocalBlob(id: Id, databaseName = 'kufang-capture'): Pro
   return (await getCaptureDb(databaseName).photoBlobs.get(id)) !== undefined
 }
 
+export function compareQueued(a: QueuedMutation, b: QueuedMutation) {
+  return (
+    a.created_at.localeCompare(b.created_at) || (a.queue_order ?? a.id).localeCompare(b.queue_order ?? b.id)
+  )
+}
+
+export function isUnsent(row: OutboxItem) {
+  return !row.in_flight && !row.sent && row.attempts === 0
+}
+
+export function deletionOperation(fields: { deleted_at?: unknown }) {
+  if (fields.deleted_at === null) return 'restore' as const
+  if (typeof fields.deleted_at === 'string') return 'delete' as const
+}
+
+export function newMutationId(row: QueuedMutation): QueuedMutation {
+  return {
+    ...row,
+    id: createId(),
+    queue_order: row.queue_order ?? row.id,
+    sent: false,
+    in_flight: false,
+    attempts: 0,
+    last_error: null,
+    next_attempt_at: null,
+  }
+}
+
+function mutationFields(fields: Record<string, unknown>) {
+  const { upload_error: _uploadError, ...result } = fields
+  return result
+}
+
+/** Called within the transaction writing the local record. */
+export async function queueMutation(
+  db: CaptureDb,
+  collection: Collection,
+  entity: OutboxEntity,
+  record: Collection | Item | Entry | Photo,
+  op: OutboxOp,
+  fields: Record<string, unknown>,
+  at: string,
+  baseRevision = record.server_revision,
+  coalesce = true,
+) {
+  if (collection.storage_mode !== 'synced') return
+  const rows = await db.outbox.where('[entity+entity_id]').equals([entity, record.id]).toArray()
+  rows.sort(compareQueued)
+  const last = rows.at(-1)
+  const existing =
+    coalesce && last && isUnsent(last) && last.op !== 'purge' && op !== 'purge' ? last : undefined
+  const create = baseRevision === null && !last && op !== 'purge'
+  const mergeWithCreate = rows.length === 1 && existing?.base_revision === null && existing.op === 'upsert'
+  const patch = mutationFields(create ? { ...record, ...fields } : fields)
+  // Full-record updates (for example Undo Move) can carry an unchanged tombstone.
+  if (op === 'upsert' && !create && !mergeWithCreate) delete patch.deleted_at
+  if (existing) {
+    await db.outbox.put({
+      ...existing,
+      op: mergeWithCreate || op === 'upsert' ? existing.op : op,
+      fields: { ...existing.fields, ...patch },
+    })
+    return
+  }
+  await db.outbox.add({
+    id: createId(),
+    collection_id: collection.id,
+    entity,
+    entity_id: record.id,
+    op: create ? 'upsert' : op,
+    base_revision: baseRevision,
+    fields: patch,
+    created_at: last && last.created_at >= at ? new Date(Date.parse(last.created_at) + 1).toISOString() : at,
+    attempts: 0,
+    in_flight: false,
+    last_error: null,
+    next_attempt_at: null,
+  })
+}
+
+/** Rebuild a legacy delete/restore that was queued in place of a create. */
+export function repairMissingCreate(row: QueuedMutation, record: Entry | Photo): QueuedMutation {
+  return {
+    ...row,
+    op: 'upsert',
+    fields: mutationFields({ ...record, ...row.fields }),
+  }
+}
+
+export async function syncedItemIds(db: CaptureDb, collections: Collection[]) {
+  const modes = new Map(collections.map((collection) => [collection.id, collection.storage_mode]))
+  const synced = new Set<Id>()
+  const privateItems = new Set<Id>()
+  await db.entries.each((entry) => {
+    const mode = modes.get(entry.collection_id)
+    if (mode === 'synced') synced.add(entry.item_id)
+    if (mode === 'local_only') privateItems.add(entry.item_id)
+  })
+  for (const id of privateItems) synced.delete(id)
+  return synced
+}
+
+export async function repairSyncQueue(db: CaptureDb) {
+  await db.transaction('rw', [db.collections, db.entries, db.photos, db.outbox], async () => {
+    const collections = await db.collections.toArray()
+    const syncedCollections = new Set(collections.filter((c) => c.storage_mode === 'synced').map((c) => c.id))
+    const syncedItems = await syncedItemIds(db, collections)
+    const rows = (await db.outbox.toArray()).sort(compareQueued)
+    const seen = new Set<string>()
+    for (const row of rows) {
+      const key = `${row.entity}:${row.entity_id}`
+      const hasEarlier = seen.has(key)
+      seen.add(key)
+      const wasUnsent = isUnsent(row)
+      if (row.in_flight) {
+        row.in_flight = false
+        row.sent = true
+        await db.outbox.put(row)
+      }
+      if (!syncedCollections.has(row.collection_id) || (row.entity !== 'entry' && row.entity !== 'photo'))
+        continue
+      const record =
+        row.entity === 'entry' ? await db.entries.get(row.entity_id) : await db.photos.get(row.entity_id)
+      if (!record || !syncedItems.has(record.item_id)) continue
+      const lifecycle = deletionOperation(row.fields)
+      if (
+        wasUnsent &&
+        row.op === 'upsert' &&
+        lifecycle &&
+        (row.base_revision !== null || record.server_revision !== null || hasEarlier)
+      ) {
+        await db.outbox.put({
+          ...row,
+          op: lifecycle,
+          base_revision: row.base_revision ?? record.server_revision,
+        })
+      } else if ((row.op === 'delete' || row.op === 'restore') && row.base_revision === null && !hasEarlier) {
+        if (record.server_revision === null && (wasUnsent || row.last_error === 'Record does not exist')) {
+          const repaired = repairMissingCreate(wasUnsent ? row : newMutationId(row), record)
+          if (!wasUnsent) await db.outbox.delete(row.id)
+          await db.outbox.put(repaired)
+        } else if (record.server_revision !== null && wasUnsent) {
+          await db.outbox.put({ ...row, base_revision: record.server_revision })
+        }
+      }
+    }
+    await db.photos.toCollection().modify((photo) => {
+      if (!syncedItems.has(photo.item_id)) return
+      if (photo.upload_state === 'uploading') photo.upload_state = 'pending'
+      if (photo.upload_state === 'not_needed' && photo.server_revision !== null) {
+        photo.upload_state = 'pending'
+        photo.upload_attempts = 0
+        photo.upload_next_attempt_at = null
+        photo.upload_error = null
+      }
+    })
+  })
+}
+
 export function createRepo(options: RepoOptions = {}): Repo {
   const db = getCaptureDb(options.databaseName)
   if (options.binaryStorage === 'bytes') blobSupport.set(db, Promise.resolve(false))
@@ -306,42 +470,13 @@ export function createRepo(options: RepoOptions = {}): Repo {
   const stamp = () => now().toISOString()
   configurePhotoBlobLoader(async (id) => decodePhotoBlob(await db.photoBlobs.get(id)))
 
-  const enqueue = async (
+  const enqueue = (
     collection: Collection,
     entity: OutboxEntity,
     record: Collection | Item | Entry | Photo,
     op: OutboxOp,
     fields: Record<string, unknown>,
-  ) => {
-    if (collection.storage_mode !== 'synced') return
-    const matches = await db.outbox.where('[entity+entity_id]').equals([entity, record.id]).toArray()
-    const existing = matches.find((item) => !item.in_flight && !item.sent && item.attempts === 0)
-    const at = stamp()
-    if (existing) {
-      await db.outbox.put({
-        ...existing,
-        op: existing.op === 'upsert' && op === 'upsert' ? 'upsert' : op,
-        fields: { ...existing.fields, ...fields },
-        base_revision: existing.base_revision,
-        created_at: existing.created_at,
-      })
-    } else {
-      await db.outbox.add({
-        id: createId(),
-        collection_id: collection.id,
-        entity,
-        entity_id: record.id,
-        op,
-        base_revision: record.server_revision,
-        fields,
-        created_at: at,
-        attempts: 0,
-        in_flight: false,
-        last_error: null,
-        next_attempt_at: null,
-      })
-    }
-  }
+  ) => queueMutation(db, collection, entity, record, op, fields, stamp())
   const touchCollection = async (collection: Collection, at: string) => {
     const updated = {
       ...collection,
@@ -707,7 +842,7 @@ export function createRepo(options: RepoOptions = {}): Repo {
       .filter((photo) => photo.deleted_at === null)
       .sort((a, b) => a.sort_order - b.sort_order)
     const coverId = active.find((photo) => photo.is_cover)?.id ?? active[0]?.id
-    for (const photo of rows) {
+    for (const photo of active) {
       const cover = photo.id === coverId
       if (photo.is_cover !== cover) {
         const updated = {
@@ -1540,6 +1675,70 @@ export function createRepo(options: RepoOptions = {}): Repo {
           ),
         )
       }) as Watchable<import('../repo').ImportCandidate[]>,
+    watchImportSearch: (targetId, query) =>
+      liveQuery(async () => {
+        const [target, collections, entries, photos] = await Promise.all([
+          db.collections.get(targetId),
+          db.collections.toArray(),
+          db.entries.toArray(),
+          db.photos.toArray(),
+        ])
+        if (!target) return []
+        const sourceCollections = collections.filter(
+          (collection) => collection.id !== targetId && collection.storage_mode === target.storage_mode,
+        )
+        const sourceIds = new Set(sourceCollections.map((collection) => collection.id))
+        const active = entries.filter(
+          (entry) => sourceIds.has(entry.collection_id) && entry.deleted_at === null,
+        )
+        const [views, items] = await Promise.all([
+          entryViews(active),
+          db.items.bulkGet([...new Set(active.map((entry) => entry.item_id))]),
+        ])
+        const itemById = new Map(items.filter(Boolean).map((item) => [item!.id, item!]))
+        const collectionById = new Map(sourceCollections.map((collection) => [collection.id, collection]))
+        const photosByItem = new Map<Id, Photo[]>()
+        for (const photo of photos) {
+          const group = photosByItem.get(photo.item_id) ?? []
+          group.push(photo)
+          photosByItem.set(photo.item_id, group)
+        }
+        const viewById = new Map(views.map((view) => [view.id, view]))
+        const sourceRows = active.flatMap((entry) => {
+          const view = viewById.get(entry.id)
+          const collection = collectionById.get(entry.collection_id)
+          if (!view || !collection) return []
+          const itemPhotos = photosByItem.get(entry.item_id) ?? []
+          const related = itemPhotos.filter((photo) => photo.deleted_at === null).sort(byCoverThenNewest)
+          const last_edited_at =
+            [
+              entry.updated_at,
+              itemById.get(entry.item_id)?.updated_at ?? entry.updated_at,
+              ...itemPhotos.map((photo) => photo.updated_at),
+            ]
+              .sort()
+              .at(-1) ?? entry.updated_at
+          return [
+            {
+              entry: view,
+              photo_count: related.length,
+              recent_photos: related.slice(0, 3),
+              is_incomplete: isIncomplete(view, related.length > 0),
+              pending_sync: false,
+              last_edited_at,
+              collection_id: collection.id,
+              collection_name: collection.name,
+              collection_status: collection.status,
+            },
+          ]
+        })
+        const targetItemIds = new Set(
+          entries
+            .filter((entry) => entry.collection_id === targetId && entry.deleted_at === null)
+            .map((entry) => entry.item_id),
+        )
+        return buildImportSearchRows(sourceRows, targetItemIds, query)
+      }) as Watchable<ImportSearchRow[]>,
     importEntries: async (targetId, sourceIds) =>
       db.transaction(
         'rw',
@@ -1649,6 +1848,7 @@ export function createRepo(options: RepoOptions = {}): Repo {
             if (!collection) continue
             const saved = {
               ...prior,
+              server_revision: current.server_revision,
               deleted_at: undo.created_entry_ids.includes(prior.id) ? at : prior.deleted_at,
               updated_at: at,
               revision: current.revision + 1,
@@ -1686,6 +1886,7 @@ export function createRepo(options: RepoOptions = {}): Repo {
             if (!current) continue
             const saved = {
               ...prior,
+              server_revision: current.server_revision,
               updated_at: at,
               revision: current.revision + 1,
               sync_state: prior.sync_state === 'local_only' ? ('local_only' as const) : ('pending' as const),
@@ -1702,6 +1903,7 @@ export function createRepo(options: RepoOptions = {}): Repo {
             if (!current) continue
             const saved = {
               ...prior,
+              server_revision: current.server_revision,
               next_sequence_number: current.next_sequence_number,
               updated_at: at,
               revision: current.revision + 1,
@@ -1980,6 +2182,7 @@ export function createRepo(options: RepoOptions = {}): Repo {
         if (!collection) return
         const saved = {
           ...photo,
+          is_cover: false,
           deleted_at: stamp(),
           updated_at: stamp(),
           revision: photo.revision + 1,
@@ -1988,7 +2191,10 @@ export function createRepo(options: RepoOptions = {}): Repo {
         }
         await db.photos.put(saved)
         await touchCollection(collection, saved.updated_at)
-        await enqueue(collection, 'photo', saved, 'delete', { deleted_at: saved.deleted_at })
+        await enqueue(collection, 'photo', saved, 'delete', {
+          deleted_at: saved.deleted_at,
+          ...(photo.is_cover ? { is_cover: false } : {}),
+        })
         const contextEntry = await db.entries.where('item_id').equals(photo.item_id).first()
         if (contextEntry) await validateCover(contextEntry.id, collection)
       }),
@@ -2001,6 +2207,14 @@ export function createRepo(options: RepoOptions = {}): Repo {
         const saved = {
           ...photo,
           deleted_at: null,
+          ...(collection.storage_mode === 'synced' && photo.upload_state === 'not_needed'
+            ? {
+                upload_state: 'pending' as const,
+                upload_attempts: 0,
+                upload_next_attempt_at: null,
+                upload_error: null,
+              }
+            : {}),
           updated_at: stamp(),
           revision: photo.revision + 1,
           sync_state:
@@ -2061,6 +2275,7 @@ export function createRepo(options: RepoOptions = {}): Repo {
               ...photo,
               upload_state: photo.upload_state === 'uploaded' ? 'uploaded' : 'not_needed',
               upload_next_attempt_at: null,
+              upload_error: null,
               sync_state: 'local_only' as const,
             })),
           )
@@ -2091,7 +2306,7 @@ export function createRepo(options: RepoOptions = {}): Repo {
         for (const entry of entries) {
           const pending = { ...entry, sync_state: 'pending' as const }
           await db.entries.put(pending)
-          await enqueue(synced, 'entry', pending, 'upsert', { ...pending })
+          await enqueue(synced, 'entry', pending, deletionOperation(pending) ?? 'upsert', { ...pending })
         }
         for (const itemId of itemIds) {
           const item = await db.items.get(itemId)
@@ -2104,12 +2319,13 @@ export function createRepo(options: RepoOptions = {}): Repo {
           const pending = {
             ...photo,
             sync_state: 'pending' as const,
-            upload_state: photo.deleted_at === null ? ('pending' as const) : photo.upload_state,
+            upload_state: photo.upload_state === 'uploaded' ? ('uploaded' as const) : ('pending' as const),
+            upload_error: null,
             upload_attempts: 0,
             upload_next_attempt_at: null,
           }
           await db.photos.put(pending)
-          await enqueue(synced, 'photo', pending, 'upsert', { ...pending })
+          await enqueue(synced, 'photo', pending, deletionOperation(pending) ?? 'upsert', { ...pending })
         }
       }),
     readForExport: async (collectionIds) =>

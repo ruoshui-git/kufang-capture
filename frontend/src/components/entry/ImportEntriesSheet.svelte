@@ -2,7 +2,7 @@
   import { onDestroy } from 'svelte'
   import { repo } from '$lib/db'
   import type { Collection, Id } from '$lib/types'
-  import type { ImportCandidate, ImportResult, Watchable } from '$lib/repo'
+  import type { ImportCandidate, ImportResult, ImportSearchRow, Watchable } from '$lib/repo'
   import { entryDisplayTitle, formatSequence } from '$lib/types'
   import { thumbnailUrl } from '$lib/photos'
   import { showToast } from '../../app/toasts.svelte'
@@ -19,21 +19,27 @@
   let sourceId = $state<Id>('')
   let sourceName = $state('')
   let candidates = $state<ImportCandidate[]>([])
-  let selected = $state(new Set<Id>())
+  let searchRows = $state<ImportSearchRow[]>([])
+  let selected = $state(new Map<Id, Id>())
   let search = $state('')
   let busy = $state(false)
   let error = $state('')
+  let limit = $state(50)
+  let searched = $state(false)
   let thumbnails = $state<Record<Id, string>>({})
   let sourceSubscription: ReturnType<Watchable<Collection[]>['subscribe']> | undefined
   let candidateSubscription: ReturnType<Watchable<ImportCandidate[]>['subscribe']> | undefined
+  let searchSubscription: ReturnType<Watchable<ImportSearchRow[]>['subscribe']> | undefined
+  let debounce: ReturnType<typeof setTimeout> | undefined
 
   $effect(() => {
     if (!open) return
     step = 1
     sourceId = ''
-    selected = new Set()
+    selected = new Map()
     search = ''
     error = ''
+    limit = 50
     stopSources()
     sourceSubscription = repo.watchImportSources(targetCollectionId).subscribe((items) => {
       sources = [...items].sort((a, b) => Number(a.status === 'archived') - Number(b.status === 'archived'))
@@ -41,12 +47,16 @@
     return () => {
       stopSources()
       stopCandidates()
+      stopSearch()
+      if (debounce) clearTimeout(debounce)
     }
   })
 
   onDestroy(() => {
     stopSources()
     stopCandidates()
+    stopSearch()
+    if (debounce) clearTimeout(debounce)
   })
 
   function stopSources() {
@@ -59,15 +69,19 @@
     else candidateSubscription?.unsubscribe()
     candidateSubscription = undefined
   }
-  function chooseSource(source: Collection) {
-    stopCandidates()
-    sourceId = source.id
-    sourceName = source.name
-    step = 2
-    candidates = []
-    selected = new Set()
-    search = ''
-    watchCandidates('')
+  function stopSearch() {
+    if (typeof searchSubscription === 'function') searchSubscription()
+    else searchSubscription?.unsubscribe()
+    searchSubscription = undefined
+  }
+  function loadThumbnails(rows: Array<{ recent_photos: Array<{ id: Id }> }>) {
+    for (const row of rows) {
+      const photo = row.recent_photos[0]
+      if (photo && !thumbnails[photo.id])
+        void thumbnailUrl(photo.id).then((url) => {
+          if (url) thumbnails[photo.id] = url
+        })
+    }
   }
   function watchCandidates(query: string) {
     stopCandidates()
@@ -75,28 +89,61 @@
       .watchImportCandidates(targetCollectionId, sourceId, query)
       .subscribe((items) => {
         candidates = items
-        for (const candidate of items) {
-          const photo = candidate.recent_photos[0]
-          if (photo && !thumbnails[photo.id])
-            void thumbnailUrl(photo.id).then((url) => {
-              if (url) thumbnails[photo.id] = url
-            })
-        }
+        loadThumbnails(items.slice(0, limit))
       })
+  }
+  function watchSearch(query: string) {
+    stopSearch()
+    searchSubscription = repo.watchImportSearch(targetCollectionId, query).subscribe((items) => {
+      searchRows = items
+      searched = true
+      loadThumbnails(items.slice(0, limit))
+    })
+  }
+  function placementsText(row: ImportSearchRow) {
+    const shown = row.placements.slice(0, 2).map((placement) => {
+      const count = [placement.quantity, placement.unit].filter(Boolean).join(' ')
+      const place = `${placement.collection_name} ${formatSequence(placement.sequence_number)}`
+      return count ? `${place} · ${count}` : place
+    })
+    const more = row.placements.length - shown.length
+    return shown.join('; ') + (more > 0 ? ` +${more} more` : '')
+  }
+  function chooseSource(source: Collection) {
+    stopSearch()
+    sourceId = source.id
+    sourceName = source.name
+    step = 2
+    search = ''
+    candidates = []
+    limit = 50
+    watchCandidates('')
   }
   function searchChanged(value: string) {
     search = value
-    watchCandidates(value)
+    limit = 50
+    if (step === 2) {
+      watchCandidates(value)
+      return
+    }
+    if (debounce) clearTimeout(debounce)
+    if (!value.trim()) {
+      stopSearch()
+      searchRows = []
+      searched = false
+      return
+    }
+    debounce = setTimeout(() => watchSearch(value), 150)
   }
   function back() {
     stopCandidates()
     step = 1
-    selected = new Set()
+    sourceId = ''
   }
-  function toggle(id: Id) {
-    const next = new Set(selected)
-    if (next.has(id)) next.delete(id)
-    else next.add(id)
+  function toggle(itemId: Id, entryId: Id) {
+    const next = new Map(selected)
+    if (next.has(itemId)) next.delete(itemId)
+    else next.set(itemId, entryId)
     selected = next
   }
   async function importSelected() {
@@ -104,7 +151,7 @@
     busy = true
     error = ''
     try {
-      const result = await repo.importEntries(targetCollectionId, [...selected])
+      const result = await repo.importEntries(targetCollectionId, [...selected.values()])
       const count = result.created.length + result.restored.length
       const restoredCount = result.restored.length
       open = false
@@ -131,13 +178,53 @@
   {#snippet children()}
     {#if step === 1}
       <h2>Import from</h2>
-      {#if sources.length}
+      <label class="search-field"
+        >Search all collections<input
+          aria-label="Search all collections"
+          value={search}
+          oninput={(event) => searchChanged(event.currentTarget.value)}
+        /></label
+      >
+      {#if search.trim()}
+        <div class="candidate-list" aria-label="Import search results">
+          {#each searchRows.slice(0, limit) as row (row.entry.item_id)}
+            {@const photo = row.recent_photos[0]}
+            <label class="candidate-row" class:disabled={row.already_here}>
+              <input
+                type="checkbox"
+                checked={row.already_here || selected.has(row.entry.item_id)}
+                disabled={row.already_here}
+                onchange={() => toggle(row.entry.item_id, row.entry.id)}
+              />
+              {#if photo && thumbnails[photo.id]}<img src={thumbnails[photo.id]} alt="" />{:else}<span
+                  class="thumb-placeholder">Photo</span
+                >{/if}
+              <span class="candidate-copy"
+                ><strong>{entryDisplayTitle(row.entry)}</strong>{#if row.entry.dimensions}<small
+                    >{row.entry.dimensions}</small
+                  >{/if}<span class="placements">{placementsText(row)}</span></span
+              >
+              {#if row.archived}<span class="archived">Archived</span>{/if}
+              {#if row.already_here}<span class="already">Already here</span>{/if}
+            </label>
+          {/each}
+        </div>
+        {#if searched && searchRows.length === 0}<p class="quiet" role="status">No matching items.</p>{/if}
+        {#if searchRows.length > limit}<Button
+            variant="quiet"
+            onclick={() => {
+              limit += 50
+              loadThumbnails(searchRows.slice(limit - 50, limit))
+            }}>Show more</Button
+          >{/if}
+      {:else if sources.length}
         <div class="source-list">
           {#each sources as source (source.id)}
-            <button class="source-row" onclick={() => chooseSource(source)}>
-              <span>{source.name}</span>
-              {#if source.status === 'archived'}<span class="archived">Archived</span>{/if}
-            </button>
+            <button class="source-row" onclick={() => chooseSource(source)}
+              ><span>{source.name}</span>{#if source.status === 'archived'}<span class="archived"
+                  >Archived</span
+                >{/if}</button
+            >
           {/each}
         </div>
       {:else}
@@ -159,14 +246,14 @@
         /></label
       >
       <div class="candidate-list" aria-label="Import candidates">
-        {#each candidates as candidate (candidate.entry.id)}
+        {#each candidates.slice(0, limit) as candidate (candidate.entry.id)}
           {@const photo = candidate.recent_photos[0]}
           <label class="candidate-row" class:disabled={candidate.already_here}>
             <input
               type="checkbox"
-              checked={candidate.already_here || selected.has(candidate.entry.id)}
+              checked={candidate.already_here || selected.has(candidate.entry.item_id)}
               disabled={candidate.already_here}
-              onchange={() => toggle(candidate.entry.id)}
+              onchange={() => toggle(candidate.entry.item_id, candidate.entry.id)}
             />
             {#if photo && thumbnails[photo.id]}<img src={thumbnails[photo.id]} alt="" />{:else}<span
                 class="thumb-placeholder">Photo</span
@@ -184,13 +271,24 @@
           </label>
         {/each}
       </div>
-      <div class="actions">
-        <Button disabled={selected.size === 0 || busy} onclick={() => void importSelected()}
-          >{busy ? 'Importing…' : `Import ${selected.size}`}</Button
-        >
-      </div>
-      {#if error}<p role="alert">{error}</p>{/if}
+      {#if candidates.length > limit}<Button
+          variant="quiet"
+          onclick={() => {
+            limit += 50
+            loadThumbnails(candidates.slice(limit - 50, limit))
+          }}>Show more</Button
+        >{/if}
     {/if}
+    <div class="actions">
+      <span class="selected-count">{selected.size} selected</span><Button
+        variant="quiet"
+        disabled={!selected.size}
+        onclick={() => (selected = new Map())}>Clear</Button
+      ><Button disabled={selected.size === 0 || busy} onclick={() => void importSelected()}
+        >{busy ? 'Importing…' : `Import ${selected.size}`}</Button
+      >
+    </div>
+    {#if error}<p role="alert">{error}</p>{/if}
   {/snippet}
 </Sheet>
 
@@ -199,8 +297,7 @@
     margin: 0 0 var(--space-3);
     font-size: var(--text-xl);
   }
-  /* No inner scroll areas: the sheet scrolls as one container. A scroller nested in a modal dialog
-     stops receiving taps in WebKit after the viewport changes (keyboard, rotation, toolbar). */
+  /* Keep the sheet as the only scroller so WebKit can still receive taps after the keyboard opens. */
   .source-list,
   .candidate-list {
     display: grid;
@@ -255,7 +352,7 @@
   }
   .candidate-row {
     position: relative;
-    min-height: 64px;
+    min-height: var(--size-thumb);
     cursor: pointer;
   }
   .candidate-row input {
@@ -287,20 +384,38 @@
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
-  }
-  .candidate-copy small {
     color: var(--color-muted);
+    font-size: var(--text-sm);
   }
   .candidate-row.disabled {
     opacity: 0.7;
     cursor: default;
   }
   .actions {
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    gap: var(--space-3);
+    margin-top: var(--space-3);
+  }
+  .selected-count {
+    flex: 1;
+    color: var(--color-muted);
+    font-size: var(--text-sm);
+  }
+  .candidate-copy > .placements {
+    display: -webkit-box;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
+    line-clamp: 2;
+    white-space: normal;
+  }
+  .candidate-copy small {
+    color: var(--color-muted);
+  }
+  .actions {
     position: sticky;
     bottom: calc(-1 * var(--space-5));
-    display: flex;
-    justify-content: flex-end;
-    margin-top: var(--space-4);
     padding: var(--space-3) 0 var(--space-5);
     background: var(--color-card);
   }

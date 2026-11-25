@@ -121,6 +121,22 @@ export interface ImportCandidate extends EntryRow {
   already_here: boolean
 }
 
+export interface ImportSearchPlacement {
+  collection_id: Id
+  collection_name: string
+  sequence_number: number
+  quantity: string | null
+  unit: string
+  archived: boolean
+  last_edited_at: string
+}
+
+export interface ImportSearchRow extends EntryRow {
+  placements: ImportSearchPlacement[]
+  archived: boolean
+  already_here: boolean
+}
+
 export interface ImportResult {
   /** New entries created in the target, in source order. */
   created: EntryView[]
@@ -229,6 +245,8 @@ export interface Repo {
     sourceCollectionId: Id,
     search: string,
   ): Watchable<ImportCandidate[]>
+  /** Search active shared items across same-mode collections, grouped once per item. */
+  watchImportSearch(targetCollectionId: Id, query: string): Watchable<ImportSearchRow[]>
   /**
    * In ONE transaction: reject unless both collections exist and share a storage mode; for each
    * source entry, skip it if the target has an active entry for its item, restore the target's

@@ -2,7 +2,7 @@ import { Blob as NodeBlobImpl } from 'node:buffer'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import Dexie from 'dexie'
 import type { Id, OutboxEntity, Photo } from '../types'
-import { createRepo, getCaptureDb } from '../db'
+import { createRepo, getCaptureDb, queueMutation, repairSyncQueue } from '../db'
 import { sha256 } from '../photos'
 import { createSyncEngine } from './index'
 
@@ -130,6 +130,33 @@ class MemoryServer {
     if (duplicate) return { ...duplicate, status: 'duplicate' }
     const key = this.key(mutation.entity, mutation.entity_id)
     const existing = this.records.get(key)
+    if (!existing && (mutation.op !== 'upsert' || mutation.base_revision !== null)) {
+      const rejected = {
+        id: mutation.id,
+        status: 'rejected',
+        code: 'missing_parent',
+        message: 'Record does not exist',
+        server_revision: null,
+      }
+      this.mutationResults.set(mutation.id, rejected)
+      return rejected
+    }
+    if (existing && mutation.base_revision === null) {
+      const rejected = {
+        id: mutation.id,
+        status: 'rejected',
+        code: 'invalid_field',
+        message: 'base_revision is required for updates',
+        server_revision: existing.revision,
+      }
+      this.mutationResults.set(mutation.id, rejected)
+      return rejected
+    }
+    const fields = { ...mutation.fields }
+    if (existing && mutation.op === 'upsert') delete fields.deleted_at
+    if (existing && mutation.op === 'delete')
+      fields.deleted_at = new Date(clock().getTime() + (this.changes.length + 1) * 1_000).toISOString()
+    if (existing && mutation.op === 'restore') fields.deleted_at = null
     if (mutation.entity === 'entry' && !existing) {
       const sibling = [...this.records.values()].find(
         (row) =>
@@ -158,10 +185,10 @@ class MemoryServer {
         server_revision: 0,
       }
     const conflicting = existing
-      ? Object.keys(mutation.fields).filter(
+      ? Object.keys(fields).filter(
           (field) =>
             (existing.field_revisions[field] ?? 0) > (mutation.base_revision ?? 0) &&
-            existing[field] !== mutation.fields[field],
+            existing[field] !== fields[field],
         )
       : []
     if (conflicting.length) {
@@ -177,7 +204,6 @@ class MemoryServer {
       return result
     }
     const revision = (existing?.revision ?? 0) + 1
-    const fields = { ...mutation.fields }
     if (mutation.entity === 'collection' && typeof fields.next_sequence_number === 'number') {
       fields.next_sequence_number = Math.max(
         Number(existing?.next_sequence_number ?? 1),
@@ -584,7 +610,7 @@ describe('sync acceptance against an in-memory API server', () => {
     await putStarted
     firstEngine.stop()
     await pending
-    expect((await fixture.db.photos.get(photo.id))?.upload_state).toBe('uploading')
+    expect((await fixture.db.photos.get(photo.id))?.upload_state).toBe('pending')
     const secondEngine = makeEngine(fixture.name, server)
     secondEngine.start()
     await waitFor(async () => (await fixture.db.photos.get(photo.id))?.upload_state === 'uploaded')
@@ -1011,10 +1037,11 @@ describe('sync acceptance against an in-memory API server', () => {
     await fixture.db.delete()
   })
 
-  it('pauses uploads on 507, reports low storage, and continues metadata synchronization', async () => {
+  it('stops at a 507 and resumes immediately on Sync Now', async () => {
     const server = new MemoryServer()
     const fixture = await syncedEntry(server)
     const photo = await addPhoto(fixture.repo, fixture.entry.id)
+    const second = await addPhoto(fixture.repo, fixture.entry.id)
     server.storageLow = true
     await fixture.engine.syncNow()
     expect(await fixture.db.outbox.where('collection_id').equals(fixture.collection.id).count()).toBe(0)
@@ -1025,14 +1052,571 @@ describe('sync acceptance against an in-memory API server', () => {
       (await waitForStatus(fixture.engine, (value) => value.last_error === 'Server storage is low'))
         .last_error,
     ).toBe('Server storage is low')
+    expect(server.requests.at(-1)).toMatchObject({ url: `/api/photos/${photo.id}/original`, method: 'PUT' })
+    expect((await fixture.db.photos.get(second.id))?.upload_state).toBe('pending')
     server.storageLow = false
     await fixture.engine.syncNow()
     expect(
       server.requests.filter((request) => request.url.endsWith('/original') && request.method === 'PUT'),
-    ).toHaveLength(1)
+    ).toHaveLength(3)
+    expect((await fixture.db.photos.get(photo.id))?.upload_state).toBe('uploaded')
+    expect((await fixture.db.photos.get(second.id))?.upload_state).toBe('uploaded')
+    await fixture.db.delete()
+  })
+
+  it('resumes uploads on a scheduled cycle after the storage backoff expires', async () => {
+    const server = new MemoryServer()
+    const fixture = await syncedEntry(server)
+    const photo = await addPhoto(fixture.repo, fixture.entry.id)
+    const other = await addPhoto(fixture.repo, fixture.entry.id)
+    server.storageLow = true
+    await fixture.engine.runScheduledCycle()
+    server.storageLow = false
+    const restarted = makeEngine(fixture.name, server)
+    fixedNow.value = new Date(clock().getTime() + 299_000)
+    await restarted.runScheduledCycle()
+    expect(server.stored.size).toBe(0)
+    fixedNow.value = new Date(clock().getTime() + 1_000)
+    await restarted.runScheduledCycle()
+    expect(server.stored.has(photo.id)).toBe(true)
+    expect(server.stored.has(other.id)).toBe(true)
+    expect((await fixture.db.photos.get(photo.id))?.upload_state).toBe('uploaded')
+    await fixture.db.delete()
+  })
+
+  it('leaves a cover deleted after one delete and pulls the new cover', async () => {
+    const server = new MemoryServer()
+    const fixture = await syncedEntry(server)
+    const cover = await addPhoto(fixture.repo, fixture.entry.id)
+    const next = await addPhoto(fixture.repo, fixture.entry.id)
+    await fixture.engine.syncNow()
+    await fixture.repo.deletePhoto(cover.id)
+    expect(
+      await fixture.db.outbox.where('[entity+entity_id]').equals(['photo', cover.id]).first(),
+    ).toMatchObject({
+      op: 'delete',
+      fields: { is_cover: false, deleted_at: expect.any(String) },
+    })
+    await fixture.engine.syncNow()
+    expect(await fixture.db.outbox.count()).toBe(0)
+    expect(server.records.get(server.key('photo', cover.id))).toMatchObject({
+      deleted_at: expect.any(String),
+      is_cover: false,
+    })
+    expect(await fixture.db.photos.get(cover.id)).toMatchObject({
+      deleted_at: expect.any(String),
+      is_cover: false,
+    })
+    expect(await fixture.db.photos.get(next.id)).toMatchObject({ deleted_at: null, is_cover: true })
+    await fixture.db.delete()
+  })
+
+  it('creates offline entries and photos with their tombstones and backs up the original in trash', async () => {
+    const server = new MemoryServer()
+    const name = dbName()
+    const repo = makeRepo(name)
+    const db = getCaptureDb(name)
+    const collection = await repo.createCollection({ name: 'Room', storage_mode: 'synced' })
+    const entry = await repo.createEntry(collection.id)
+    const photo = await addPhoto(repo, entry.id)
+    await repo.deletePhoto(photo.id)
+    await repo.deleteEntry(entry.id)
+    for (const [entity, id] of [
+      ['entry', entry.id],
+      ['photo', photo.id],
+    ]) {
+      expect(await db.outbox.where('[entity+entity_id]').equals([entity!, id!]).first()).toMatchObject({
+        op: 'upsert',
+        base_revision: null,
+        fields: { deleted_at: expect.any(String), created_at: expect.any(String) },
+      })
+    }
+    await makeEngine(name, server).syncNow()
+    expect(await db.outbox.count()).toBe(0)
+    expect(server.records.get(server.key('entry', entry.id))?.deleted_at).toEqual(expect.any(String))
+    expect(server.records.get(server.key('photo', photo.id))?.deleted_at).toEqual(expect.any(String))
+    expect(server.stored.has(photo.id)).toBe(true)
+    expect((await db.photos.get(photo.id))?.upload_state).toBe('uploaded')
+    await db.delete()
+  })
+
+  it('preserves both sides of an offline move undo, including the new placement in trash', async () => {
+    const server = new MemoryServer()
+    const { db, repo, engine, entry } = await syncedEntry(server)
+    const target = await repo.createCollection({ name: 'Shelf', storage_mode: 'synced' })
+    await repo.updateEntry(entry.id, { quantity: '8', entry_notes: 'Initial note' })
+    await engine.syncNow()
+    const move = await repo.moveEntryPart(target.id, entry.id, '3')
+    await repo.undoMove(move.undo)
+    await engine.syncNow()
+    expect(await db.outbox.count()).toBe(0)
+    expect(server.records.get(server.key('entry', entry.id))).toMatchObject({
+      quantity: '8',
+      deleted_at: null,
+      entry_notes: 'Initial note',
+    })
+    expect(server.records.get(server.key('entry', move.created[0]!.id))).toMatchObject({
+      quantity: '3',
+      deleted_at: expect.any(String),
+    })
+    await db.delete()
+  })
+
+  it('undoes an acknowledged move using the current server revision', async () => {
+    const server = new MemoryServer()
+    const { db, repo, engine, entry } = await syncedEntry(server)
+    const target = await repo.createCollection({ name: 'Shelf', storage_mode: 'synced' })
+    await repo.updateEntry(entry.id, { quantity: '8', entry_notes: 'Initial note' })
+    await engine.syncNow()
+    const move = await repo.moveEntries(target.id, [entry.id])
+    await engine.syncNow()
+    expect(server.records.get(server.key('entry', entry.id))?.deleted_at).toEqual(expect.any(String))
+    await repo.undoMove(move.undo)
+    await engine.syncNow()
+    expect(await db.conflicts.count()).toBe(0)
+    expect(await db.outbox.count()).toBe(0)
+    expect(server.records.get(server.key('entry', entry.id))).toMatchObject({
+      quantity: '8',
+      deleted_at: null,
+      entry_notes: 'Initial note',
+    })
+    expect(server.records.get(server.key('entry', move.created[0]!.id))?.deleted_at).toEqual(
+      expect.any(String),
+    )
+    await db.delete()
+  })
+
+  it('keeps a purge behind the soft delete that makes it eligible', async () => {
+    const server = new MemoryServer()
+    const { db, repo, collection, entry } = await syncedEntry(server)
+    await repo.deleteEntry(entry.id)
+    const deleted = (await db.entries.get(entry.id))!
+    await db.transaction('rw', db.outbox, () =>
+      queueMutation(db, collection, 'entry', deleted, 'purge', {}, clock().toISOString()),
+    )
+    const queued = await db.outbox.where('[entity+entity_id]').equals(['entry', entry.id]).toArray()
+    expect(queued.map(({ op }) => op)).toEqual(['delete', 'purge'])
+    expect(queued[0]?.fields).toMatchObject({ deleted_at: expect.any(String) })
+    expect(queued[1]?.fields).toEqual({})
+    await db.delete()
+  })
+
+  it('rebases a lifecycle change behind a sent create even when sequence allocation is retried', async () => {
+    const server = new MemoryServer()
+    const fixture = await syncedEntry(server)
+    const entry = await fixture.repo.createEntry(fixture.collection.id)
+    server.records.set('entry:taken-entry', {
+      id: 'taken-entry',
+      collection_id: fixture.collection.id,
+      sequence_number: entry.sequence_number,
+      revision: 1,
+      field_revisions: {},
+    })
+    const batch = holdBatch(server)
+    const engine = makeEngine(fixture.name, server)
+    const first = engine.syncNow()
+    await batch.entered
+    try {
+      await fixture.repo.deleteEntry(entry.id)
+      await fixture.repo.updateEntry(entry.id, { quantity: '7' })
+    } finally {
+      batch.release()
+    }
+    await first
+    await engine.syncNow()
+    await engine.syncNow()
+    expect(server.records.get(server.key('entry', entry.id))).toMatchObject({
+      deleted_at: expect.any(String),
+      quantity: '7',
+    })
+    expect(server.records.get(server.key('entry', entry.id))?.sequence_number).toBeGreaterThan(
+      entry.sequence_number,
+    )
+    expect(await fixture.db.conflicts.count()).toBe(0)
+    expect(await fixture.db.outbox.count()).toBe(0)
+    await fixture.db.delete()
+  })
+
+  it('replays my photo deletion when resolving a deleted_at conflict and keeps the merged caption', async () => {
+    const server = new MemoryServer()
+    const fixture = await syncedEntry(server)
+    const photo = await addPhoto(fixture.repo, fixture.entry.id)
+    await fixture.engine.syncNow()
+    server.externalUpdate('photo', photo.id, { deleted_at: '2026-01-01T00:00:00.000Z' })
+    await fixture.repo.deletePhoto(photo.id)
+    await fixture.repo.updatePhoto(photo.id, { caption: 'Keep this caption' })
+    await fixture.engine.syncNow()
+    const conflict = await fixture.db.conflicts
+      .where('[entity+entity_id]')
+      .equals(['photo', photo.id])
+      .first()
+    expect(conflict).toMatchObject({ fields: ['deleted_at'] })
+    await fixture.engine.resolveConflict(conflict!.id, 'mine')
+    await fixture.engine.syncNow()
+    await waitFor(async () => (await fixture.db.outbox.count()) === 0)
+    const last = server.batchRequests
+      .flat()
+      .filter((row) => row.entity_id === photo.id)
+      .at(-1)
+    expect(last).toMatchObject({ op: 'delete', fields: { deleted_at: expect.any(String) } })
+    expect(server.records.get(server.key('photo', photo.id))).toMatchObject({
+      deleted_at: expect.any(String),
+      caption: 'Keep this caption',
+    })
+    expect(await fixture.db.conflicts.count()).toBe(0)
+    await fixture.db.delete()
+  })
+
+  it('replays my restore when another device changed the tombstone', async () => {
+    const server = new MemoryServer()
+    const fixture = await syncedEntry(server)
+    await fixture.repo.deleteEntry(fixture.entry.id)
+    await fixture.engine.syncNow()
+    server.externalUpdate('entry', fixture.entry.id, { deleted_at: '2026-01-01T00:00:00.000Z' })
+    await fixture.repo.restoreEntry(fixture.entry.id)
+    await fixture.engine.syncNow()
+    const conflict = await fixture.db.conflicts
+      .where('[entity+entity_id]')
+      .equals(['entry', fixture.entry.id])
+      .first()
+    expect(conflict).toMatchObject({ fields: ['deleted_at'], local_values: { deleted_at: null } })
+    await fixture.engine.resolveConflict(conflict!.id, 'mine')
+    await fixture.engine.syncNow()
+    expect(server.batchRequests.at(-1)?.[0]).toMatchObject({ op: 'restore', fields: { deleted_at: null } })
+    expect(server.records.get(server.key('entry', fixture.entry.id))?.deleted_at).toBeNull()
+    expect(await fixture.db.conflicts.count()).toBe(0)
+    await fixture.db.delete()
+  })
+
+  it('rotates a legacy mutation id if the server reveals a previously lost rejection', async () => {
+    const server = new MemoryServer()
+    const fixture = await syncedEntry(server)
+    const entry = await fixture.repo.createEntry(fixture.collection.id)
+    await fixture.repo.deleteEntry(entry.id)
+    const original = (await fixture.db.outbox
+      .where('[entity+entity_id]')
+      .equals(['entry', entry.id])
+      .first())!
+    const malformed = {
+      ...original,
+      op: 'delete' as const,
+      fields: { deleted_at: original.fields.deleted_at },
+    }
+    expect(server.applyMutation(malformed)).toMatchObject({ status: 'rejected', code: 'missing_parent' })
+    await fixture.db.outbox.put({ ...malformed, sent: true })
+    await fixture.engine.syncNow()
+    const repaired = await fixture.db.outbox.where('[entity+entity_id]').equals(['entry', entry.id]).first()
+    expect(repaired).toMatchObject({ op: 'upsert', sent: false, base_revision: null })
+    expect(repaired?.id).not.toBe(original.id)
+    await fixture.engine.syncNow()
+    expect(server.records.get(server.key('entry', entry.id))?.deleted_at).toEqual(expect.any(String))
+    expect(await fixture.db.outbox.count()).toBe(0)
+    await fixture.db.delete()
+  })
+
+  it('repairs old queued tombstones and rejected creates idempotently without transmitting mixed-mode items', async () => {
+    const server = new MemoryServer()
+    const fixture = await syncedEntry(server)
+    const legacyPhoto = await addPhoto(fixture.repo, fixture.entry.id)
+    await fixture.engine.syncNow()
+    server.stored.delete(legacyPhoto.id)
+    await fixture.repo.deletePhoto(legacyPhoto.id)
+    const oldDelete = (await fixture.db.outbox
+      .where('[entity+entity_id]')
+      .equals(['photo', legacyPhoto.id])
+      .first())!
+    await fixture.db.outbox.update(oldDelete.id, { op: 'upsert' })
+    await fixture.db.photos.update(legacyPhoto.id, { upload_state: 'not_needed' })
+
+    const newEntry = await fixture.repo.createEntry(fixture.collection.id)
+    await fixture.repo.deleteEntry(newEntry.id)
+    const oldCreate = (await fixture.db.outbox
+      .where('[entity+entity_id]')
+      .equals(['entry', newEntry.id])
+      .first())!
+    const malformed = {
+      ...oldCreate,
+      op: 'delete' as const,
+      fields: { deleted_at: oldCreate.fields.deleted_at },
+    }
+    server.applyMutation(malformed)
+    await fixture.db.outbox.put({
+      ...malformed,
+      sent: true,
+      attempts: 1,
+      last_error: 'Record does not exist',
+    })
+    const unsentEntry = await fixture.repo.createEntry(fixture.collection.id)
+    await fixture.repo.deleteEntry(unsentEntry.id)
+    const unsent = (await fixture.db.outbox
+      .where('[entity+entity_id]')
+      .equals(['entry', unsentEntry.id])
+      .first())!
+    await fixture.db.outbox.update(unsent.id, {
+      op: 'delete',
+      fields: { deleted_at: unsent.fields.deleted_at },
+    })
+
+    const mixed = await fixture.repo.createEntry(fixture.collection.id)
+    const privateCollection = await fixture.repo.createCollection({
+      name: 'Private',
+      storage_mode: 'local_only',
+    })
+    const privateEntry = await fixture.repo.createEntry(privateCollection.id)
+    const mixedPhoto = await addPhoto(fixture.repo, mixed.id)
+    await fixture.db.entries.update(privateEntry.id, {
+      item_id: mixed.item_id,
+      deleted_at: clock().toISOString(),
+    })
+    await fixture.db.photos.update(mixedPhoto.id, { server_revision: 1, upload_state: 'not_needed' })
+
+    await repairSyncQueue(fixture.db)
+    const repairedRows = await fixture.db.outbox.toArray()
+    await repairSyncQueue(fixture.db)
+    expect(await fixture.db.outbox.toArray()).toEqual(repairedRows)
+    expect(await fixture.db.outbox.get(oldDelete.id)).toMatchObject({ op: 'delete' })
+    expect(await fixture.db.outbox.get(oldCreate.id)).toBeUndefined()
+    expect(await fixture.db.outbox.get(unsent.id)).toMatchObject({
+      op: 'upsert',
+      fields: { deleted_at: expect.any(String), sequence_number: unsentEntry.sequence_number },
+    })
+    expect(await fixture.db.photos.get(mixedPhoto.id)).toMatchObject({ upload_state: 'not_needed' })
+    const repaired = repairedRows.find((row) => row.entity === 'entry' && row.entity_id === newEntry.id)
+    expect(repaired).toMatchObject({
+      op: 'upsert',
+      sent: false,
+      base_revision: null,
+      fields: { sequence_number: newEntry.sequence_number },
+    })
+    const before = server.requests.length
+    await fixture.engine.syncNow()
+    expect(server.records.get(server.key('entry', newEntry.id))?.deleted_at).toEqual(expect.any(String))
+    expect(server.records.get(server.key('photo', legacyPhoto.id))?.deleted_at).toEqual(expect.any(String))
+    expect(server.stored.has(legacyPhoto.id)).toBe(true)
+    expect(JSON.stringify(server.requests.slice(before))).not.toContain(mixedPhoto.id)
+    expect(JSON.stringify(server.requests.slice(before))).not.toContain(mixed.item_id)
+    await fixture.db.delete()
+  })
+
+  it('uploads deleted photos when opting in and queues an older unbacked photo on undo', async () => {
+    const server = new MemoryServer()
+    const name = dbName()
+    const db = getCaptureDb(name)
+    const repo = makeRepo(name)
+    const collection = await repo.createCollection({ name: 'Room', storage_mode: 'local_only' })
+    const entry = await repo.createEntry(collection.id)
+    const trash = await addPhoto(repo, entry.id)
+    await repo.deletePhoto(trash.id)
+    const engine = makeEngine(name, server)
+    await engine.syncNow()
+    expect(JSON.stringify(server.requests)).not.toContain(trash.id)
+
+    await repo.setStorageMode(collection.id, 'synced', { consentToUploadExisting: true })
+    expect(await db.photos.get(trash.id)).toMatchObject({
+      upload_state: 'pending',
+      deleted_at: expect.any(String),
+    })
+    await engine.syncNow()
+    expect(server.stored.has(trash.id)).toBe(true)
+    expect(await db.photos.get(trash.id)).toMatchObject({
+      upload_state: 'uploaded',
+      deleted_at: expect.any(String),
+    })
+
+    server.stored.delete(trash.id)
+    await db.photos.update(trash.id, { upload_state: 'not_needed' })
+    await repo.restorePhoto(trash.id)
+    expect(await db.photos.get(trash.id)).toMatchObject({ upload_state: 'pending', deleted_at: null })
+    await engine.syncNow()
+    expect(await db.photos.get(trash.id)).toMatchObject({ upload_state: 'uploaded', deleted_at: null })
+    await db.delete()
+  })
+
+  it('pushes edits and pulls changes between photo uploads', async () => {
+    const server = new MemoryServer()
+    const fixture = await syncedEntry(server)
+    const first = await addPhoto(fixture.repo, fixture.entry.id)
+    const second = await addPhoto(fixture.repo, fixture.entry.id)
+    const third = await addPhoto(fixture.repo, fixture.entry.id)
+    let release!: () => void
+    let reached!: () => void
+    const entered = new Promise<void>((resolve) => (reached = resolve))
+    const gate = new Promise<void>((resolve) => (release = resolve))
+    const originalFetch = server.fetch
+    server.fetch = async (input, init = {}) => {
+      const response = await originalFetch(input, init)
+      if (String(input) === `/api/photos/${first.id}/original` && init.method === 'PUT') {
+        reached()
+        await gate
+      }
+      return response
+    }
+    const engine = makeEngine(fixture.name, server)
+    const syncing = engine.syncNow()
+    await entered
+    try {
+      await fixture.repo.updateEntry(fixture.entry.id, { quantity: '10' })
+    } finally {
+      release()
+    }
+    await syncing
+    const uploadIndices = [first, second, third].map((photo) =>
+      server.requests.findIndex(
+        (request) => request.method === 'PUT' && request.url === `/api/photos/${photo.id}/original`,
+      ),
+    )
+    expect(uploadIndices[0]).toBeGreaterThanOrEqual(0)
+    expect(uploadIndices[1]).toBeGreaterThan(uploadIndices[0]!)
+    expect(uploadIndices[2]).toBeGreaterThan(uploadIndices[1]!)
+    expect(
+      server.requests
+        .slice(uploadIndices[0]! + 1, uploadIndices[1])
+        .some(({ url, body }) => url === '/api/sync/batch' && String(body).includes('"quantity":"10"')),
+    ).toBe(true)
+    expect(
+      server.requests
+        .slice(uploadIndices[1]! + 1, uploadIndices[2])
+        .some(({ url }) => url.startsWith('/api/sync/changes')),
+    ).toBe(true)
+    expect(
+      server.requests.filter(({ url, method }) => url.endsWith('/original') && method === 'PUT'),
+    ).toHaveLength(3)
+    await fixture.db.delete()
+  })
+
+  it('stops the cycle when an upload returns 401', async () => {
+    const server = new MemoryServer()
+    const fixture = await syncedEntry(server)
+    const first = await addPhoto(fixture.repo, fixture.entry.id)
+    const second = await addPhoto(fixture.repo, fixture.entry.id)
+    const fetch = server.fetch
+    server.fetch = async (input, init) => {
+      if (String(input) === `/api/photos/${first.id}/original` && init?.method === 'PUT') {
+        server.requests.push({ url: String(input), method: 'PUT' })
+        return new Response(null, { status: 401 })
+      }
+      return fetch(input, init)
+    }
+    const engine = makeEngine(fixture.name, server)
+    await engine.syncNow()
+    expect(server.requests.at(-1)).toMatchObject({ method: 'PUT', url: `/api/photos/${first.id}/original` })
+    expect((await fixture.db.photos.get(first.id))?.upload_state).toBe('pending')
+    expect((await fixture.db.photos.get(second.id))?.upload_state).toBe('pending')
+    expect((await waitForStatus(engine, (value) => value.phase === 'signed_out')).authenticated).toBe(false)
+    await fixture.db.delete()
+  })
+
+  it('does not send original bytes when a photo becomes Local Only during its HEAD request', async () => {
+    const server = new MemoryServer()
+    const fixture = await syncedEntry(server)
+    const photo = await addPhoto(fixture.repo, fixture.entry.id)
+    const fetch = server.fetch
+    server.fetch = async (input, init) => {
+      const response = await fetch(input, init)
+      if (String(input) === `/api/photos/${photo.id}/original` && init?.method === 'HEAD') {
+        await fixture.repo.setStorageMode(fixture.collection.id, 'local_only', {
+          consentToUploadExisting: false,
+        })
+      }
+      return response
+    }
+    await makeEngine(fixture.name, server).syncNow()
+    expect(server.requests.filter(({ url, method }) => url.includes(photo.id) && method === 'PUT')).toEqual(
+      [],
+    )
+    expect(await fixture.db.photos.get(photo.id)).toMatchObject({
+      upload_state: 'not_needed',
+      sync_state: 'local_only',
+    })
+    await fixture.db.delete()
+  })
+
+  it('surfaces missing originals and still backs up the next photo', async () => {
+    const server = new MemoryServer()
+    const fixture = await syncedEntry(server)
+    const missing = await addPhoto(fixture.repo, fixture.entry.id)
+    const next = await addPhoto(fixture.repo, fixture.entry.id)
+    await fixture.db.photoBlobs.delete(missing.id)
+    await fixture.engine.syncNow()
+    expect(await fixture.db.photos.get(missing.id)).toMatchObject({ upload_state: 'error' })
+    expect(await fixture.db.photos.get(next.id)).toMatchObject({ upload_state: 'uploaded' })
+    expect(server.stored.has(missing.id)).toBe(false)
+    await fixture.engine.runScheduledCycle()
+    expect((await waitForStatus(fixture.engine, (status) => !!status.last_error)).last_error).toBe(
+      'The original photo is missing from this device.',
+    )
     await fixture.db.delete()
   })
 })
+
+function holdBatch(server: MemoryServer) {
+  let reached!: () => void
+  let release!: () => void
+  const entered = new Promise<void>((resolve) => (reached = resolve))
+  const gate = new Promise<void>((resolve) => (release = resolve))
+  const fetch = server.fetch
+  let held = false
+  server.fetch = async (input, init) => {
+    const response = await fetch(input, init)
+    if (!held && String(input) === '/api/sync/batch') {
+      held = true
+      reached()
+      await gate
+    }
+    return response
+  }
+  return { entered, release }
+}
+
+describe.each(['queued', 'in flight', 'acknowledged'] as const)(
+  'entry lifecycle with the first operation %s',
+  (timing) => {
+    it.each([
+      ['delete', 'edit'],
+      ['restore', 'edit'],
+      ['delete', 'restore'],
+      ['restore', 'delete'],
+      ['edit', 'delete'],
+      ['edit', 'restore'],
+    ] as const)('preserves %s followed by %s', async (first, second) => {
+      const server = new MemoryServer()
+      const { name, repo, db, entry } = await syncedEntry(server)
+      const run = {
+        delete: () => repo.deleteEntry(entry.id),
+        restore: () => repo.restoreEntry(entry.id),
+        edit: () => repo.updateEntry(entry.id, { quantity: '4' }),
+      }
+      const shouldStartDeleted = first === 'restore' || (first === 'edit' && second === 'restore')
+      if (shouldStartDeleted) {
+        await run.delete()
+        await makeEngine(name, server).syncNow()
+      }
+      const batch = timing === 'in flight' ? holdBatch(server) : undefined
+      const engine = makeEngine(name, server)
+      await run[first]()
+      const syncing = timing === 'queued' ? undefined : engine.syncNow()
+      if (batch) await batch.entered
+      else await syncing
+      try {
+        await run[second]()
+      } finally {
+        batch?.release()
+      }
+      await syncing
+      await engine.syncNow()
+      expect(await db.outbox.count()).toBe(0)
+      expect(await db.conflicts.count()).toBe(0)
+      const finalLifecycle = second === 'edit' ? first : second
+      const record = {
+        deleted_at: finalLifecycle === 'delete' ? expect.any(String) : null,
+        ...(first === 'edit' || second === 'edit' ? { quantity: '4' } : {}),
+      }
+      expect(server.records.get(server.key('entry', entry.id))).toMatchObject(record)
+      expect(await db.entries.get(entry.id)).toMatchObject(record)
+      await db.delete()
+    })
+  },
+)
 
 async function waitForStatus(
   engine: ReturnType<typeof createSyncEngine>,
