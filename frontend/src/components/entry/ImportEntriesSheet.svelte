@@ -1,10 +1,11 @@
 <script lang="ts">
-  import { onDestroy } from 'svelte'
+  import { onDestroy, untrack } from 'svelte'
   import { repo } from '$lib/db'
   import type { Collection, Id } from '$lib/types'
   import type { ImportCandidate, ImportResult, ImportSearchRow, Watchable } from '$lib/repo'
   import { entryDisplayTitle, formatSequence } from '$lib/types'
   import { thumbnailUrl } from '$lib/photos'
+  import { photoAccount } from '$lib/sync/binding'
   import { showToast } from '../../app/toasts.svelte'
   import Button from '../ui/Button.svelte'
   import Sheet from '../ui/Sheet.svelte'
@@ -26,7 +27,7 @@
   let error = $state('')
   let limit = $state(50)
   let searched = $state(false)
-  let thumbnails = $state<Record<Id, string>>({})
+  let thumbnails = $state<Record<Id, { url: string; account: string | null }>>({})
   let sourceSubscription: ReturnType<Watchable<Collection[]>['subscribe']> | undefined
   let candidateSubscription: ReturnType<Watchable<ImportCandidate[]>['subscribe']> | undefined
   let searchSubscription: ReturnType<Watchable<ImportSearchRow[]>['subscribe']> | undefined
@@ -52,6 +53,11 @@
     }
   })
 
+  $effect(() => {
+    const account = $photoAccount
+    if (open) untrack(() => loadThumbnails((sourceId ? candidates : searchRows).slice(0, limit), account))
+  })
+
   onDestroy(() => {
     stopSources()
     stopCandidates()
@@ -74,12 +80,12 @@
     else searchSubscription?.unsubscribe()
     searchSubscription = undefined
   }
-  function loadThumbnails(rows: Array<{ recent_photos: Array<{ id: Id }> }>) {
+  function loadThumbnails(rows: Array<{ recent_photos: Array<{ id: Id }> }>, account = $photoAccount) {
     for (const row of rows) {
       const photo = row.recent_photos[0]
-      if (photo && !thumbnails[photo.id])
+      if (photo && thumbnails[photo.id]?.account !== account)
         void thumbnailUrl(photo.id).then((url) => {
-          if (url) thumbnails[photo.id] = url
+          if (url && $photoAccount === account) thumbnails[photo.id] = { url, account }
         })
     }
   }
@@ -196,9 +202,10 @@
                 disabled={row.already_here}
                 onchange={() => toggle(row.entry.item_id, row.entry.id)}
               />
-              {#if photo && thumbnails[photo.id]}<img src={thumbnails[photo.id]} alt="" />{:else}<span
-                  class="thumb-placeholder">Photo</span
-                >{/if}
+              {#if photo && thumbnails[photo.id]?.account === $photoAccount}<img
+                  src={thumbnails[photo.id]?.url}
+                  alt=""
+                />{:else}<span class="thumb-placeholder">Photo</span>{/if}
               <span class="candidate-copy"
                 ><strong>{entryDisplayTitle(row.entry)}</strong>{#if row.entry.dimensions}<small
                     >{row.entry.dimensions}</small
@@ -255,9 +262,10 @@
               disabled={candidate.already_here}
               onchange={() => toggle(candidate.entry.item_id, candidate.entry.id)}
             />
-            {#if photo && thumbnails[photo.id]}<img src={thumbnails[photo.id]} alt="" />{:else}<span
-                class="thumb-placeholder">Photo</span
-              >{/if}
+            {#if photo && thumbnails[photo.id]?.account === $photoAccount}<img
+                src={thumbnails[photo.id]?.url}
+                alt=""
+              />{:else}<span class="thumb-placeholder">Photo</span>{/if}
             <span class="candidate-copy"
               ><strong>{formatSequence(candidate.entry.sequence_number)}</strong><span
                 >{entryDisplayTitle(candidate.entry)}</span

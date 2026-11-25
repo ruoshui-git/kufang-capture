@@ -29,6 +29,7 @@
     "fake-indexeddb": "^6.2.7",
     "fflate": "^0.8.3",
     "jsdom": "^31.0.0",
+    "jsqr": "1.4.0",
     "prettier": "^3.9.10",
     "prettier-plugin-svelte": "^4.1.1",
     "svelte": "^5.57.3",
@@ -43,6 +44,7 @@
     "@fontsource/barlow-condensed": "^5.3.0",
     "@lucide/svelte": "^1.70.0",
     "dexie": "^4.4.7",
+    "qrcode-generator": "2.0.4",
     "ulid": "^3.0.2",
     "workbox-window": "^7.4.1"
   }

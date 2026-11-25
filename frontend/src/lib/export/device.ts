@@ -5,6 +5,7 @@
 // collections set to sync: Local Only data never causes a request.
 import { repo as defaultRepo } from '../db'
 import type { Repo } from '../repo'
+import { AccountRequestError, accountSignIn, fetchAccountPhoto } from '../sync/binding'
 import type { Id, Photo } from '../types'
 import { buildExport, type Manifest } from './build'
 import { deliverExport, type ExportDelivery } from './deliver'
@@ -26,15 +27,16 @@ export type FetchOriginal = (photoId: Id) => Promise<Blob>
 export const fetchServerOriginal: FetchOriginal = async (photoId) => {
   let response: Response
   try {
-    response = await fetch(`/api/photos/${encodeURIComponent(photoId)}/original`, {
-      credentials: 'same-origin',
-    })
-  } catch {
+    response = await fetchAccountPhoto(photoId, 'original')
+  } catch (cause) {
+    if (cause instanceof AccountRequestError) {
+      if (cause.message === accountSignIn) throw new Error('Sign in to include photos stored on the server.')
+      throw cause
+    }
     throw new Error(
       `Photo ${photoId} is only on the server and couldn't be downloaded. Check your connection, or use Server exports.`,
     )
   }
-  if (response.status === 401) throw new Error('Sign in to include photos stored on the server.')
   if (!response.ok)
     throw new Error(
       `Photo ${photoId} is only on the server and couldn't be downloaded (HTTP ${response.status}). Try again, or use Server exports.`,

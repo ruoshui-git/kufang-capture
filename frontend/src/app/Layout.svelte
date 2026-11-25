@@ -8,6 +8,7 @@
   import type { CollectionSummary } from '$lib/types'
   import type { SyncStatus } from '$lib/sync/api'
   import SyncNowButton from '../components/sync/SyncNowButton.svelte'
+  import { accountAccess, accountMismatch, accountUnavailable } from '$lib/sync/binding'
   import { accountAuthenticated, startAccountState } from '$lib/sync/account'
   import StarredPage from '../routes/starred/StarredPage.svelte'
   import { collectionMatches } from '../routes/collections/collectionSearch'
@@ -16,13 +17,20 @@
   let search = $state('')
   let syncStatus = $state<SyncStatus | null>(null)
   let online = $state(typeof navigator === 'undefined' ? true : navigator.onLine)
+  const authPage = $derived(router.route.name === 'join' || router.route.name === 'login')
   const pending = $derived((syncStatus?.pending_uploads ?? 0) + (syncStatus?.pending_mutations ?? 0))
   const syncMessage = $derived.by(() => {
+    if (authPage) return ''
+    if ($accountAccess.kind === 'blocked')
+      return router.route.name === 'settings' ? 'Sync blocked' : accountMismatch($accountAccess.name)
+    if ($accountAccess.kind === 'unavailable') return accountUnavailable
     if (!syncStatus) return ''
     if (!online || syncStatus.phase === 'offline')
       return pending ? 'Saved on this device. Will sync when online.' : ''
     if (syncStatus.phase === 'error')
-      return syncStatus.last_error || 'Sync error. Check your connection, then retry.'
+      return syncStatus.last_error
+        ? `Sync error. ${syncStatus.last_error}`
+        : 'Sync error. Check your connection, then retry.'
     if ($accountAuthenticated === false && syncStatus.phase === 'signed_out')
       return 'Sign in to sync your Sync to Server collections'
     if (pending === 0) return syncStatus.last_error ?? ''
@@ -31,7 +39,13 @@
       return `${syncStatus.pending_uploads} ${syncStatus.pending_uploads === 1 ? 'photo' : 'photos'} pending (${(syncStatus.pending_upload_bytes / 1048576).toFixed(1)} MB)`
     return syncStatus.phase === 'syncing' ? 'Syncing' : 'Changes waiting to sync'
   })
-  const syncTone = $derived(syncStatus?.phase === 'error' ? 'danger' : 'info')
+  const syncTone = $derived(
+    syncStatus?.phase === 'error' ||
+      $accountAccess.kind === 'blocked' ||
+      $accountAccess.kind === 'unavailable'
+      ? 'danger'
+      : 'info',
+  )
   const filteredCollections = $derived(
     search.trim() ? collections.filter((item) => collectionMatches(item, search)) : collections,
   )
@@ -129,8 +143,10 @@
       {/each}
       <a class="rail-new" href="/?new=1">+ New collection</a>
       <nav class="rail-account" aria-label="Account">
-        {#if $accountAuthenticated === true}<a href="/server">Server exports</a
-          >{:else if $accountAuthenticated === false}<a href="/login?return=%2Fserver">Sign in</a>{/if}
+        {#if !authPage && $accountAuthenticated === true && $accountAccess.kind !== 'blocked' && $accountAccess.kind !== 'unavailable'}<a
+            href="/server">Server exports</a
+          >{:else if !authPage && $accountAuthenticated === false}<a href="/login?return=%2Fserver">Sign in</a
+          >{/if}
         <a href="/settings">Settings</a>
       </nav>
     </aside>
@@ -140,12 +156,15 @@
     <div
       class="global-sync"
       class:empty={!syncMessage}
-      class:danger={syncTone === 'danger'}
+      class:danger={!authPage && syncTone === 'danger'}
       aria-label="Sync status"
       aria-live="polite"
     >
       <span class="global-sync-dot" aria-hidden="true"></span><span>{syncMessage}</span>
-      {#if $accountAuthenticated === false && (pending > 0 || syncStatus?.phase === 'signed_out')}<a
+      {#if authPage || ($accountAccess.kind === 'blocked' && router.route.name === 'settings')}
+        <span class="sync-action-placeholder" aria-hidden="true"></span>
+      {:else if $accountAccess.kind === 'blocked'}<a href="/settings">Account</a>
+      {:else if $accountAuthenticated === false && (pending > 0 || syncStatus?.phase === 'signed_out')}<a
           href="/login">Sign in</a
         >{:else if pending > 0 || syncStatus?.phase === 'error' || syncStatus?.phase === 'offline'}<SyncNowButton
         />{:else}<span class="sync-action-placeholder" aria-hidden="true"></span>{/if}

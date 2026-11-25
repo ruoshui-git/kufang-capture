@@ -36,6 +36,8 @@ Each colour is a semantic role. Components never use hex, rgb or hsl. Dark value
 | `--color-danger` | `#B3261E` | `#FF8A80` | Sync error, conflict, destructive actions |
 | `--color-local` | `#5A4BC4` | `#A99CFF` | Local Only badge |
 | `--color-scrim` | `rgb(14 20 24 / 0.55)` | `rgb(0 0 0 / 0.65)` | Behind sheets and the viewer |
+| `--color-qr-background` | `#FFFFFF` | `#FFFFFF` | QR background and quiet zone |
+| `--color-qr-modules` | `#000000` | `#000000` | QR modules |
 | `--color-viewer` | `#0B0F12` | `#0B0F12` | Photo viewer background |
 
 Each status colour also has a `-soft` background variant (`--color-ok-soft`, `--color-warn-soft`, `--color-danger-soft`, `--color-local-soft`), used for chips and banners.
@@ -50,6 +52,7 @@ Use these everywhere: rows, Detail, collection cards, header badges.
 | Pending sync or upload | `--color-warn` | "Pending sync", "3 photos pending (24 MB)" |
 | Syncing | `--color-ballpoint` | "Syncing" |
 | Backed up | `--color-ok` | "Backed up" |
+| Account mismatch | `--color-danger` | "Sync blocked" with a link to Settings in the sync slot |
 | Sync error, Conflict | `--color-danger` | "Sync error — tap to retry", "Conflict" |
 | Incomplete | `--color-warn` | the tag corner fold and the "Incomplete" chip |
 
@@ -93,6 +96,7 @@ Layout sizes:
 |---|---|
 | `--size-touch` | `44px` (minimum target) |
 | `--size-thumb` | `56px` |
+| `--size-join-qr` | `176px` (QR code, including its quiet zone) |
 | `--size-thumb-lg` | `120px` (gallery on phone) |
 | `--size-rail` | `260px` |
 | `--size-panel` | `min(520px, 40vw)` |

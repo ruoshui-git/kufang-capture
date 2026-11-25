@@ -17,6 +17,9 @@ importers:
       dexie:
         specifier: ^4.4.7
         version: 4.4.7
+      qrcode-generator:
+        specifier: 2.0.4
+        version: 2.0.4
       ulid:
         specifier: ^3.0.2
         version: 3.0.2
@@ -57,6 +60,9 @@ importers:
       jsdom:
         specifier: ^31.0.0
         version: 31.0.0
+      jsqr:
+        specifier: 1.4.0
+        version: 1.4.0
       prettier:
         specifier: ^3.9.10
         version: 3.9.10
@@ -1922,6 +1928,9 @@ packages:
     resolution: {integrity: sha512-p/nXbhSEcu3pZRdkW1OfJhpsVtW1gd4Wa1fnQc9YLiTfAjn0312eMKimbdIQzuZl9aa9xUGaRlP9T/CJE/ditQ==}
     engines: {node: '>=0.10.0'}
 
+  jsqr@1.4.0:
+    resolution: {integrity: sha512-dxLob7q65Xg2DvstYkRpkYtmKm2sPJ9oFhrhmudT1dZvNFFTlroai3AWSpLey/w5vMcLBXRgOJsbXpdN9HzU/A==}
+
   leven@3.1.0:
     resolution: {integrity: sha512-qsda+H8jTaUaN/x5vzW2rzc+8Rw4TAQ/4KjB46IwK5VH+IlVeeeje/EoZRpiXvIqjFgK84QffqPztGI3VBLG1A==}
     engines: {node: '>=6'}
@@ -2155,6 +2164,9 @@ packages:
   punycode@2.3.1:
     resolution: {integrity: sha512-vYt7UD1U9Wg6138shLtLOvdAu+8DsC/ilFtEVHcH+wydcSpNE20AfSOduf6MkRFahL5FY7X1oU7nKVZFtfq8Fg==}
     engines: {node: '>=6'}
+
+  qrcode-generator@2.0.4:
+    resolution: {integrity: sha512-mZSiP6RnbHl4xL2Ap5HfkjLnmxfKcPWpWe/c+5XxCuetEenqmNFf1FH/ftXPCtFG5/TDobjsjz6sSNL0Sr8Z9g==}
 
   quansync@1.0.0:
     resolution: {integrity: sha512-5xZacEEufv3HSTPQuchrvV6soaiACMFnq1H8wkVioctoH3TRha9Sz66lOxRwPK/qZj7HPiSveih9yAyh98gvqA==}
@@ -4553,6 +4565,8 @@ snapshots:
 
   jsonpointer@5.0.1: {}
 
+  jsqr@1.4.0: {}
+
   leven@3.1.0: {}
 
   lightningcss-android-arm64@1.33.0:
@@ -4725,6 +4739,8 @@ snapshots:
       react-is: 17.0.2
 
   punycode@2.3.1: {}
+
+  qrcode-generator@2.0.4: {}
 
   quansync@1.0.0: {}
 

@@ -55,9 +55,16 @@ class MemoryServer {
     const method = init.method ?? 'GET'
     this.requests.push({ url, method, body: init.body })
     if (url === '/api/auth/session')
-      return new Response(JSON.stringify({ authenticated: this.authenticated, expires_at: null }), {
-        status: 200,
-      })
+      return new Response(
+        JSON.stringify({
+          authenticated: this.authenticated,
+          expires_at: null,
+          user: this.authenticated ? { id: 'owner', name: 'Owner', is_owner: true } : null,
+        }),
+        {
+          status: 200,
+        },
+      )
     if (url === '/api/auth/login' && method === 'POST') {
       this.authenticated = true
       return new Response(null, { status: 204 })

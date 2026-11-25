@@ -8,6 +8,7 @@
   import ExportSheet from '../../components/sync/ExportSheet.svelte'
   import type { CollectionSummary } from '$lib/types'
   import { navigate } from '../../app/router.svelte'
+  import { accountAccess, accountMismatch, accountUnavailable } from '$lib/sync/binding'
   import { accountAuthenticated, startAccountState } from '$lib/sync/account'
 
   let captureMode = $state<CaptureMode>('native')
@@ -16,6 +17,8 @@
   let summaries = $state<CollectionSummary[]>([])
   let exportOpen = $state(false)
   let accountMessage = $state('')
+  let peopleOpen = $state(false)
+  let switching = $state(false)
 
   const localDataNeedsExport = $derived(
     summaries.some(
@@ -25,6 +28,10 @@
           Date.now() - Date.parse(item.collection.last_exported_at) > 7 * 86400000),
     ),
   )
+
+  $effect(() => {
+    if ($accountAccess.kind !== 'ready' || !$accountAccess.user.is_owner) peopleOpen = false
+  })
 
   onMount(() => {
     startAccountState()
@@ -60,6 +67,19 @@
     }
   }
 
+  async function switchAccount() {
+    switching = true
+    accountMessage = ''
+    try {
+      const { authClient } = await import('$lib/sync')
+      await authClient.switchAccount()
+    } catch (cause) {
+      accountMessage = cause instanceof Error ? cause.message : 'Could not switch this device.'
+    } finally {
+      switching = false
+    }
+  }
+
   function formatBytes(value: number | null | undefined) {
     if (value == null) return 'Unavailable'
     if (value < 1024) return `${value} B`
@@ -79,17 +99,32 @@
   <div class="page-heading"><h1>Settings</h1></div>
   <section class="settings-card" aria-labelledby="account-heading">
     <h2 id="account-heading">Account &amp; sync</h2>
-    {#if $accountAuthenticated === null}<p>Checking sign-in…</p>{:else if $accountAuthenticated}<p>
-        Signed in. Synced collections upload in the background.
-      </p>
+    {#if $accountAccess.kind === 'blocked'}
+      <p class="auth-error" role="alert">{accountMismatch($accountAccess.name)}</p>
       <div class="settings-actions">
-        <Button variant="quiet" onclick={() => navigate('/server')}>Server exports</Button><Button
-          variant="quiet"
-          onclick={() => void signOut()}>Sign out</Button
-        >
-      </div>{:else}<p>Not signed in. Local Only collections work without an account.</p>
-      <Button onclick={() => navigate(`/login?return=${encodeURIComponent('/settings')}`)}>Sign in</Button
-      >{/if}
+        <Button variant="quiet" onclick={() => void signOut()}>Sign out</Button>
+        {#if $accountAccess.canSwitch && $accountAccess.user}
+          <Button disabled={switching} onclick={switchAccount}>Switch to {$accountAccess.user.name}</Button>
+        {/if}
+      </div>
+    {:else if $accountAccess.kind === 'unavailable'}
+      <p class="auth-error" role="alert">{accountUnavailable}</p>
+      <Button variant="quiet" onclick={() => void signOut()}>Sign out</Button>
+    {:else if $accountAccess.kind === 'ready'}
+      <p>Signed in as <strong>{$accountAccess.user.name}</strong>.</p>
+      <div class="settings-actions">
+        {#if $accountAccess.user.is_owner}
+          <Button variant="quiet" onclick={() => (peopleOpen = true)}>People</Button>
+        {/if}
+        <Button variant="quiet" onclick={() => navigate('/server')}>Server exports</Button>
+        <Button variant="quiet" onclick={() => void signOut()}>Sign out</Button>
+      </div>
+    {:else if $accountAuthenticated === null && $accountAccess.kind !== 'signed_out'}
+      <p>Checking sign-in…</p>
+    {:else}
+      <p>Not signed in. Local Only collections work without an account.</p>
+      <Button onclick={() => navigate(`/login?return=${encodeURIComponent('/settings')}`)}>Sign in</Button>
+    {/if}
     {#if accountMessage}<p role="status">{accountMessage}</p>{/if}
   </section>
   <section class="settings-card" aria-labelledby="export-heading">
@@ -151,6 +186,11 @@
     <a href="/diagnostics">Open Diagnostics</a>
   </section>
 </section>
+{#if peopleOpen && $accountAccess.kind === 'ready' && $accountAccess.user.is_owner}
+  {#await import('../../components/sync/PeopleSheet.svelte') then { default: PeopleSheet }}
+    <PeopleSheet bind:open={peopleOpen} />
+  {/await}
+{/if}
 <ExportSheet bind:open={exportOpen} scope="all" title="Export all data" />
 
 <style>

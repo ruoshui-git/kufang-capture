@@ -22,6 +22,7 @@
   })
   const chipState = $derived.by(() => {
     if (mode === 'local_only') return { text: 'Local Only', kind: 'neutral' }
+    if (syncStatus?.phase === 'blocked') return { text: 'Sync blocked', kind: 'error' }
     const item = syncStatus?.per_collection[collectionId]
     if (item?.conflicts) return { text: `Conflict (${item.conflicts})`, kind: 'error' }
     if (item?.errors || syncStatus?.phase === 'error')

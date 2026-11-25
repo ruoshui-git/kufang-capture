@@ -8,6 +8,7 @@ export type Route =
   | { name: 'settings' }
   | { name: 'diagnostics' }
   | { name: 'login' }
+  | { name: 'join' }
   | { name: 'server' }
   | { name: 'not-found' }
 
@@ -17,6 +18,7 @@ function match(path: string): Route {
   if (clean === '/starred') return { name: 'starred' }
   if (clean === '/settings') return { name: 'settings' }
   if (clean === '/diagnostics') return { name: 'diagnostics' }
+  if (clean === '/join') return { name: 'join' }
   if (clean === '/login') return { name: 'login' }
   if (clean === '/server') return { name: 'server' }
   const detail = clean.match(/^\/c\/([^/]+)\/e\/([^/]+)$/)

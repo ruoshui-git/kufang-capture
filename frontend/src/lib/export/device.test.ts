@@ -215,7 +215,7 @@ describe('device export', () => {
       expect(fetchOriginal).not.toHaveBeenCalled()
     })
 
-    it('asks the user to sign in when the server answers 401', async () => {
+    it('asks the user to sign in before requesting a server-only original', async () => {
       const t = await serverOnly('synced')
       const fetchSpy = vi
         .spyOn(globalThis, 'fetch')
@@ -224,9 +224,13 @@ describe('device export', () => {
         await expect(exportFromDevice([t.room.id], {}, { repo: t.repo, deliver: t.deliver })).rejects.toThrow(
           'Sign in to include photos stored on the server.',
         )
-        expect(fetchSpy).toHaveBeenCalledWith(`/api/photos/${t.photo.id}/original`, {
-          credentials: 'same-origin',
-        })
+        expect(fetchSpy).toHaveBeenCalledOnce()
+        expect(fetchSpy).toHaveBeenCalledWith(
+          '/api/auth/session',
+          expect.objectContaining({
+            credentials: 'same-origin',
+          }),
+        )
       } finally {
         fetchSpy.mockRestore()
       }

@@ -1,23 +1,42 @@
 <script lang="ts">
   import { navigate } from '../../app/router.svelte'
   import Button from '../../components/ui/Button.svelte'
-  let password = $state('')
-  let error = $state('')
-  let busy = $state(false)
+  import { accountGate } from '$lib/sync/binding'
+  import { isInAppBrowser, normalizeJoinCode } from './joinCode'
+
   const params = new URLSearchParams(location.search)
   const returnTo = params.get('return') || '/settings'
+  const inApp = isInAppBrowser(navigator.userAgent)
+  let useCode = $state(params.get('mode') === 'code')
+  let password = $state('')
+  let code = $state('')
+  let error = $state('')
+  let busy = $state(false)
+
+  function changeMode() {
+    useCode = !useCode
+    password = ''
+    code = ''
+    error = ''
+  }
+
   async function submit(event: SubmitEvent) {
     event.preventDefault()
-    if (busy || !password) return
+    if (busy || (useCode ? !code || inApp : !password)) return
+    const validCode = useCode ? normalizeJoinCode(code) : ''
+    if (useCode && !validCode) {
+      error = 'Enter the eight-character sign-in code.'
+      return
+    }
     busy = true
     error = ''
     try {
       const { authClient } = await import('$lib/sync')
-      await authClient.login(password)
-      navigate(returnTo.startsWith('/') && !returnTo.startsWith('//') ? returnTo : '/')
+      if (useCode) await authClient.join(validCode)
+      else await authClient.login(password)
+      const destination = returnTo.startsWith('/') && !/^\/[\/\\]/.test(returnTo) ? returnTo : '/'
+      navigate(accountGate.current.kind === 'blocked' ? '/settings' : destination)
     } catch (cause) {
-      // The auth client already words each failure for people (wrong password, too many attempts
-      // with the wait time, server unreachable); show it as is.
       error = cause instanceof Error && cause.message ? cause.message : 'Could not sign in. Try again.'
     } finally {
       busy = false
@@ -27,49 +46,55 @@
 
 <svelte:head><title>Sign in — Kufang Capture</title></svelte:head>
 <section class="page auth-page">
-  <h1>Sign in</h1>
-  <p>
-    Sign in only when you want to Sync to Server or export synced data on a desktop. Local Only collections
-    work without an account.
-  </p>
-  <form onsubmit={submit}>
-    <label
-      >Password<input type="password" bind:value={password} autocomplete="current-password" required /></label
-    >
-    {#if error}<p class="error" role="alert">{error}</p>{/if}
-    <Button type="submit" disabled={busy || !password}>{busy ? 'Signing in…' : 'Sign in'}</Button>
-  </form>
-  <a href="/settings">Back to Settings</a>
+  <h1>{useCode ? 'Enter code' : 'Sign in'}</h1>
+  {#if useCode && inApp}
+    <p>Open Capture in Chrome or Safari to enter your helper code.</p>
+  {:else}
+    {#if useCode}
+      <p>Enter the one-time code from the Capture owner.</p>
+    {:else}
+      <p>Local Only collections work without an account.</p>
+    {/if}
+    <form onsubmit={submit}>
+      {#if useCode}
+        <label class="field">
+          Sign-in code
+          <input
+            type="text"
+            value={code}
+            oninput={(event) => {
+              code = event.currentTarget.value.replace(/[a-z]/g, (letter) => letter.toUpperCase())
+              event.currentTarget.value = code
+            }}
+            autocomplete="one-time-code"
+            autocapitalize="characters"
+            spellcheck="false"
+            enterkeyhint="go"
+            placeholder="XXXX-XXXX"
+            maxlength="128"
+            required
+          />
+        </label>
+      {:else}
+        <label class="field"
+          >Password<input
+            type="password"
+            bind:value={password}
+            autocomplete="current-password"
+            required
+          /></label
+        >
+      {/if}
+      {#if error}<p class="auth-error" role="alert">{error}</p>{/if}
+      <Button type="submit" disabled={busy || !(useCode ? code : password)}>
+        {busy ? 'Signing in…' : 'Sign in'}
+      </Button>
+    </form>
+  {/if}
+  <div class="auth-actions">
+    <Button variant="quiet" disabled={busy} onclick={changeMode}>
+      {useCode ? 'Use owner password' : 'Enter code'}
+    </Button>
+    <a href="/settings">Back to Settings</a>
+  </div>
 </section>
-
-<style>
-  .auth-page {
-    max-width: 520px;
-    margin: 0 auto;
-    padding: var(--space-6) var(--space-5);
-  }
-  .auth-page form {
-    display: grid;
-    gap: var(--space-4);
-    margin: var(--space-6) 0;
-  }
-  .auth-page label {
-    display: grid;
-    gap: var(--space-2);
-  }
-  .auth-page input {
-    min-height: 48px;
-    padding: var(--space-3);
-    border: 1px solid var(--color-line);
-    border-radius: var(--radius-md);
-    background: var(--color-card);
-    color: var(--color-ink);
-    font-size: var(--text-lg);
-  }
-  .auth-page p {
-    line-height: 1.5;
-  }
-  .error {
-    color: var(--color-danger);
-  }
-</style>

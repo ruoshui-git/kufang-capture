@@ -2,6 +2,7 @@
   import { repo } from '$lib/db'
   import type { Id, Photo } from '$lib/types'
   import { thumbnailUrl } from '$lib/photos'
+  import { photoAccount } from '$lib/sync/binding'
   import Button from '../ui/Button.svelte'
 
   let {
@@ -10,20 +11,21 @@
     onopen,
     ondelete,
   }: { photos: Photo[]; entryId: Id; onopen: (id: Id) => void; ondelete: (photo: Photo) => void } = $props()
-  let urls = $state<Record<Id, string>>({})
+  let urls = $state<Record<Id, { url: string; account: string | null }>>({})
   let captionDraft = $state<Record<Id, string>>({})
   let captionDirty = $state(new Set<Id>())
   const captionTimers = new Map<Id, ReturnType<typeof setTimeout>>()
 
   $effect(() => {
+    const account = $photoAccount
     for (const photo of photos) {
       const inputIsFocused =
         document.activeElement instanceof HTMLInputElement &&
         document.activeElement.dataset.photoCaption === photo.id
       if (!captionDirty.has(photo.id) && !inputIsFocused) captionDraft[photo.id] = photo.caption
-      if (!urls[photo.id])
+      if (urls[photo.id]?.account !== account)
         void thumbnailUrl(photo.id).then((url) => {
-          if (url) urls[photo.id] = url
+          if (url && $photoAccount === account) urls[photo.id] = { url, account }
         })
     }
   })
@@ -66,8 +68,8 @@
     {#each photos as photo, index (photo.id)}
       <article class="photo-card">
         <button class="photo-open" aria-label="View photo {index + 1}" onclick={() => onopen(photo.id)}>
-          {#if urls[photo.id]}<img
-              src={urls[photo.id]}
+          {#if urls[photo.id]?.account === $photoAccount}<img
+              src={urls[photo.id]?.url}
               alt={photo.caption || `Entry photo ${index + 1}`}
             />{:else}<span class="photo-placeholder">Loading photo…</span>{/if}
           {#if photo.is_cover}<span class="cover-badge">Cover</span>{/if}

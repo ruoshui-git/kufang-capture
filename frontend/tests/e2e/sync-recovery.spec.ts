@@ -140,7 +140,7 @@ test('low free space pauses original upload while synced metadata remains availa
       await new Promise((resolve) => setTimeout(resolve, 100))
     }
     expect(healthy).toBe(true)
-    const context = await browser.newContext({ baseURL })
+    const context = await browser.newContext({ baseURL, serviceWorkers: 'block' })
     try {
       const page = await context.newPage()
       await signIn(page)
@@ -149,21 +149,21 @@ test('low free space pauses original upload while synced metadata remains availa
       await context.setOffline(true)
       const row = await addEntry(page, '6', 'metadata should sync')
       await addPhoto(page, row, `low-storage-${Date.now()}`)
-      const storageError = new Promise<string>((resolve) => {
-        page.on('response', async (response) => {
-          if (
-            response.url().includes('/api/photos/') &&
-            response.url().endsWith('/original') &&
-            response.status() === 507
-          ) {
-            const body = await response.json().catch(() => ({}))
-            resolve(String(body.message ?? body.detail ?? ''))
-          }
-        })
+      let storageMessage: string | undefined
+      await page.route('**/api/photos/*/original', async (route) => {
+        if (route.request().method() !== 'PUT') {
+          await route.continue()
+          return
+        }
+        // Read the actual server response before passing it to the browser. Chromium does
+        // not finish its response-body event when sync handles an early 507 using headers.
+        const response = await route.fetch()
+        if (response.status() === 507) storageMessage = (await response.json()).message
+        await route.fulfill({ response })
       })
       await context.setOffline(false)
       await syncNow(page)
-      expect(await storageError).toBe('Server storage is low')
+      await expect.poll(() => storageMessage).toBe('Server storage is low')
       await expect(page.getByRole('status').filter({ hasText: /^Sync error — tap to retry$/ })).toBeVisible()
 
       const collections = await api<

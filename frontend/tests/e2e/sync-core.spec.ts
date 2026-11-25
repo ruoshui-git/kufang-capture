@@ -196,21 +196,25 @@ test('desktop server export contains only server collections and verifies as a Z
   await page.goto('/server')
   await expect(page.getByRole('heading', { name: synced })).toBeVisible()
   await expect(page.getByRole('heading', { name: local })).toHaveCount(0)
-  const downloadLink = page
+  const downloadButton = page
     .locator('article')
     .filter({ has: page.getByRole('heading', { name: synced }) })
-    .getByRole('link', { name: 'Download ZIP' })
-  const href = await downloadLink.getAttribute('href')
-  expect(href).toContain('/api/exports/collections/')
-  const response = await page.request.get(href!)
+    .getByRole('button', { name: 'Download ZIP' })
+  const responsePromise = page.waitForResponse((response) =>
+    response.url().includes('/api/exports/collections/'),
+  )
+  const downloadPromise = page.waitForEvent('download')
+  await downloadButton.click()
+  const response = await responsePromise
   expect(response.ok()).toBeTruthy()
+  expect(response.request().headers()['x-capture-account']).toBe('owner')
   expect(response.headers()['content-disposition']).toContain('attachment')
-  const { mkdtemp, writeFile } = await import('node:fs/promises')
+  const { mkdtemp } = await import('node:fs/promises')
   const { tmpdir } = await import('node:os')
   const { join } = await import('node:path')
   const outputDir = await mkdtemp(join(tmpdir(), 'kc-server-export-'))
   const path = join(outputDir, 'export.zip')
-  await writeFile(path, await response.body())
+  await (await downloadPromise).saveAs(path)
   const { execFileSync } = await import('node:child_process')
   const output = execFileSync('python3', ['-I', '../tools/verify-export.py', path!], {
     cwd: process.cwd(),

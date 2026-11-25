@@ -26,7 +26,20 @@ import {
   type Photo,
 } from '../types'
 import type { Watchable } from '../repo'
-import type { AuthClient, ServerClient, SyncConflict, SyncEngine, SyncStatus } from './api'
+import type { SyncConflict, SyncEngine, SyncStatus } from './api'
+import {
+  AccountGate,
+  accountGate,
+  accountHeaders,
+  accountMismatch,
+  accountUnavailable,
+  photoUploadRetryKey as storageRetryKey,
+  requestHeaders,
+  responseCode,
+  sessionChangeKey,
+  syncLeaseKey as leaseKey,
+} from './binding'
+export { authClient, createClients, peopleClient, serverClient } from './clients'
 
 type FetchLike = typeof fetch
 type ServerRecord = Record<string, unknown> & {
@@ -47,7 +60,6 @@ type BatchResult = {
   duplicate?: boolean
 }
 type SyncLease = { owner: Id; expiresAt: number; webLock?: boolean }
-const leaseKey = 'sync_cycle_lease'
 const leaseDuration = 30_000
 const updateRequired = 'Update the app to keep syncing.'
 const privatePlacementMessage =
@@ -92,90 +104,14 @@ function userError(error: unknown): string {
   return error instanceof Error ? error.message : 'Sync failed. Please try again.'
 }
 
-function requestHeaders(method: string, headers?: HeadersInit): Headers {
-  const result = new Headers(headers)
-  if (!['GET', 'HEAD', 'OPTIONS'].includes(method.toUpperCase())) result.set('X-Capture-Request', '1')
-  return result
-}
-
-function makeClients(fetcher: FetchLike): { authClient: AuthClient; serverClient: ServerClient } {
-  const request = async (url: string, init: RequestInit = {}) => {
-    const method = init.method ?? 'GET'
-    const response = await fetcher(url, {
-      ...init,
-      method,
-      headers: requestHeaders(method, init.headers),
-      credentials: 'same-origin',
-    })
-    if (!response.ok) {
-      if (response.status === 401) throw new Error('Your session has ended. Sign in to sync.')
-      let message = `Request failed (${response.status}).`
-      try {
-        const data = (await response.json()) as { message?: string }
-        if (data.message) message = data.message
-      } catch {
-        // Keep the plain fallback for non-JSON errors.
-      }
-      throw Object.assign(new Error(message), { status: response.status })
-    }
-    return response
-  }
-  return {
-    authClient: {
-      session: async () => (await request('/api/auth/session')).json(),
-      login: async (password) => {
-        // Login has its own error copy: a 401 here means a wrong password, not an ended session.
-        let response: Response
-        try {
-          response = await fetcher('/api/auth/login', {
-            method: 'POST',
-            headers: requestHeaders('POST', { 'Content-Type': 'application/json' }),
-            credentials: 'same-origin',
-            body: JSON.stringify({ password }),
-          })
-        } catch {
-          throw new Error("Couldn't reach the server. Check your connection and try again.")
-        }
-        if (response.status === 401) throw new Error('Password is incorrect.')
-        if (response.status === 429) {
-          const wait = Number(response.headers.get('Retry-After') ?? '60')
-          const minutes = Math.max(1, Math.ceil(wait / 60))
-          throw new Error(
-            `Too many attempts. Try again in ${minutes} ${minutes === 1 ? 'minute' : 'minutes'}.`,
-          )
-        }
-        if (!response.ok) throw new Error(`Sign-in failed (${response.status}). Try again.`)
-        if (typeof window !== 'undefined') window.dispatchEvent(new Event('capture:authenticated'))
-      },
-      logout: async () => {
-        await request('/api/auth/logout', { method: 'POST' })
-        if (typeof window !== 'undefined') window.dispatchEvent(new Event('capture:signed-out'))
-      },
-    },
-    serverClient: {
-      listCollections: async () => (await request('/api/collections')).json(),
-      exportUrl: (scope, opts = {}) =>
-        `${scope === 'all' ? '/api/exports/all.zip' : `/api/exports/collections/${encodeURIComponent(scope.collectionId)}.zip`}?include_trash=${opts.includeTrash ? '1' : '0'}`,
-      removeServerCopy: async (collectionId, confirmName) => {
-        await request(`/api/collections/${encodeURIComponent(collectionId)}/server-copy`, {
-          method: 'DELETE',
-          headers: { 'X-Confirm-Name': confirmName },
-        })
-      },
-    },
-  }
-}
-
-/** Exported for tests; the app uses the default clients below. */
-export const createClients = makeClients
-export const { authClient, serverClient } = makeClients((input, init) => fetch(input, init))
-
 /** The engine plus the backoff-respecting cycle that timers use (exposed for tests). */
 export type SyncEngineWithSchedule = SyncEngine & { runScheduledCycle(): Promise<void> }
 
 export function createSyncEngine(options: SyncEngineOptions = {}): SyncEngineWithSchedule {
   const db = getCaptureDb(options.repoDbName)
   const fetcher = options.fetch ?? fetch
+  const gate = options.repoDbName ? new AccountGate(options.repoDbName) : accountGate
+  let cycleAccount: Id | undefined
   const now = options.now ?? (() => new Date())
   const timestamp = () => now().toISOString()
   const controller = { current: null as AbortController | null }
@@ -325,7 +261,6 @@ export function createSyncEngine(options: SyncEngineOptions = {}): SyncEngineWit
   }).subscribe()
 
   const storageLow = 'Server storage is low'
-  const storageRetryKey = 'photo_upload_storage_retry_at'
   const storedUploadRetryAt = async () => Number((await db.settings.get(storageRetryKey))?.value ?? 0)
   const readLease = async () => (await db.settings.get(leaseKey))?.value as SyncLease | undefined
 
@@ -339,23 +274,56 @@ export function createSyncEngine(options: SyncEngineOptions = {}): SyncEngineWit
   // Start the request while the IndexedDB snapshot is held. Await the network
   // outside the transaction so saving locally never waits on the network.
   function startRequest(url: string, init: RequestInit) {
-    const response = Dexie.ignoreTransaction(async () => fetcher(url, init))
+    const response = Dexie.ignoreTransaction(async () =>
+      fetcher(url, { ...init, headers: dataHeaders(init.headers) }),
+    )
     void response.catch(() => {})
     return { response }
   }
 
-  async function outdatedResponse(response: Response) {
-    if (response.status !== 409) return false
-    const body = (await response
-      .clone()
-      .json()
-      .catch(() => null)) as { code?: string; detail?: string } | null
-    if ((body?.code ?? body?.detail) !== 'client_outdated') return false
-    clientOutdated = true
+  function dataHeaders(headers?: HeadersInit) {
+    const access = gate.current
+    if (!cycleAccount || access.kind !== 'ready' || access.user.id !== cycleAccount)
+      throw new DOMException('The account changed.', 'AbortError')
+    return accountHeaders(cycleAccount, headers)
+  }
+
+  function showBlocked() {
+    const access = gate.current
+    if (access.kind !== 'blocked') return false
     rerun = false
-    lastError = updateRequired
-    phase = 'error'
+    authenticated = true
+    lastError = accountMismatch(access.name)
+    phase = 'blocked'
     return true
+  }
+
+  async function haltOnResponse(response: Response, signal: AbortSignal, head = false) {
+    signal.throwIfAborted()
+    if (response.status === 409) {
+      // HEAD suppresses the body. The original HEAD endpoint's only 409 is account binding.
+      const code = head ? 'account_mismatch' : await responseCode(response)
+      signal.throwIfAborted()
+      if (code === 'client_outdated') {
+        clientOutdated = true
+        rerun = false
+        lastError = updateRequired
+        phase = 'error'
+        return true
+      }
+      if (cycleAccount && (code === 'account_mismatch' || code === 'account_required')) {
+        gate.block(cycleAccount)
+        return showBlocked()
+      }
+    }
+    if (response.status === 503 && (head || (await responseCode(response)) === 'account_unavailable')) {
+      signal.throwIfAborted()
+      gate.unavailable()
+      lastError = accountUnavailable
+      phase = 'error'
+      return true
+    }
+    return haltOnStatus(response.status)
   }
 
   async function haltOnStatus(code: number) {
@@ -363,6 +331,7 @@ export function createSyncEngine(options: SyncEngineOptions = {}): SyncEngineWit
       authBlocked = true
       authenticated = false
       phase = 'signed_out'
+      gate.reset(true)
     } else if (code === 507) {
       uploadRetryAt = now().getTime() + 300_000
       lastError = storageLow
@@ -543,9 +512,8 @@ export function createSyncEngine(options: SyncEngineOptions = {}): SyncEngineWit
         return true
       }
       const response = await request.response
-      const outdated = await outdatedResponse(response)
-      if (outdated || (await haltOnStatus(response.status))) {
-        await releaseClaims(outdated ? updateRequired : undefined)
+      if (await haltOnResponse(response, signal)) {
+        await releaseClaims(clientOutdated ? updateRequired : undefined)
         return false
       }
       if (!response.ok)
@@ -561,12 +529,13 @@ export function createSyncEngine(options: SyncEngineOptions = {}): SyncEngineWit
       }
       return true
     } catch (error) {
+      const interrupted = signal.aborted || (error instanceof DOMException && error.name === 'AbortError')
       await db.transaction('rw', [db.outbox, db.settings], async () => {
         await assertLease()
         for (const item of selected) {
           const current = await db.outbox.get(item.id)
           if (!current) continue
-          if (signal.aborted) {
+          if (interrupted) {
             await db.outbox.update(item.id, { in_flight: false })
             continue
           }
@@ -581,7 +550,7 @@ export function createSyncEngine(options: SyncEngineOptions = {}): SyncEngineWit
           })
         }
       })
-      if (!signal.aborted) {
+      if (!interrupted) {
         lastError = userError(error)
         phase = 'error'
       }
@@ -948,8 +917,7 @@ export function createSyncEngine(options: SyncEngineOptions = {}): SyncEngineWit
         cache: 'no-store',
       })
       if (!head) return true
-      if (await outdatedResponse(head)) return false
-      if (await haltOnStatus(head.status)) {
+      if (await haltOnResponse(head, signal, true)) {
         if (head.status === 507) await markFailed(storageLow, uploadRetryAt, photo.upload_attempts ?? 0)
         return false
       }
@@ -969,8 +937,7 @@ export function createSyncEngine(options: SyncEngineOptions = {}): SyncEngineWit
         body: blob.original,
       })
       if (!put) return true
-      if (await outdatedResponse(put)) return false
-      if (await haltOnStatus(put.status)) {
+      if (await haltOnResponse(put, signal)) {
         if (put.status === 507) await markFailed(storageLow, uploadRetryAt, photo.upload_attempts ?? 0)
         return false
       }
@@ -986,13 +953,13 @@ export function createSyncEngine(options: SyncEngineOptions = {}): SyncEngineWit
           headers: requestHeaders('PUT', { 'Content-Type': 'image/jpeg' }),
           body: blob.thumbnail,
         })
-        if (thumb && ((await outdatedResponse(thumb)) || (await haltOnStatus(thumb.status)))) return false
+        if (thumb && (await haltOnResponse(thumb, signal))) return false
       } catch {
         // Thumbnails are optional and can be regenerated.
       }
       return true
     } catch (error) {
-      if (signal.aborted) return false
+      if (signal.aborted || (error instanceof DOMException && error.name === 'AbortError')) return false
       const attempts = (photo.upload_attempts ?? 0) + 1
       const delay = Math.min(300_000, 2_000 * 2 ** Math.min(attempts - 1, 8))
       await markFailed(userError(error), now().getTime() + delay, attempts)
@@ -1011,9 +978,10 @@ export function createSyncEngine(options: SyncEngineOptions = {}): SyncEngineWit
       signal.throwIfAborted()
       const response = await fetcher(`/api/sync/changes?cursor=${cursor}&limit=500&schema=2`, {
         credentials: 'same-origin',
+        headers: dataHeaders(),
         signal,
       })
-      if ((await outdatedResponse(response)) || (await haltOnStatus(response.status))) return false
+      if (await haltOnResponse(response, signal)) return false
       if (!response.ok) throw new Error(`Changes request failed (${response.status}).`)
       const page = (await response.json()) as {
         changes: Array<{
@@ -1281,7 +1249,7 @@ export function createSyncEngine(options: SyncEngineOptions = {}): SyncEngineWit
     )
   }
 
-  async function sync(signal: AbortSignal) {
+  async function sync(signal: AbortSignal, reclaimed: boolean) {
     if (authBlocked) {
       phase = 'signed_out'
       return
@@ -1294,16 +1262,28 @@ export function createSyncEngine(options: SyncEngineOptions = {}): SyncEngineWit
     await assertLease()
     signal.throwIfAborted()
     phase = 'syncing'
+    lastError = null
+    const access = await gate.check(fetcher, signal)
+    if (showBlocked()) return
+    if (access.kind !== 'ready') {
+      await haltOnStatus(401)
+      return
+    }
+    authenticated = true
+    cycleAccount = access.user.id
     uploadRetryAt = await storedUploadRetryAt()
     signal.throwIfAborted()
     lastError = uploadRetryAt > now().getTime() ? storageLow : null
-    const response = await fetcher('/api/auth/session', { credentials: 'same-origin', method: 'GET', signal })
-    if ((await outdatedResponse(response)) || (await haltOnStatus(response.status))) return
-    if (!response.ok) throw new Error(`Session request failed (${response.status}).`)
-    authenticated = ((await response.json()) as { authenticated: boolean }).authenticated
-    if (!authenticated) {
-      await haltOnStatus(401)
-      return
+    if (needsRepair || reclaimed) {
+      await db.transaction(
+        'rw',
+        [db.settings, db.collections, db.entries, db.photos, db.outbox],
+        async () => {
+          await assertLease()
+          await repairSyncQueue(db)
+        },
+      )
+      needsRepair = false
     }
     if (!(await push(signal)) || !(await pull(signal))) return
 
@@ -1357,18 +1337,7 @@ export function createSyncEngine(options: SyncEngineOptions = {}): SyncEngineWit
         .catch(() => abort.abort())
     }, leaseDuration / 3)
     try {
-      if (needsRepair || acquisition.reclaimed) {
-        await db.transaction(
-          'rw',
-          [db.settings, db.collections, db.entries, db.photos, db.outbox],
-          async () => {
-            await assertLease()
-            await repairSyncQueue(db)
-          },
-        )
-        needsRepair = false
-      }
-      await sync(abort.signal)
+      await sync(abort.signal, acquisition.reclaimed)
     } finally {
       clearInterval(heartbeat)
       try {
@@ -1386,6 +1355,10 @@ export function createSyncEngine(options: SyncEngineOptions = {}): SyncEngineWit
 
   async function runCycle() {
     if (clientOutdated) return
+    if (showBlocked()) {
+      await refreshStatus()
+      return
+    }
     if (running) {
       rerun = true
       return running
@@ -1400,13 +1373,19 @@ export function createSyncEngine(options: SyncEngineOptions = {}): SyncEngineWit
           )
         } else await withLease(abort)
       } catch (error) {
-        if (!abort.signal.aborted) {
+        if (
+          !abort.signal.aborted &&
+          !showBlocked() &&
+          !(error instanceof DOMException && error.name === 'AbortError')
+        ) {
           lastError = userError(error)
           phase = 'error'
         }
       } finally {
         if (phase === 'syncing') phase = lastError ? 'error' : 'idle'
+        cycleAccount = undefined
         controller.current = null
+        showBlocked()
         await refreshStatus()
       }
     })().finally(async () => {
@@ -1434,27 +1413,37 @@ export function createSyncEngine(options: SyncEngineOptions = {}): SyncEngineWit
     })
   }
   const retryNow = async () => {
+    if (showBlocked()) return
     clientOutdated = false
     await clearBackoff(true)
     await runCycle()
   }
   const onOnline = () => {
-    if (clientOutdated) return
+    if (clientOutdated || gate.current.kind === 'blocked') return
     void clearBackoff(false).then(runCycle)
   }
   const onVisibility = () => {
     if (document.visibilityState === 'visible') void runCycle()
   }
   const onAuthenticated = () => {
+    if (gate !== accountGate) gate.reset()
     authBlocked = false
+    controller.current?.abort()
     void runCycle()
   }
   const onSignedOut = () => {
+    if (gate !== accountGate) gate.reset(true)
     authBlocked = true
     authenticated = false
+    lastError = null
     phase = 'signed_out'
     controller.current?.abort()
     void refreshStatus()
+  }
+  const onSessionChange = (event: StorageEvent) => {
+    if (event.key !== sessionChangeKey || gate !== accountGate) return
+    gate.reset()
+    onAuthenticated()
   }
   window.addEventListener('capture:authenticated', onAuthenticated)
   window.addEventListener('capture:signed-out', onSignedOut)
@@ -1463,6 +1452,7 @@ export function createSyncEngine(options: SyncEngineOptions = {}): SyncEngineWit
     started = true
     needsRepair = true
     window.addEventListener('online', onOnline)
+    window.addEventListener('storage', onSessionChange)
     window.addEventListener('capture:authenticated', onAuthenticated)
     window.addEventListener('capture:signed-out', onSignedOut)
     document.addEventListener('visibilitychange', onVisibility)
@@ -1470,7 +1460,7 @@ export function createSyncEngine(options: SyncEngineOptions = {}): SyncEngineWit
       if (navigator.onLine && document.visibilityState === 'visible') void runCycle()
     }, options.intervalMs ?? 30_000)
     const outboxSubscription = liveQuery(() => db.outbox.toArray()).subscribe((rows) => {
-      if (!rows.length || !started || clientOutdated) return
+      if (!rows.length || !started || clientOutdated || gate.current.kind === 'blocked') return
       clearTimeout(debounce)
       debounce = setTimeout(() => {
         void runCycle()
@@ -1483,6 +1473,7 @@ export function createSyncEngine(options: SyncEngineOptions = {}): SyncEngineWit
     started = false
     rerun = false
     window.removeEventListener('online', onOnline)
+    window.removeEventListener('storage', onSessionChange)
     document.removeEventListener('visibilitychange', onVisibility)
     window.removeEventListener('capture:authenticated', onAuthenticated)
     window.removeEventListener('capture:signed-out', onSignedOut)

@@ -1,6 +1,7 @@
 <script lang="ts">
   import type { Photo } from '$lib/types'
   import { thumbnailUrl } from '$lib/photos'
+  import { photoAccount } from '$lib/sync/binding'
 
   let {
     photos,
@@ -8,19 +9,20 @@
     onopen,
     onmore,
   }: { photos: Photo[]; total: number; onopen: (id: string) => void; onmore: () => void } = $props()
-  let urls = $state<Record<string, { revision: number; url: string }>>({})
-  let requested = $state<Record<string, number>>({})
+  type PreviewKey = { revision: number; account: string | null }
+  let urls = $state<Record<string, PreviewKey & { url: string }>>({})
+  let requested = $state<Record<string, PreviewKey>>({})
 
   $effect(() => {
+    const account = $photoAccount
     for (const photo of photos) {
-      const loaded = urls[photo.id]
-      if ((!loaded || loaded.revision !== photo.revision) && requested[photo.id] !== photo.revision) {
-        requested[photo.id] = photo.revision
-        void thumbnailUrl(photo.id).then((url) => {
-          if (url && requested[photo.id] === photo.revision)
-            urls[photo.id] = { revision: photo.revision, url }
-        })
-      }
+      const request = requested[photo.id]
+      if (request?.revision === photo.revision && request.account === account) continue
+      requested[photo.id] = { revision: photo.revision, account }
+      void thumbnailUrl(photo.id).then((url) => {
+        if (url && $photoAccount === account && requested[photo.id]?.revision === photo.revision)
+          urls[photo.id] = { revision: photo.revision, account, url }
+      })
     }
   })
 </script>
@@ -31,9 +33,11 @@
   <div class="thumb-strip" aria-label="Recent photos">
     {#each photos as photo (photo.id)}
       <button class="thumb" aria-label="Open photo" onclick={() => onopen(photo.id)}>
-        {#if urls[photo.id]}<img src={urls[photo.id]?.url ?? ''} alt="" loading="lazy" />{:else}<span
-            aria-hidden="true">▧</span
-          >{/if}
+        {#if urls[photo.id]?.account === $photoAccount}<img
+            src={urls[photo.id]?.url ?? ''}
+            alt=""
+            loading="lazy"
+          />{:else}<span aria-hidden="true">▧</span>{/if}
       </button>
     {/each}
     {#if total > photos.length}<button class="thumb more" aria-label="Open remaining photos" onclick={onmore}

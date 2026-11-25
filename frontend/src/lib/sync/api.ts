@@ -15,7 +15,7 @@ export interface CollectionSyncStatus {
   last_synced_at: Timestamp | null
 }
 
-export type SyncPhase = 'idle' | 'syncing' | 'offline' | 'signed_out' | 'error'
+export type SyncPhase = 'idle' | 'syncing' | 'offline' | 'signed_out' | 'blocked' | 'error'
 
 export interface SyncStatus {
   phase: SyncPhase
@@ -58,11 +58,50 @@ export interface SyncEngine {
   resolveConflict(conflictId: Id, choice: 'mine' | 'server'): Promise<void>
 }
 
+export interface SessionUser {
+  id: Id
+  name: string
+  is_owner: boolean
+}
+
+export interface Session {
+  authenticated: boolean
+  expires_at: Timestamp | null
+  user: SessionUser | null
+}
+
 export interface AuthClient {
-  session(): Promise<{ authenticated: boolean; expires_at: Timestamp | null }>
-  /** Throws an Error whose message is user-facing (wrong password, too many attempts, offline). */
+  session(): Promise<Session>
+  /** Throws an Error whose message is user-facing (wrong password/code, too many attempts, offline). */
   login(password: string): Promise<void>
+  join(code: string): Promise<void>
   logout(): Promise<void>
+  switchAccount(): Promise<void>
+}
+
+export interface Person extends SessionUser {
+  disabled: boolean
+  created_at: Timestamp
+  last_seen_at: Timestamp | null
+  last_change_at: Timestamp | null
+  rooms: number
+  entries: number
+  photos: number
+  missing_originals: number
+  device_count: number
+}
+
+export interface JoinCode {
+  code: string
+  expires_at: Timestamp
+  url: string
+}
+
+export interface PeopleClient {
+  list(): Promise<Person[]>
+  create(name: string): Promise<Person>
+  update(id: Id, patch: { name?: string; disabled?: boolean }): Promise<Person>
+  issueCode(id: Id): Promise<JoinCode>
 }
 
 export interface ServerCollection {
@@ -79,7 +118,6 @@ export interface ServerCollection {
 
 export interface ServerClient {
   listCollections(): Promise<ServerCollection[]>
-  /** URL for a browser download (cookie-authenticated). */
-  exportUrl(scope: { collectionId: Id } | 'all', opts?: { includeTrash?: boolean }): string
+  exportZip(scope: { collectionId: Id } | 'all', opts?: { includeTrash?: boolean }): Promise<Response>
   removeServerCopy(collectionId: Id, confirmName: string): Promise<void>
 }

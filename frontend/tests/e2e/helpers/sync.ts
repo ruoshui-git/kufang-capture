@@ -38,14 +38,16 @@ export async function createCollection(page: Page, name: string, mode: 'synced' 
 
 export async function addEntry(page: Page, quantity?: string, note?: string) {
   const rows = page.locator('[data-entry-id]')
-  const before = await rows.count()
+  const entryIds = () =>
+    rows.evaluateAll((elements) => elements.map((element) => element.getAttribute('data-entry-id')))
+  const before = new Set(await entryIds())
   await page
     .getByRole('button', { name: /New Entry/ })
     .first()
     .click()
-  // `rows.first()` is lazy: pin the new row by id so later steps cannot land on an older row.
-  await expect(rows).toHaveCount(before + 1)
-  const id = await rows.first().getAttribute('data-entry-id')
+  await expect(rows).toHaveCount(before.size + 1)
+  const id = (await entryIds()).find((candidate) => candidate && !before.has(candidate))
+  if (!id) throw new Error('The new entry did not appear in the list.')
   const row = page.locator(`[data-entry-id="${id}"]`)
   if (quantity !== undefined) await row.getByLabel('Quantity').fill(quantity)
   if (note !== undefined) await row.getByLabel('Short note').fill(note)

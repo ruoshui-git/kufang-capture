@@ -89,3 +89,19 @@ Use plain verbs that are consistent through a flow: `Add Photo`, `Add from Photo
 Shared items: the collection menu offers `Import from another collection`; the sheet's button reads `Import N`, and the toast reads `Imported N items` → `Undo`. A shared row carries a quiet `Shared · N collections` tag; Detail lists `Also in` links and says that title, notes and photos change in every collection while the quantity is for this collection only. Removing a shared entry toasts `Removed from A. Still in B.`; deleting one of its photos toasts `Photo deleted from N collections.`
 
 Empty states give direction. For example: "No entries yet. Tap New Entry, then Add Photo to start counting this room." Errors say what happened and what to do next: "Couldn't reach the server. Changes are saved on this device and will upload when you're back online."
+
+## Helper sign-in
+
+Settings shows the active account name. Owners open People from the account card to add, rename,
+disable or enable helpers. The sign-in code sheet puts the QR and short code together with the
+time remaining. The QR uses a fixed light background and quiet zone in either theme.
+
+A scanned link holds the code in its fragment until the join page reads it. The helper confirms
+before submitting. In WeChat, QQ or Alipay, the page offers a code to copy and use in Chrome or
+Safari. The Sign in page also accepts a code directly. Helpers start with Sync to Server selected
+for new collections and can choose Local Only.
+
+If the signed-in account differs from the device's binding, the fixed sync slot links to Settings.
+The account card shows the device's bound account and offers Sign out. A device without any synced
+collections or an outbox can switch accounts after explicit confirmation. Local Only data stays
+on the device.

@@ -32,7 +32,12 @@ describe('foreground sync privacy and consent', () => {
     const fetcher = vi.fn(async (input: RequestInfo | URL) => {
       const url = String(input)
       requests.push(url)
-      if (url === '/api/auth/session') return response(200, { authenticated: true, expires_at: null })
+      if (url === '/api/auth/session')
+        return response(200, {
+          authenticated: true,
+          expires_at: null,
+          user: { id: 'owner', name: 'Owner', is_owner: true },
+        })
       if (url.startsWith('/api/sync/changes'))
         return response(200, { changes: [], cursor: 0, has_more: false })
       return response(200, { results: [] })
@@ -68,10 +73,17 @@ describe('foreground sync privacy and consent', () => {
 
     const photos = await db.photos.toArray()
     const calls: string[] = []
+    const accountHeaders: (string | null)[] = []
     const fetcher = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input)
       calls.push(`${init?.method ?? 'GET'} ${url}`)
-      if (url === '/api/auth/session') return response(200, { authenticated: true, expires_at: null })
+      if (url === '/api/auth/session')
+        return response(200, {
+          authenticated: true,
+          expires_at: null,
+          user: { id: 'owner', name: 'Owner', is_owner: true },
+        })
+      accountHeaders.push(new Headers(init?.headers).get('X-Capture-Account'))
       if (url === '/api/sync/batch') {
         const body = JSON.parse(String(init?.body)) as { mutations: Array<{ id: string }> }
         return response(200, {
@@ -103,10 +115,87 @@ describe('foreground sync privacy and consent', () => {
     await engine.syncNow()
 
     expect(calls.filter((call) => call.includes('/api/sync/batch'))).toHaveLength(1)
+    expect(calls).toEqual(
+      expect.arrayContaining([
+        'POST /api/sync/batch',
+        expect.stringMatching(/^GET \/api\/sync\/changes/),
+        expect.stringMatching(/^HEAD \/api\/photos\/.+\/original$/),
+        expect.stringMatching(/^PUT \/api\/photos\/.+\/original$/),
+        expect.stringMatching(/^PUT \/api\/photos\/.+\/thumbnail$/),
+      ]),
+    )
+    expect(accountHeaders).toEqual(Array(calls.length - 1).fill('owner'))
     expect((await db.photos.toArray()).every((photo) => photo.upload_state === 'uploaded')).toBe(true)
     expect(await db.outbox.where('collection_id').equals(collection.id).count()).toBe(0)
     await db.delete()
   })
+})
+
+describe('mismatched sync accounts', () => {
+  it('leaves local records and outbox intact on the wrong session', async () => {
+    const name = databaseName()
+    const db = getCaptureDb(name)
+    const repo = createRepo({ databaseName: name })
+    await repo.setSetting('account_id', 'owner')
+    await repo.setSetting('account_name', 'Owner')
+    const collection = await repo.createCollection({ name: 'Unsent', storage_mode: 'synced' })
+    const entry = await repo.createEntry(collection.id)
+    const queue = await db.outbox.toArray()
+    const originalEntry = await db.entries.get(entry.id)
+    const fetcher = vi.fn(async (_url: RequestInfo | URL) =>
+      response(200, {
+        authenticated: true,
+        expires_at: null,
+        user: { id: 'helper', name: 'Helper', is_owner: false },
+      }),
+    )
+    const engine = createSyncEngine({ repoDbName: name, fetch: fetcher })
+    try {
+      await engine.syncNow()
+      await engine.runScheduledCycle()
+      expect(fetcher.mock.calls.map(([url]) => url)).toEqual(['/api/auth/session'])
+      expect(await db.outbox.toArray()).toEqual(queue)
+      expect(await db.entries.get(entry.id)).toEqual(originalEntry)
+    } finally {
+      engine.stop()
+      await db.delete()
+    }
+  })
+
+  it.each(['/api/sync/batch', '/api/sync/changes'] as const)(
+    'halts without retrying when %s detects an account change',
+    async (path) => {
+      const name = databaseName()
+      const db = getCaptureDb(name)
+      const repo = createRepo({ databaseName: name })
+      if (path.endsWith('/batch')) await repo.createCollection({ name: 'Unsent', storage_mode: 'synced' })
+      const fetcher = vi.fn(async (input: RequestInfo | URL) =>
+        input === '/api/auth/session'
+          ? response(200, {
+              authenticated: true,
+              expires_at: null,
+              user: { id: 'owner', name: 'Owner', is_owner: true },
+            })
+          : response(409, { detail: 'account_mismatch' }),
+      )
+      const engine = createSyncEngine({ repoDbName: name, fetch: fetcher })
+      try {
+        await engine.syncNow()
+        await engine.runScheduledCycle()
+        await engine.syncNow()
+        expect(fetcher.mock.calls.map(([url]) => String(url).split('?')[0])).toEqual([
+          '/api/auth/session',
+          path,
+        ])
+        const rows = await db.outbox.toArray()
+        expect(rows).toHaveLength(path.endsWith('/batch') ? 1 : 0)
+        for (const row of rows) expect(row).toMatchObject({ attempts: 0, in_flight: false })
+      } finally {
+        engine.stop()
+        await db.delete()
+      }
+    },
+  )
 })
 
 describe('sign-in messages', () => {

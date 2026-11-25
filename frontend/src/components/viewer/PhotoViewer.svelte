@@ -3,6 +3,7 @@
   import { repo } from '$lib/db'
   import type { Id, Photo } from '$lib/types'
   import { originalUrl, thumbnailUrl } from '$lib/photos'
+  import { photoAccount } from '$lib/sync/binding'
   import { openOverlay } from '$lib/ui/overlayHistory'
 
   let {
@@ -12,7 +13,7 @@
   }: { open?: boolean; entryId: Id; startPhotoId?: Id | null } = $props()
   let photos = $state<Photo[]>([])
   let index = $state(0)
-  let source = $state<string | null>(null)
+  let source = $state<{ id: Id; url: string; account: string | null } | null>(null)
   let initialFocus: HTMLButtonElement | undefined = $state()
   let scale = $state(1)
   let panX = $state(0)
@@ -38,7 +39,6 @@
           else if (index >= items.length) index = Math.max(0, items.length - 1)
         })
       }
-      void loadImage()
       queueMicrotask(() => initialFocus?.focus())
     } else {
       unregisterOverlay?.()
@@ -54,7 +54,7 @@
   })
   $effect(() => {
     if (!open || !current) return
-    void loadImage()
+    void loadImage(current.id, $photoAccount)
     for (const photo of [photos[index - 1], photos[index + 1]]) if (photo) void thumbnailUrl(photo.id)
   })
 
@@ -63,15 +63,12 @@
     else subscription?.unsubscribe()
   })
 
-  async function loadImage() {
-    const photo = current
-    if (!photo) {
-      source = null
-      return
-    }
-    source = await thumbnailUrl(photo.id)
-    const full = await originalUrl(photo.id)
-    if (current?.id === photo.id && full) source = full
+  async function loadImage(id: Id, account: string | null) {
+    const preview = await thumbnailUrl(id)
+    if (current?.id !== id || $photoAccount !== account) return
+    source = preview ? { id, url: preview, account } : null
+    const full = await originalUrl(id)
+    if (current?.id === id && $photoAccount === account && full) source = { id, url: full, account }
   }
   function change(delta: number) {
     const next = index + delta
@@ -199,9 +196,9 @@
       onpointercancel={onPointerUp}
       ondblclick={onDoubleTap}
     >
-      {#if source}<img
+      {#if source && source.id === current?.id && source.account === $photoAccount}<img
           class="viewer-image"
-          src={source}
+          src={source.url}
           alt={current?.caption || `Photo ${index + 1}`}
           style:transform="translate({panX}px, {panY}px) scale({scale})"
           draggable="false"

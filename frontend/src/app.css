@@ -767,3 +767,40 @@ textarea {
 .status-line.syncing .status-dot {
   background: var(--color-ballpoint);
 }
+
+.auth-page {
+  max-width: 520px;
+  margin: 0 auto;
+  padding: var(--space-6) var(--space-5);
+}
+.auth-page h1 {
+  margin-bottom: var(--space-3);
+}
+.auth-page form {
+  display: grid;
+  gap: var(--space-4);
+  margin: var(--space-6) 0;
+}
+.auth-page p {
+  line-height: var(--leading-body);
+}
+.auth-page > a {
+  display: block;
+  margin-top: var(--space-4);
+}
+.auth-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-5);
+}
+.auth-error {
+  color: var(--color-danger);
+}
+.join-code {
+  font-family: var(--font-display);
+  font-size: var(--text-3xl);
+  font-weight: var(--weight-bold);
+  font-variant-numeric: tabular-nums;
+  user-select: all;
+}

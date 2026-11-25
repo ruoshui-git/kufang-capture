@@ -10,6 +10,7 @@
   import DetailPage from './routes/detail/DetailPage.svelte'
   import SettingsPage from './routes/settings/SettingsPage.svelte'
   import DiagnosticsPage from './routes/diagnostics/DiagnosticsPage.svelte'
+  import JoinPage from './routes/join/JoinPage.svelte'
   import LoginPage from './routes/login/LoginPage.svelte'
   import ServerPage from './routes/server/ServerPage.svelte'
   import { installKeyboardShortcuts } from './app/shortcuts'
@@ -56,6 +57,7 @@
     {:else if router.route.name === 'settings'}<SettingsPage />
     {:else if router.route.name === 'diagnostics'}<DiagnosticsPage />
     {:else if router.route.name === 'login'}<LoginPage />
+    {:else if router.route.name === 'join'}<JoinPage />
     {:else if router.route.name === 'server'}<ServerPage />
     {:else}<section class="page">
         <h1>Page not found</h1>
