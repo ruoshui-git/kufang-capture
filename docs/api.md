@@ -44,6 +44,10 @@ A sent mutation keeps its id and payload on retry, including across a temporary 
 
 Children wait for their parent create to be acknowledged or sent earlier in the same batch. A child with a stored missing-parent rejection waits for acknowledged parents and retries with a fresh id. If that retry still reports a missing parent, the row stays on the device with a sync error. When a field conflict rejects a combined operation, the client queues the fields that did not conflict and uses an explicit delete or restore if the user chooses their own value for `deleted_at`.
 
+Edits to fields with an unresolved conflict wait for the user's choice. **Use server** applies the server values and removes those fields from queued edits in the same local transaction. Unrelated queued fields keep their original base revisions for conflict detection.
+
+A device that explicitly re-enables sync after using Local Only can recover a server copy that disappeared in the meantime. When the server reports that an opted-in record is missing, the client queues a full create with a fresh mutation id and a null base revision. Recreated photo metadata clears the old upload acknowledgment and queues the original again. If a previously shared entry's sequence number is occupied on the server, the client keeps the original number and reports a sync error.
+
 The client repairs a legacy upsert carrying a lost delete. It recovers a legacy restore when the device still intends to restore the record and either a partial edit carries that restore or the server confirms that the record was deleted at the mutation's base revision. An acknowledged legacy upsert remains acknowledged. Any lifecycle correction uses its own mutation id.
 
 The client pushes metadata between photo originals and pulls changes regularly during the upload queue. Originals in trash follow the same upload rules. A 401 or 507 stops the current cycle. A 507 pauses uploads for five minutes across tabs and restarts. Sync Now can retry immediately. The client reports an error if neither the server nor the device has the original. Foreground cycles use a Web Lock where available and an IndexedDB lease across tabs. A tab can reclaim an expired lease and retry unfinished work. `client_outdated` stops automatic sync for the open app until Sync Now or an app reload.
@@ -80,7 +84,9 @@ The client merges each record unless the entity has a pending outbox item or an 
 
 **Local Only wins locally.** A client never overwrites or deletes local data that belongs to a Local Only collection because of a pulled change: a collection `removed`/record for a local Local Only collection, and an item or photo change (record or purge) for an item that any local Local Only entry references, are ignored.
 
-A removal or purge keeps the affected records and originals on the device if it would discard an unacknowledged change, an unresolved conflict, or an unbacked photo. The client shows “Removed on the server; kept on this device.” The retained records keep their storage mode so shared placements stay consistent. Sync skips removed records and their blocked changes. A healthy shared placement can still sync its surviving item. Retained data remains available for export.
+If a pulled entry shares an item with a Local Only collection, the synced placement shows a sync error. Edits to its own server-acknowledged entry, such as quantity, continue to sync. Shared item fields, photo metadata and originals remain on the device.
+
+A removal or purge keeps the affected records and originals on the device if it would discard an unacknowledged change, an unresolved conflict, or a locally stored original. This includes originals previously marked as backed up, even when the photo purge arrives on an earlier page than the collection removal. The client shows “Removed on the server; kept on this device.” The retained records keep their storage mode so shared placements stay consistent. Their originals still use device storage and remain available for export and explicit local clearing. Queued edits to an item or photo with a surviving synced placement move to that placement's collection, using a fresh mutation id if already sent.
 
 ### Photo bytes
 
@@ -99,7 +105,7 @@ A removal or purge keeps the affected records and originals on the device if it 
 
 The photo's metadata must already be synced: otherwise `409 photo_metadata_missing`. The header hash must equal the metadata `sha256`: otherwise `422 checksum_mismatch`.
 
-The server streams the body to a temp file in the media volume while computing SHA-256, CRC-32 and the size. Bodies over `MAX_PHOTO_BYTES` get `413`. The server verifies all three against the metadata, fsyncs, and renames the file atomically to `media/originals/<id[0:2]>/<id>`.
+The server streams the body to a temp file in the media volume while computing SHA-256, CRC-32 and the size. Bodies over `MAX_PHOTO_BYTES` get `413`. The server verifies all three against the metadata, fsyncs, and renames the file atomically to `media/originals/<id[0:2]>/<id>`. Original and thumbnail uploads recheck metadata under the writer lock before installing the file. If the metadata was removed while the upload streamed, the server discards the temp file and answers `409 photo_metadata_missing`.
 
 The response is `201` (or `200` if it was already stored with the same hash), with `{ "photo_id", "sha256", "byte_size", "server_storage_key" }`. Only then does the client mark the photo `uploaded` (shown as "Backed up"). If free disk space is below `MIN_FREE_BYTES`, the server answers `507 server_storage_low` before reading the body.
 

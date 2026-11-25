@@ -65,6 +65,8 @@ type QueuedMutation = OutboxItem & {
   queue_part?: string
   rejected_missing_parent?: boolean
   retried_missing_parent?: boolean
+  recreate_if_missing?: boolean
+  preserve_sequence?: boolean
 }
 
 /**
@@ -397,12 +399,16 @@ export async function queueMutation(
   })
 }
 
-/** Rebuild a legacy delete/restore that was queued in place of a create. */
-export function repairMissingCreate(row: QueuedMutation, record: Entry | Photo): QueuedMutation {
+/** Rebuild a create from a complete local record. */
+export function repairMissingCreate(
+  row: QueuedMutation,
+  record: (Collection | Item | Entry | Photo) & RemoteRemoval,
+): QueuedMutation {
   return {
     ...row,
     op: 'upsert',
-    fields: mutationFields({ ...record, ...row.fields }),
+    base_revision: null,
+    fields: mutationFields({ ...record }),
   }
 }
 
@@ -420,6 +426,62 @@ export async function syncedItemIds(db: CaptureDb, collections: (Collection & Re
   return synced
 }
 
+/** Retarget shared metadata whose attribution no longer names a server collection. */
+export async function retargetSharedMutations(
+  db: CaptureDb,
+  rows: QueuedMutation[],
+  collections: (Collection & RemoteRemoval)[],
+  unavailable: Set<Id>,
+) {
+  const candidates = rows.filter(
+    (row) => unavailable.has(row.collection_id) && (row.entity === 'item' || row.entity === 'photo'),
+  )
+  const moved = new Set<Id>()
+  if (!candidates.length) return moved
+  const photos = await db.photos.bulkGet(
+    candidates.filter((row) => row.entity === 'photo').map((row) => row.entity_id),
+  )
+  const photoItems = new Map(photos.flatMap((photo) => (photo ? [[photo.id, photo.item_id]] : [])))
+  const itemId = (row: QueuedMutation) =>
+    row.entity === 'item' ? row.entity_id : photoItems.get(row.entity_id)
+  const placements = await db.entries
+    .where('item_id')
+    .anyOf(candidates.flatMap((row) => itemId(row) ?? []))
+    .toArray()
+  const owners = new Map(collections.map((collection) => [collection.id, collection]))
+  const privateItems = new Set<Id>()
+  const destinations = new Map<Id, Id>()
+  for (const entry of placements) {
+    const collection = owners.get(entry.collection_id)
+    if (collection?.storage_mode === 'local_only') privateItems.add(entry.item_id)
+    if (
+      collection?.storage_mode === 'synced' &&
+      !collection.removed_on_server &&
+      !entry.removed_on_server &&
+      !unavailable.has(collection.id)
+    ) {
+      destinations.set(entry.item_id, collection.id)
+    }
+  }
+  for (const row of candidates) {
+    const item = itemId(row)
+    const target = item && !privateItems.has(item) ? destinations.get(item) : undefined
+    if (!target) continue
+    // The server may have stored a result for the old payload under its original id.
+    const replacement = isUnsent(row) ? row : newMutationId(row)
+    if (replacement.id !== row.id) await db.outbox.delete(row.id)
+    await db.outbox.put({
+      ...replacement,
+      collection_id: target,
+      last_error: null,
+      rejected_missing_parent: false,
+      retried_missing_parent: false,
+    })
+    moved.add(row.id)
+  }
+  return moved
+}
+
 /** Repairs stale claims when the engine owns the sync lease. */
 export async function repairSyncQueue(db: CaptureDb) {
   await db.transaction('rw', [db.collections, db.entries, db.photos, db.outbox], async () => {
@@ -428,7 +490,15 @@ export async function repairSyncQueue(db: CaptureDb) {
       collections.filter((c) => c.storage_mode === 'synced' && !c.removed_on_server).map((c) => c.id),
     )
     const syncedItems = await syncedItemIds(db, collections)
-    const rows = (await db.outbox.toArray()).sort(compareQueued)
+    const previousRows = await db.outbox.toArray()
+    const collectionIds = new Set(collections.map(({ id }) => id))
+    const unavailable = new Set(
+      collections.filter((collection) => collection.removed_on_server).map(({ id }) => id),
+    )
+    for (const row of previousRows)
+      if (!collectionIds.has(row.collection_id)) unavailable.add(row.collection_id)
+    const moved = await retargetSharedMutations(db, previousRows, collections, unavailable)
+    const rows = (moved.size ? await db.outbox.toArray() : previousRows).sort(compareQueued)
     const seen = new Set<string>()
     for (const row of rows) {
       const key = `${row.entity}:${row.entity_id}`
@@ -459,7 +529,10 @@ export async function repairSyncQueue(db: CaptureDb) {
         })
       } else if ((row.op === 'delete' || row.op === 'restore') && row.base_revision === null && !hasEarlier) {
         if (record.server_revision === null && (wasUnsent || row.last_error === 'Record does not exist')) {
-          const repaired = repairMissingCreate(wasUnsent ? row : newMutationId(row), record)
+          const repaired = repairMissingCreate(wasUnsent ? row : newMutationId(row), {
+            ...record,
+            ...row.fields,
+          })
           if (!wasUnsent) await db.outbox.delete(row.id)
           await db.outbox.put(repaired)
         } else if (record.server_revision !== null && wasUnsent) {
@@ -467,16 +540,23 @@ export async function repairSyncQueue(db: CaptureDb) {
         }
       }
     }
-    await db.photos.toCollection().modify((photo) => {
-      if (photo.upload_state === 'uploading') photo.upload_state = 'pending'
-      if (photo.removed_on_server || !syncedItems.has(photo.item_id)) return
-      if (photo.upload_state === 'not_needed' && photo.server_revision !== null) {
+    await db.photos
+      .filter(
+        (photo) =>
+          photo.upload_state === 'uploading' ||
+          (photo.upload_state === 'not_needed' &&
+            photo.server_revision !== null &&
+            !photo.removed_on_server &&
+            syncedItems.has(photo.item_id)),
+      )
+      .modify((photo) => {
+        if (photo.upload_state === 'not_needed') {
+          photo.upload_attempts = 0
+          photo.upload_next_attempt_at = null
+          photo.upload_error = null
+        }
         photo.upload_state = 'pending'
-        photo.upload_attempts = 0
-        photo.upload_next_attempt_at = null
-        photo.upload_error = null
-      }
-    })
+      })
   })
 }
 
@@ -594,22 +674,28 @@ export function createRepo(options: RepoOptions = {}): Repo {
         entry.removed_on_server ||
         itemById.get(entry.item_id)?.removed_on_server ||
         itemPhotos.some((photo) => photo.removed_on_server)
-      const display_sync_state = removed
-        ? 'error'
-        : collection?.storage_mode === 'local_only'
-          ? 'local_only'
-          : relevantConflicts.length || recordStates.includes('conflict')
-            ? 'conflict'
-            : recordStates.includes('error') ||
-                relevantOutbox.some((row) => !!row.last_error) ||
-                itemPhotos.some((photo) => photo.upload_state === 'error')
-              ? 'error'
-              : relevantOutbox.length > 0 ||
-                  itemPhotos.some((photo) => ['pending', 'uploading'].includes(photo.upload_state))
-                ? 'pending'
-                : entry.server_revision !== null
-                  ? 'synced'
-                  : 'pending'
+      const privatePlacement =
+        collection?.storage_mode === 'synced' &&
+        placementsByItem
+          .get(entry.item_id)
+          ?.some((placement) => collectionById.get(placement.collection_id)?.storage_mode === 'local_only')
+      const display_sync_state =
+        removed || privatePlacement
+          ? 'error'
+          : collection?.storage_mode === 'local_only'
+            ? 'local_only'
+            : relevantConflicts.length || recordStates.includes('conflict')
+              ? 'conflict'
+              : recordStates.includes('error') ||
+                  relevantOutbox.some((row) => !!row.last_error) ||
+                  itemPhotos.some((photo) => photo.upload_state === 'error')
+                ? 'error'
+                : relevantOutbox.length > 0 ||
+                    itemPhotos.some((photo) => ['pending', 'uploading'].includes(photo.upload_state))
+                  ? 'pending'
+                  : entry.server_revision !== null
+                    ? 'synced'
+                    : 'pending'
       return {
         ...entry,
         title: item.title,
@@ -2380,6 +2466,12 @@ export function createRepo(options: RepoOptions = {}): Repo {
           await db.photos.put(pending)
           await enqueue(synced, 'photo', pending, deletionOperation(pending) ?? 'upsert', { ...pending })
         }
+        // Consent covers recreating missing records, including retries of older rows.
+        await db.outbox
+          .where('collection_id')
+          .equals(id)
+          .filter((row) => row.op !== 'purge' && !row.recreate_if_missing)
+          .modify({ recreate_if_missing: true })
       }),
     readForExport: async (collectionIds) =>
       db.transaction('r', db.collections, db.entries, db.items, db.photos, async () => {

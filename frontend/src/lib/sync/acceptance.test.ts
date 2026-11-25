@@ -797,6 +797,200 @@ describe('sync acceptance against an in-memory API server', () => {
     await db.delete()
   })
 
+  it('keeps a backed-up original when a later page keeps the removed collection on this device', async () => {
+    const server = new MemoryServer()
+    const { db, repo, collection, entry, engine } = await syncedEntry(server)
+    const photo = await addPhoto(repo, entry.id)
+    await engine.syncNow()
+    expect(await db.photos.get(photo.id)).toMatchObject({ upload_state: 'uploaded' })
+    await repo.updateCollection(collection.id, { description: 'Pending local edit' })
+    await db.outbox.where('collection_id').equals(collection.id).modify({
+      next_attempt_at: '2026-11-09T00:00:00.000Z',
+    })
+    server.pageSize = 1
+    server.pushChange({ entity: 'photo', id: photo.id, purged: true })
+    server.pushChange({ entity: 'item', id: entry.item_id, purged: true })
+    server.pushChange({ entity: 'collection', id: collection.id, removed: true })
+
+    await engine.runScheduledCycle()
+
+    expect(await db.collections.get(collection.id)).toMatchObject({
+      removed_on_server: true,
+      description: 'Pending local edit',
+    })
+    expect(await db.entries.get(entry.id)).toBeDefined()
+    expect(await db.photos.get(photo.id)).toBeDefined()
+    expect(await (await repo.getPhotoBlob(photo.id))?.original.text()).toBe('photo-bytes')
+    await db.delete()
+  })
+
+  it.each([true, false])(
+    'recreates a removed copy after Local Only (removal already pulled: %s)',
+    async (pullWhilePrivate) => {
+      const server = new MemoryServer()
+      const { db, repo, collection, entry, engine } = await syncedEntry(server)
+      const photo = await addPhoto(repo, entry.id)
+      await engine.syncNow()
+      await repo.setStorageMode(collection.id, 'local_only', { consentToUploadExisting: false })
+      await repo.updateEntry(entry.id, { quantity: '27', notes: 'Changed on this device' })
+      server.records.delete(server.key('collection', collection.id))
+      server.records.delete(server.key('item', entry.item_id))
+      server.records.delete(server.key('entry', entry.id))
+      server.records.delete(server.key('photo', photo.id))
+      server.stored.delete(photo.id)
+      server.pageSize = 1
+      server.pushChange({ entity: 'photo', id: photo.id, purged: true })
+      server.pushChange({ entity: 'item', id: entry.item_id, purged: true })
+      server.pushChange({ entity: 'collection', id: collection.id, removed: true })
+      if (pullWhilePrivate) await engine.syncNow()
+      const apply = server.applyMutation.bind(server)
+      vi.spyOn(server, 'applyMutation').mockImplementation((mutation) => {
+        if (
+          (mutation.entity !== 'item' && mutation.entity !== 'entry') ||
+          server.records.has(server.key('collection', mutation.collection_id))
+        )
+          return apply(mutation)
+        const rejected = {
+          id: mutation.id,
+          status: 'rejected',
+          code: 'missing_parent',
+          message: 'Collection does not exist',
+          server_revision: null,
+        }
+        server.mutationResults.set(mutation.id, rejected)
+        return rejected
+      })
+      await repo.setStorageMode(collection.id, 'synced', { consentToUploadExisting: true })
+      const previousIds = new Set((await db.outbox.toArray()).map((row) => row.id))
+      const offset = server.batchRequests.length
+      for (let cycle = 0; cycle < 5; cycle++) await engine.syncNow()
+
+      const creates = server.batchRequests
+        .slice(offset)
+        .flat()
+        .filter((row) => row.base_revision === null)
+      expect(creates.map((row) => row.entity).sort()).toEqual(['collection', 'entry', 'item', 'photo'])
+      expect(creates.every((row) => row.op === 'upsert' && !previousIds.has(row.id))).toBe(true)
+      expect(server.records.get(server.key('entry', entry.id))).toMatchObject({
+        quantity: '27',
+        sequence_number: entry.sequence_number,
+      })
+      expect(server.records.get(server.key('item', entry.item_id))?.notes).toBe('Changed on this device')
+      expect(await db.photos.get(photo.id)).toMatchObject({ upload_state: 'uploaded' })
+      expect(server.stored.has(photo.id)).toBe(true)
+      expect(await db.outbox.count()).toBe(0)
+      await db.delete()
+    },
+  )
+
+  it('keeps a previously shared sequence number when a recreation runs into a taken number', async () => {
+    const server = new MemoryServer()
+    const { db, repo, collection, entry, engine } = await syncedEntry(server)
+    await repo.setStorageMode(collection.id, 'local_only', { consentToUploadExisting: false })
+    const key = server.key('entry', entry.id)
+    server.records.set(server.key('entry', 'other-entry'), {
+      ...server.records.get(key)!,
+      id: 'other-entry',
+      item_id: 'other-item',
+    })
+    server.records.delete(key)
+    await repo.setStorageMode(collection.id, 'synced', { consentToUploadExisting: true })
+
+    for (let cycle = 0; cycle < 4; cycle++) await engine.syncNow()
+
+    expect(await db.entries.get(entry.id)).toMatchObject({
+      sequence_number: entry.sequence_number,
+      sync_state: 'error',
+    })
+    expect(server.records.get(key)).toBeUndefined()
+    await db.delete()
+  })
+
+  it('retargets rejected item edits and unsent photo edits to a surviving placement', async () => {
+    const server = new MemoryServer()
+    const { db, repo, collection, entry, engine } = await syncedEntry(server)
+    const photo = await addPhoto(repo, entry.id)
+    const other = await repo.createCollection({ name: 'Other', storage_mode: 'synced' })
+    await repo.importEntries(other.id, [entry.id])
+    await engine.syncNow()
+    await repo.updateEntry(entry.id, { notes: 'Shared edit' })
+    await repo.updatePhoto(photo.id, { caption: 'Shared caption' })
+    const itemRow = (await db.outbox.where('[entity+entity_id]').equals(['item', entry.item_id]).first())!
+    const photoRow = (await db.outbox.where('[entity+entity_id]').equals(['photo', photo.id]).first())!
+    expect([itemRow.collection_id, photoRow.collection_id]).toEqual([collection.id, collection.id])
+    server.records.delete(server.key('collection', collection.id))
+    const apply = server.applyMutation.bind(server)
+    vi.spyOn(server, 'applyMutation').mockImplementation((mutation) => {
+      if (mutation.collection_id !== collection.id) return apply(mutation)
+      const rejected = {
+        id: mutation.id,
+        status: 'rejected',
+        code: 'missing_parent',
+        message: 'Collection does not exist',
+        server_revision: null,
+      }
+      server.mutationResults.set(mutation.id, rejected)
+      return rejected
+    })
+    await db.outbox.update(photoRow.id, { next_attempt_at: '2026-11-09T00:00:00.000Z' })
+    server.pushChange({ entity: 'collection', id: collection.id, removed: true })
+    await engine.runScheduledCycle()
+
+    expect(await db.outbox.get(itemRow.id)).toBeUndefined()
+    expect(await db.outbox.where('[entity+entity_id]').equals(['item', entry.item_id]).first()).toMatchObject(
+      {
+        collection_id: other.id,
+        fields: { notes: 'Shared edit' },
+      },
+    )
+    expect(await db.outbox.get(photoRow.id)).toMatchObject({ collection_id: other.id })
+    await engine.syncNow()
+    expect(server.records.get(server.key('item', entry.item_id))?.notes).toBe('Shared edit')
+    expect(server.records.get(server.key('photo', photo.id))?.caption).toBe('Shared caption')
+    expect(await db.outbox.count()).toBe(0)
+    await db.delete()
+  })
+
+  it('reports a remotely shared private item while syncing only the acknowledged placement edits', async () => {
+    const server = new MemoryServer()
+    const { db, repo, collection, entry, engine } = await syncedEntry(server)
+    const other = await repo.createCollection({ name: 'Other', storage_mode: 'synced' })
+    const localPhoto = await addPhoto(repo, entry.id)
+    await engine.syncNow()
+    await repo.setStorageMode(collection.id, 'local_only', { consentToUploadExisting: false })
+    await repo.updateEntry(entry.id, { notes: 'Private draft' })
+    const remoteId = 'remote-entry'
+    expect(
+      server.applyMutation({
+        id: 'share-item',
+        entity: 'entry',
+        entity_id: remoteId,
+        collection_id: other.id,
+        op: 'upsert',
+        base_revision: null,
+        fields: { ...server.records.get(server.key('entry', entry.id)), collection_id: other.id },
+      }),
+    ).toMatchObject({ status: 'applied' })
+    await engine.syncNow()
+    expect((await repo.getEntry(remoteId))?.display_sync_state).toBe('error')
+    expect(await waitForStatus(engine, (value) => !!value.per_collection[other.id]?.errors)).toMatchObject({
+      last_error: expect.stringContaining('Local Only'),
+    })
+    await repo.updateEntry(remoteId, { quantity: '12', notes: 'Keep this private' })
+    await repo.updatePhoto(localPhoto.id, { caption: 'Private caption' })
+    const added = await addPhoto(repo, remoteId)
+    const offset = server.batchRequests.length
+    await engine.syncNow()
+    expect(server.batchRequests.slice(offset).flat()).toEqual([
+      expect.objectContaining({ entity: 'entry', entity_id: remoteId, fields: { quantity: '12' } }),
+    ])
+    expect(server.records.get(server.key('entry', remoteId))?.quantity).toBe('12')
+    expect(server.records.get(server.key('item', entry.item_id))?.notes).toBe('initial')
+    expect(server.stored.has(added.id)).toBe(false)
+    expect((await repo.getEntry(remoteId))?.display_sync_state).toBe('error')
+    await db.delete()
+  })
+
   it.each(['/api/sync/batch', '/api/sync/changes'])(
     'halts on client_outdated from %s until Sync Now',
     async (path) => {
@@ -1293,6 +1487,32 @@ describe('sync acceptance against an in-memory API server', () => {
     expect((await fixture.db.items.get(fixture.entry.id))?.title).toBe('Server title')
     expect(server.batchRequests).toHaveLength(batchCount)
     await fixture.db.delete()
+  })
+
+  it('discards queued edits to resolved fields while preserving the rest of the patch', async () => {
+    const server = new MemoryServer()
+    const { db, repo, entry, engine } = await syncedEntry(server)
+    server.externalUpdate('item', entry.item_id, { title: 'Server title' })
+    await repo.updateEntry(entry.id, { title: 'First local title' })
+    await engine.syncNow()
+    const conflict = (await db.conflicts.toArray())[0]!
+    await repo.updateEntry(entry.id, { title: 'Later local title', notes: 'Preserve me' })
+    const offset = server.batchRequests.length
+
+    await engine.runScheduledCycle()
+    expect(server.batchRequests).toHaveLength(offset)
+    await engine.resolveConflict(conflict.id, 'server')
+
+    await waitFor(async () => (await db.outbox.count()) === 0)
+    expect(server.batchRequests.slice(offset).flat()).toEqual([
+      expect.objectContaining({ entity_id: entry.item_id, fields: { notes: 'Preserve me' } }),
+    ])
+    expect(await db.items.get(entry.item_id)).toMatchObject({ title: 'Server title', notes: 'Preserve me' })
+    expect(server.records.get(server.key('item', entry.item_id))).toMatchObject({
+      title: 'Server title',
+      notes: 'Preserve me',
+    })
+    await db.delete()
   })
 
   it('keeps conflicted local fields through pull until server resolution is chosen', async () => {
@@ -1855,6 +2075,29 @@ describe('sync acceptance against an in-memory API server', () => {
     expect(JSON.stringify(server.requests.slice(before))).not.toContain(mixedPhoto.id)
     expect(JSON.stringify(server.requests.slice(before))).not.toContain(mixed.item_id)
     await fixture.db.delete()
+  })
+
+  it('repairs stale uploads without writing unchanged photo rows', async () => {
+    const server = new MemoryServer()
+    const { db, repo, entry, engine } = await syncedEntry(server)
+    const unchanged = await addPhoto(repo, entry.id)
+    const stale = await addPhoto(repo, entry.id)
+    await engine.syncNow()
+    await db.photos.update(stale.id, { upload_state: 'uploading' })
+    const touched: Id[] = []
+    const onUpdate = (_changes: unknown, key: Id) => {
+      touched.push(key)
+    }
+    db.photos.hook('updating', onUpdate)
+
+    await repairSyncQueue(db)
+    await repairSyncQueue(db)
+
+    expect(touched).toEqual([stale.id])
+    expect(await db.photos.get(unchanged.id)).toMatchObject({ upload_state: 'uploaded' })
+    expect(await db.photos.get(stale.id)).toMatchObject({ upload_state: 'pending' })
+    db.photos.hook('updating').unsubscribe(onUpdate)
+    await db.delete()
   })
 
   it('uploads deleted photos when opting in and queues an older unbacked photo on undo', async () => {

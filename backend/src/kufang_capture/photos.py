@@ -1,5 +1,6 @@
 import hashlib
 import os
+import sqlite3
 import tempfile
 import zlib
 from pathlib import Path
@@ -12,6 +13,7 @@ from .sync import now
 
 CHUNK_SIZE = 1024 * 1024
 THUMB_TYPES = {"image/jpeg", "image/png", "image/webp"}
+ORIGINAL_FIELDS = ("item_id", "sha256", "byte_size", "crc32", "mime_type")
 
 
 def _photo(data_dir: Path, photo_id: str):
@@ -19,9 +21,32 @@ def _photo(data_dir: Path, photo_id: str):
         return db.execute("SELECT * FROM photos WHERE id=?", (photo_id,)).fetchone()
 
 
+def _upload_metadata(data_dir: Path, photo_id: str) -> sqlite3.Row | None:
+    with connect(data_dir) as db:
+        return db.execute(
+            "SELECT photos.*, (SELECT COALESCE(MAX(seq), 0) FROM changes) AS upload_cursor "
+            "FROM photos WHERE id=?",
+            (photo_id,),
+        ).fetchone()
+
+
+def _recheck_upload_metadata(db: sqlite3.Connection, record: sqlite3.Row) -> sqlite3.Row:
+    # A new row can reuse the same photo id after a device re-enables sync.
+    current = db.execute(
+        "SELECT * FROM photos WHERE id=? AND NOT EXISTS ("
+        "SELECT 1 FROM changes WHERE seq>? AND entity='photo' AND entity_id=? AND kind='purged')",
+        (record["id"], record["upload_cursor"], record["id"]),
+    ).fetchone()
+    if current is None:
+        raise HTTPException(409, detail="photo_metadata_missing")
+    if any(current[key] != record[key] for key in ORIGINAL_FIELDS):
+        raise HTTPException(422, detail="checksum_mismatch")
+    return current
+
+
 async def upload_original(request: Request, data_dir: Path, max_bytes: int, min_free_bytes: int):
     photo_id = request.path_params["photo_id"]
-    record = _photo(data_dir, photo_id)
+    record = _upload_metadata(data_dir, photo_id)
     if record is None:
         raise HTTPException(409, detail="photo_metadata_missing")
     claimed_hash = request.headers.get("x-content-sha256", "")
@@ -39,14 +64,21 @@ async def upload_original(request: Request, data_dir: Path, max_bytes: int, min_
     tmp_dir.mkdir(parents=True, exist_ok=True)
     destination = media / "originals" / photo_id[:2] / photo_id
     destination.parent.mkdir(parents=True, exist_ok=True)
-    if record["stored_at"] and destination.is_file():
-        if destination.stat().st_size == record["byte_size"]:
-            return {
-                "photo_id": photo_id,
-                "sha256": record["sha256"],
-                "byte_size": record["byte_size"],
-                "server_storage_key": record["storage_key"],
-            }
+    if record["stored_at"]:
+        with single_writer(), connect(data_dir) as db:
+            db.execute("BEGIN IMMEDIATE")
+            current = _recheck_upload_metadata(db, record)
+            if (
+                current["stored_at"]
+                and destination.is_file()
+                and destination.stat().st_size == record["byte_size"]
+            ):
+                return {
+                    "photo_id": photo_id,
+                    "sha256": record["sha256"],
+                    "byte_size": record["byte_size"],
+                    "server_storage_key": current["storage_key"],
+                }
     digest = hashlib.sha256()
     crc = 0
     size = 0
@@ -73,15 +105,16 @@ async def upload_original(request: Request, data_dir: Path, max_bytes: int, min_
             or crc & 0xFFFFFFFF != record["crc32"]
         ):
             raise HTTPException(422, detail="checksum_mismatch")
-        os.replace(temp_path, destination)
-        directory_fd = os.open(destination.parent, os.O_RDONLY)
-        try:
-            os.fsync(directory_fd)
-        finally:
-            os.close(directory_fd)
-        stored = now()
         with single_writer(), connect(data_dir) as db:
             db.execute("BEGIN IMMEDIATE")
+            _recheck_upload_metadata(db, record)
+            os.replace(temp_path, destination)
+            directory_fd = os.open(destination.parent, os.O_RDONLY)
+            try:
+                os.fsync(directory_fd)
+            finally:
+                os.close(directory_fd)
+            stored = now()
             db.execute(
                 "UPDATE photos SET stored_at=?,storage_key=?,updated_at=?,revision=revision+1 WHERE id=?",
                 (stored, str(destination.relative_to(data_dir)), stored, photo_id),
@@ -109,7 +142,7 @@ def shutil_free(data_dir: Path) -> int:
 
 async def upload_thumbnail(request: Request, data_dir: Path):
     photo_id = request.path_params["photo_id"]
-    record = _photo(data_dir, photo_id)
+    record = _upload_metadata(data_dir, photo_id)
     if record is None:
         raise HTTPException(404, detail="photo_not_found")
     mime = request.headers.get("content-type", "").split(";", 1)[0].strip().lower()
@@ -129,11 +162,14 @@ async def upload_thumbnail(request: Request, data_dir: Path):
                 output.write(chunk)
             output.flush()
             os.fsync(output.fileno())
-        os.replace(temp, target)
+        with single_writer(), connect(data_dir) as db:
+            db.execute("BEGIN IMMEDIATE")
+            _recheck_upload_metadata(db, record)
+            os.replace(temp, target)
+            db.execute("UPDATE photos SET thumb_stored_at=? WHERE id=?", (now(), photo_id))
+            db.commit()
     finally:
         temp.unlink(missing_ok=True)
-    with connect(data_dir) as db:
-        db.execute("UPDATE photos SET thumb_stored_at=? WHERE id=?", (now(), photo_id))
     return {"photo_id": photo_id, "byte_size": size}
 
 

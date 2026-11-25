@@ -371,8 +371,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 (collection_id, collection_id),
             )
             db.commit()
-        for key in media_files:
-            (config.data_dir / key).unlink(missing_ok=True)
+            for key in media_files:
+                (config.data_dir / key).unlink(missing_ok=True)
         return Response(status_code=204)
 
     def export_response(collection_id: str | None, include_trash: bool):

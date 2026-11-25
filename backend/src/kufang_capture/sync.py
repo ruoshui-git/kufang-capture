@@ -273,8 +273,8 @@ def apply_batch(data_dir, mutations: list[dict[str, Any]]) -> tuple[list[dict[st
                 db.rollback()
                 raise
         cursor = db.execute("SELECT COALESCE(MAX(seq),0) FROM changes").fetchone()[0]
-    for storage_key in media_to_delete:
-        (Path(data_dir) / storage_key).unlink(missing_ok=True)
+        for storage_key in media_to_delete:
+            (Path(data_dir) / storage_key).unlink(missing_ok=True)
     return results, cursor
 
 

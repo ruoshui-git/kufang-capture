@@ -1,3 +1,4 @@
+import asyncio
 import hashlib
 import json
 import subprocess
@@ -7,8 +8,10 @@ import zipfile
 import zlib
 from pathlib import Path
 
+import pytest
 from argon2 import PasswordHasher
 from fastapi.testclient import TestClient
+from starlette.requests import Request
 
 from kufang_capture import photos
 from kufang_capture.main import create_app
@@ -538,6 +541,80 @@ def test_photo_upload_size_limit_and_low_disk(tmp_path, monkeypatch):
     )
     assert response.status_code == 507
     low_client.close()
+
+
+@pytest.mark.parametrize("kind", ["original", "thumbnail"])
+@pytest.mark.parametrize("recreate", [False, True])
+def test_photo_upload_rechecks_metadata_after_streaming(tmp_path, monkeypatch, kind, recreate):
+    client = make_client(tmp_path)
+    data = b"upload still in progress"
+    digest = hashlib.sha256(data).hexdigest()
+    photo = {
+        "id": "m-uploading-photo",
+        "entity": "photo",
+        "entity_id": "p1",
+        "collection_id": "c1",
+        "op": "upsert",
+        "base_revision": None,
+        "fields": {
+            "item_id": "e1",
+            "original_filename": "a.jpg",
+            "mime_type": "image/jpeg",
+            "byte_size": len(data),
+            "width": 1,
+            "height": 1,
+            "sha256": digest,
+            "crc32": zlib.crc32(data),
+            "captured_at": "2026-11-08T12:00:00.000Z",
+            "capture_source": "native_camera",
+            "created_at": "2026-11-08T12:00:00.000Z",
+            "updated_at": "2026-11-08T12:00:00.000Z",
+        },
+    }
+    results = client.post(
+        "/api/sync/batch",
+        json={"mutations": [collection_mutation(), entry_mutation(), photo]},
+        headers=HEADERS,
+    ).json()["results"]
+    assert all(result["status"] == "applied" for result in results)
+    stream = Request.stream
+
+    async def remove_while_streaming(request):
+        removed = False
+        async for chunk in stream(request):
+            yield chunk
+            if chunk and not removed and request.url.path == f"/api/photos/p1/{kind}":
+                response = await asyncio.to_thread(
+                    client.delete,
+                    "/api/collections/c1/server-copy",
+                    headers={**HEADERS, "X-Confirm-Name": "Room A"},
+                )
+                assert response.status_code == 204
+                removed = True
+                if recreate:
+                    collection = collection_mutation(mid="m-recreated-collection")
+                    entry = entry_mutation(mid="m-recreated-entry")
+                    item = item_mutation("e1", "c1")
+                    item["id"] = "m-recreated-item"
+                    replacement = {**photo, "id": "m-recreated-photo"}
+                    result = await asyncio.to_thread(
+                        client.post,
+                        "/api/sync/batch",
+                        json={"mutations": [collection, item, entry, replacement]},
+                        headers=HEADERS,
+                    )
+                    assert all(row["status"] == "applied" for row in result.json()["results"])
+
+    monkeypatch.setattr(Request, "stream", remove_while_streaming)
+    response = client.put(
+        f"/api/photos/p1/{kind}",
+        content=data,
+        headers={**HEADERS, "X-Content-SHA256": digest, "Content-Type": "image/jpeg"},
+    )
+    assert response.status_code == 409
+    assert response.json()["detail"] == "photo_metadata_missing"
+    assert not any(path.is_file() for path in (tmp_path / "data" / "media").rglob("*"))
+    client.close()
 
 
 def test_server_copy_removal_requires_exact_name_and_marks_change(tmp_path):
