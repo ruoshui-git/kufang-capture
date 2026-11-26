@@ -20,6 +20,11 @@ export type AccountAccess =
 export const accountUnavailable = m.core_account_unavailable()
 export const accountMismatch = (name: string) => m.core_account_mismatch({ name })
 
+/** The server creates the owner as "Owner"; show that built-in name in the UI language. */
+export function accountDisplayName(id: unknown, name: string): string {
+  return id === 'owner' && name === 'Owner' ? m.core_account_owner() : name
+}
+
 export class AccountRequestError extends Error {
   constructor(
     message: string,
@@ -146,7 +151,8 @@ export class AccountGate {
       if (id || (hasSyncedData && !user.is_owner)) {
         const blocked = {
           kind: 'blocked' as const,
-          name: String(name?.value ?? m.core_account_owner()),
+          name:
+            name?.value == null ? m.core_account_owner() : accountDisplayName(id?.value, String(name.value)),
           user,
           canSwitch: !hasSyncedData,
         }
@@ -180,7 +186,12 @@ export class AccountGate {
   block(id: string) {
     const current = this.current
     if (current.kind === 'ready' && current.user.id === id) {
-      this.update({ kind: 'blocked', name: current.user.name, user: null, canSwitch: false })
+      this.update({
+        kind: 'blocked',
+        name: accountDisplayName(current.user.id, current.user.name),
+        user: null,
+        canSwitch: false,
+      })
     }
   }
 

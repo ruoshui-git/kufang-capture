@@ -128,7 +128,8 @@ export function createClients(fetcher: typeof fetch): {
       removeServerCopy: async (collectionId, confirmName) => {
         await serverRequest(`/api/collections/${encodeURIComponent(collectionId)}/server-copy`, {
           method: 'DELETE',
-          headers: { 'X-Confirm-Name': confirmName },
+          // Header values must be ISO-8859-1; the server URL-decodes this one.
+          headers: { 'X-Confirm-Name': encodeURIComponent(confirmName) },
         })
       },
     },
