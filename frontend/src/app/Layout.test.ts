@@ -85,6 +85,7 @@ describe('Desktop rail search', () => {
       pending_mutations: 1,
       pending_uploads: 2,
       pending_upload_bytes: 262144,
+      upload_progress: null,
       conflicts: 0,
       per_collection: {},
     }
@@ -113,12 +114,42 @@ describe('Desktop rail search', () => {
       pending_mutations: 1,
       pending_uploads: 0,
       pending_upload_bytes: 0,
+      upload_progress: null,
       conflicts: 0,
       per_collection: {},
     })
     accountAuthenticated.set(true)
     expect(container.querySelector('.global-sync')).toBe(slot)
     await waitFor(() => expect(slot).toHaveTextContent('Syncing'))
+  })
+
+  it('shows global photo progress in place of the pending count', async () => {
+    const { container } = render(Layout, { children })
+    const slot = container.querySelector('.global-sync')
+    await waitFor(() => expect(shared.statusListener).toBeTypeOf('function'))
+    accountAuthenticated.set(true)
+    const status = {
+      phase: 'syncing',
+      online: true,
+      pending_mutations: 0,
+      pending_uploads: 4,
+      pending_upload_bytes: 1_048_576,
+      last_error: null,
+      upload_progress: {
+        photo_id: 'photo',
+        collection_ids: ['room'],
+        sent_bytes: 400,
+        total_bytes: 1000,
+        percent: 40,
+        n: 2,
+        total: 5,
+        per_collection: { room: { n: 1, total: 2 } },
+      },
+    }
+    shared.statusListener?.(status)
+    await waitFor(() => expect(slot).toHaveTextContent('Uploading 2/5 · 40%'))
+    shared.statusListener?.({ ...status, upload_progress: null })
+    await waitFor(() => expect(slot).toHaveTextContent('4 photos pending (1.0 MB)'))
   })
 
   it('filters rows and hides folder labels without matches', async () => {

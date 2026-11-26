@@ -6,6 +6,7 @@ export const storedSyncLocale = { locale: 'en' } as const
 
 const fixedMessages = [
   m.core_sync_network_failed,
+  m.core_sync_connection_stalled,
   m.core_sync_failed,
   m.core_server_space_low,
   m.core_sync_ack_incomplete,

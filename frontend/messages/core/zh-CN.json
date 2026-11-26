@@ -92,6 +92,7 @@
   "core_sync_private_placement": "该物品属于一个仅本设备的清点单，因此共享详情和照片只保存在本设备上。",
   "core_sync_removed": "已从服务器删除，仍保存在本设备上",
   "core_sync_network_failed": "无法连接服务器。恢复网络连接后将重试同步。",
+  "core_sync_connection_stalled": "连接超时，将重试。",
   "core_sync_failed": "同步失败，请重试。",
   "core_server_space_low": "服务器存储空间不足",
   "core_sync_lease_expired": "同步权限已过期。",

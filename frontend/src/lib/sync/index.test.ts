@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { createRepo, getCaptureDb } from '../db'
 import { createSyncEngine } from './index'
 import { accountGate } from './binding'
+import * as transport from './transport'
 
 const NodeBlob = NodeBlobImpl as unknown as typeof Blob
 let sequence = 0
@@ -113,6 +114,9 @@ describe('foreground sync privacy and consent', () => {
       return response(200)
     }) as unknown as typeof fetch
     const engine = createSyncEngine({ repoDbName: name, fetch: fetcher })
+    vi.spyOn(transport, 'uploadBlob').mockImplementation((_xhr, url, headers, blob, signal) =>
+      fetcher(url, { method: 'PUT', headers, body: blob, signal }),
+    )
     await engine.syncNow()
 
     expect(calls.filter((call) => call.includes('/api/sync/batch'))).toHaveLength(1)

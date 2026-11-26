@@ -29,7 +29,7 @@ import {
   type Photo,
 } from '../types'
 import type { Watchable } from '../repo'
-import type { SyncConflict, SyncEngine, SyncStatus } from './api'
+import type { PhotoUploadProgress, SyncConflict, SyncEngine, SyncStatus } from './api'
 import {
   AccountGate,
   AccountRequestError,
@@ -43,6 +43,13 @@ import {
   syncLeaseKey as leaseKey,
 } from './binding'
 import { displaySyncError, storedSyncLocale } from './errors'
+import {
+  defaultSyncTimeouts,
+  SyncWatchdogError,
+  uploadBlob,
+  withRequestTimeout,
+  type SyncTimeouts,
+} from './transport'
 export { authClient, createClients, peopleClient, serverClient } from './clients'
 
 type FetchLike = typeof fetch
@@ -96,11 +103,14 @@ function carriesLegacyDeletion(row: OutboxItem, server: ServerRecord) {
 export interface SyncEngineOptions {
   repoDbName?: string
   fetch?: FetchLike
+  xhrFactory?: () => XMLHttpRequest
+  timeouts?: Partial<SyncTimeouts>
   now?: () => Date
   intervalMs?: number
 }
 
 function syncErrorText(error: unknown): string {
+  if (error instanceof SyncWatchdogError) return m.core_sync_connection_stalled({}, storedSyncLocale)
   if (error instanceof TypeError) return m.core_sync_network_failed({}, storedSyncLocale)
   return error instanceof Error ? error.message : m.core_sync_failed({}, storedSyncLocale)
 }
@@ -117,7 +127,9 @@ export function createSyncEngine(options: SyncEngineOptions = {}): SyncEngineWit
     photo: db.photos,
     movement: db.movements,
   }
-  const fetcher = options.fetch ?? fetch
+  const timeouts = { ...defaultSyncTimeouts, ...options.timeouts }
+  const fetcher = withRequestTimeout(options.fetch ?? fetch, timeouts.requestMs)
+  const xhrFactory = options.xhrFactory ?? (() => new XMLHttpRequest())
   const gate = options.repoDbName ? new AccountGate(options.repoDbName) : accountGate
   let cycleAccount: Id | undefined
   let cycleSessionGeneration: number
@@ -141,6 +153,12 @@ export function createSyncEngine(options: SyncEngineOptions = {}): SyncEngineWit
   let unsubscribeOutbox: (() => void) | undefined
   const statusListeners = new Set<(value: SyncStatus) => void>()
   const conflictListeners = new Set<(value: SyncConflict[]) => void>()
+  const uploadedByCollection = new Map<Id, number>()
+  let uploadedThisCycle = 0
+  let pendingUploadCount = 0
+  // Uploadable photos only: a photo whose item is also in a Local Only collection never uploads.
+  let uploadablePending: Record<Id, number> = {}
+  let uploadProgress: Omit<PhotoUploadProgress, 'n' | 'total' | 'per_collection'> | null = null
   let statusValue: SyncStatus = emptyStatus()
 
   function emptyStatus(): SyncStatus {
@@ -153,6 +171,7 @@ export function createSyncEngine(options: SyncEngineOptions = {}): SyncEngineWit
       pending_mutations: 0,
       pending_uploads: 0,
       pending_upload_bytes: 0,
+      upload_progress: null,
       conflicts: 0,
       per_collection: {},
     }
@@ -176,6 +195,33 @@ export function createSyncEngine(options: SyncEngineOptions = {}): SyncEngineWit
     },
   }
 
+  function publishStatus(snapshot = statusValue) {
+    const progress = uploadProgress
+    statusValue = {
+      ...snapshot,
+      phase,
+      authenticated,
+      upload_progress: progress && {
+        ...progress,
+        n: uploadedThisCycle + 1,
+        total: uploadedThisCycle + Math.max(1, pendingUploadCount),
+        per_collection: Object.fromEntries(
+          progress.collection_ids.map((id) => {
+            const uploaded = uploadedByCollection.get(id) ?? 0
+            return [
+              id,
+              {
+                n: uploaded + 1,
+                total: uploaded + Math.max(1, uploadablePending[id] ?? 0),
+              },
+            ]
+          }),
+        ),
+      },
+    }
+    for (const listener of statusListeners) listener(statusValue)
+  }
+
   async function refreshStatus() {
     const [collections, items, photos, conflictRows, records, entries] = await Promise.all([
       db.collections.toArray(),
@@ -187,6 +233,8 @@ export function createSyncEngine(options: SyncEngineOptions = {}): SyncEngineWit
     ])
     const synced = collections.filter((item) => item.storage_mode === 'synced')
     const per: SyncStatus['per_collection'] = {}
+    const pendingUploadIds = new Set<Id>()
+    const uploadableByCollection: Record<Id, number> = {}
     let hasRemoval = false
     let hasPrivatePlacement = false
     const localOnlyCollections = new Set(
@@ -221,6 +269,9 @@ export function createSyncEngine(options: SyncEngineOptions = {}): SyncEngineWit
           !photo.removed_on_server &&
           ['pending', 'uploading', 'error'].includes(photo.upload_state),
       )
+      const uploadable = pendingPhotos.filter((photo) => !privateItems.has(photo.item_id))
+      for (const photo of uploadable) pendingUploadIds.add(photo.id)
+      uploadableByCollection[collection.id] = uploadable.length
       const errors =
         mutations.filter((item) => item.last_error).length +
         pendingPhotos.filter((p) => p.upload_state === 'error').length
@@ -248,7 +299,9 @@ export function createSyncEngine(options: SyncEngineOptions = {}): SyncEngineWit
     const storedUploadError = photos.find(
       (photo) => photo.upload_state === 'error' && photo.upload_error,
     )?.upload_error
-    statusValue = {
+    pendingUploadCount = pendingUploadIds.size
+    uploadablePending = uploadableByCollection
+    publishStatus({
       ...emptyStatus(),
       last_error:
         lastError ??
@@ -262,8 +315,7 @@ export function createSyncEngine(options: SyncEngineOptions = {}): SyncEngineWit
         synced.some((collection) => collection.id === row.collection_id),
       ).length,
       per_collection: per,
-    }
-    for (const listener of statusListeners) listener(statusValue)
+    })
   }
 
   liveQuery(async () => {
@@ -284,10 +336,8 @@ export function createSyncEngine(options: SyncEngineOptions = {}): SyncEngineWit
 
   // Start the request while the IndexedDB snapshot is held. Await the network
   // outside the transaction so saving locally never waits on the network.
-  function startRequest(url: string, init: RequestInit) {
-    const response = Dexie.ignoreTransaction(async () =>
-      fetcher(url, { ...init, headers: dataHeaders(init.headers) }),
-    )
+  function startRequest(send: () => Promise<Response>) {
+    const response = Dexie.ignoreTransaction(async () => send())
     void response.catch(() => {})
     return { response }
   }
@@ -532,13 +582,15 @@ export function createSyncEngine(options: SyncEngineOptions = {}): SyncEngineWit
               return
           }
           signal.throwIfAborted()
-          return startRequest('/api/sync/batch', {
-            signal,
-            method: 'POST',
-            credentials: 'same-origin',
-            headers: requestHeaders('POST', { 'Content-Type': 'application/json' }),
-            body,
-          })
+          return startRequest(() =>
+            fetcher('/api/sync/batch', {
+              signal,
+              method: 'POST',
+              credentials: 'same-origin',
+              headers: dataHeaders(requestHeaders('POST', { 'Content-Type': 'application/json' })),
+              body,
+            }),
+          )
         },
       )
       if (!request) {
@@ -872,24 +924,27 @@ export function createSyncEngine(options: SyncEngineOptions = {}): SyncEngineWit
     )
   }
 
-  async function canUpload(photoId: Id, itemId: Id, uploading = false) {
+  async function uploadCollections(photoId: Id, itemId: Id, uploading = false) {
     const [photo, item, entries] = await Promise.all([
       db.photos.get(photoId),
       db.items.get(itemId),
       db.entries.where('item_id').equals(itemId).toArray(),
     ])
     if (!photo || photo.removed_on_server || !item || item.removed_on_server || item.server_revision == null)
-      return false
-    if (uploading && photo.upload_state !== 'uploading') return false
+      return
+    if (uploading && photo.upload_state !== 'uploading') return
     const collections = await db.collections.bulkGet(entries.map((entry) => entry.collection_id))
-    return (
-      collections.some(
-        (collection, index) =>
-          collection?.storage_mode === 'synced' &&
-          !collection.removed_on_server &&
-          !entries[index]?.removed_on_server,
-      ) && !collections.some((collection) => collection?.storage_mode === 'local_only')
-    )
+    if (collections.some((collection) => collection?.storage_mode === 'local_only')) return
+    const synced = new Set<Id>()
+    for (const [index, collection] of collections.entries()) {
+      if (
+        collection?.storage_mode === 'synced' &&
+        !collection.removed_on_server &&
+        !entries[index]?.removed_on_server
+      )
+        synced.add(collection.id)
+    }
+    if (synced.size) return [...synced]
   }
 
   async function upload(photoId: Id, signal: AbortSignal) {
@@ -905,7 +960,7 @@ export function createSyncEngine(options: SyncEngineOptions = {}): SyncEngineWit
           current.server_revision === null ||
           !['pending', 'error'].includes(current.upload_state) ||
           (current.upload_next_attempt_at && current.upload_next_attempt_at > timestamp()) ||
-          !(await canUpload(photoId, current.item_id))
+          !(await uploadCollections(photoId, current.item_id))
         )
           return
         await db.photos.update(photoId, { upload_state: 'uploading' })
@@ -918,24 +973,73 @@ export function createSyncEngine(options: SyncEngineOptions = {}): SyncEngineWit
     const updateClaim = (patch: Partial<PhotoWithUploadRetry>) =>
       db.transaction('rw', [db.photos, db.settings], async () => {
         await assertLease()
-        await db.photos
+        return db.photos
           .where('id')
           .equals(photoId)
           .filter((photo) => photo.upload_state === 'uploading')
           .modify(patch)
       })
-    const sendPhoto = async (kind: 'original' | 'thumbnail', init: RequestInit) => {
+    const sendPhoto = async (kind: 'original' | 'thumbnail', headers?: HeadersInit, body?: Blob) => {
+      const showProgress = kind === 'original' && !!body
+      if (showProgress) await refreshStatus()
       const request = await db.transaction(
         'r',
         [db.photos, db.items, db.entries, db.collections, db.settings],
         async () => {
           await assertLease()
-          if (!(await canUpload(photoId, photo.item_id, kind === 'original'))) return
+          const collectionIds = await uploadCollections(photoId, photo.item_id, kind === 'original')
+          if (!collectionIds) return
           signal.throwIfAborted()
-          return startRequest(`${url}/${kind}`, { ...init, signal, credentials: 'same-origin' })
+          return {
+            collectionIds,
+            ...startRequest(() => {
+              const endpoint = `${url}/${kind}`
+              const scopedHeaders = dataHeaders(headers)
+              if (!body)
+                return fetcher(endpoint, {
+                  method: 'HEAD',
+                  cache: 'no-store',
+                  credentials: 'same-origin',
+                  headers: scopedHeaders,
+                  signal,
+                })
+              const report = (sent: number) => {
+                const sentBytes = Math.min(body.size, Math.max(uploadProgress?.sent_bytes ?? 0, sent))
+                const percent = body.size ? Math.floor((sentBytes / body.size) * 100) : 0
+                const changed = uploadProgress?.percent !== percent
+                uploadProgress = {
+                  photo_id: photoId,
+                  collection_ids: collectionIds,
+                  sent_bytes: sentBytes,
+                  total_bytes: body.size,
+                  percent,
+                }
+                if (changed) publishStatus()
+              }
+              if (showProgress) report(0)
+              return uploadBlob(
+                xhrFactory(),
+                endpoint,
+                scopedHeaders,
+                body,
+                signal,
+                timeouts,
+                showProgress ? report : undefined,
+              )
+            }),
+          }
         },
       )
-      return request?.response
+      if (request) {
+        try {
+          return { response: await request.response, collectionIds: request.collectionIds }
+        } finally {
+          if (showProgress) {
+            uploadProgress = null
+            publishStatus()
+          }
+        }
+      }
     }
     const markUploaded = (serverKey?: string) =>
       updateClaim({
@@ -955,11 +1059,9 @@ export function createSyncEngine(options: SyncEngineOptions = {}): SyncEngineWit
       lastError ??= displaySyncError(message)
     }
     try {
-      const head = await sendPhoto('original', {
-        method: 'HEAD',
-        cache: 'no-store',
-      })
-      if (!head) return true
+      const check = await sendPhoto('original')
+      if (!check) return true
+      const head = check.response
       if (await haltOnResponse(head, signal, true)) {
         if (head.status === 507) await markFailed(storageLow, uploadRetryAt, photo.upload_attempts ?? 0)
         return false
@@ -972,15 +1074,16 @@ export function createSyncEngine(options: SyncEngineOptions = {}): SyncEngineWit
         throw new Error(m.core_sync_check_photo_failed({ status: head.status }, storedSyncLocale))
       const blob = await readPhotoBlob(photo.id, options.repoDbName)
       if (!blob) throw new Error(m.core_sync_original_missing({}, storedSyncLocale))
-      const put = await sendPhoto('original', {
-        method: 'PUT',
-        headers: requestHeaders('PUT', {
+      const original = await sendPhoto(
+        'original',
+        requestHeaders('PUT', {
           'Content-Type': photo.mime_type,
           'X-Content-SHA256': photo.sha256,
         }),
-        body: blob.original,
-      })
-      if (!put) return true
+        blob.original,
+      )
+      if (!original) return true
+      const put = original.response
       if (await haltOnResponse(put, signal)) {
         if (put.status === 507) await markFailed(storageLow, uploadRetryAt, photo.upload_attempts ?? 0)
         return false
@@ -989,24 +1092,32 @@ export function createSyncEngine(options: SyncEngineOptions = {}): SyncEngineWit
       const result = (await put.json()) as { sha256: string; byte_size: number; server_storage_key: string }
       if (result.sha256 !== photo.sha256 || result.byte_size !== photo.byte_size)
         throw new Error(m.core_sync_checksum_mismatch({}, storedSyncLocale))
-      await markUploaded(result.server_storage_key)
+      if ((await markUploaded(result.server_storage_key)) > 0) {
+        uploadedThisCycle++
+        for (const id of original.collectionIds)
+          uploadedByCollection.set(id, (uploadedByCollection.get(id) ?? 0) + 1)
+      }
       if (!blob.thumbnail || signal.aborted) return true
       try {
-        const thumb = await sendPhoto('thumbnail', {
-          method: 'PUT',
-          headers: requestHeaders('PUT', { 'Content-Type': 'image/jpeg' }),
-          body: blob.thumbnail,
-        })
-        if (thumb && (await haltOnResponse(thumb, signal))) return false
-      } catch {
-        // Thumbnails are optional and can be regenerated.
+        const thumb = await sendPhoto(
+          'thumbnail',
+          requestHeaders('PUT', { 'Content-Type': 'image/jpeg' }),
+          blob.thumbnail,
+        )
+        if (thumb && (await haltOnResponse(thumb.response, signal))) return false
+      } catch (error) {
+        // Thumbnails are optional and are not retried; the server serves the original in their place.
+        // The verified original stays backed up, and a stalled connection stops this cycle's queue.
+        if (error instanceof SyncWatchdogError) return false
       }
       return true
     } catch (error) {
       if (signal.aborted || (error instanceof DOMException && error.name === 'AbortError')) return false
       const attempts = (photo.upload_attempts ?? 0) + 1
       const delay = Math.min(300_000, 2_000 * 2 ** Math.min(attempts - 1, 8))
-      await markFailed(syncErrorText(error), now().getTime() + delay, attempts)
+      const message = syncErrorText(error)
+      await markFailed(message, now().getTime() + delay, attempts)
+      if (error instanceof SyncWatchdogError) lastError = displaySyncError(message)
       // A transport failure can affect the whole queue. A per-photo error lets other photos proceed.
       return !(error instanceof TypeError)
     } finally {
@@ -1457,6 +1568,8 @@ export function createSyncEngine(options: SyncEngineOptions = {}): SyncEngineWit
       return running
     }
     const abort = new AbortController()
+    uploadedThisCycle = 0
+    uploadedByCollection.clear()
     controller.current = abort
     running = (async () => {
       try {
@@ -1476,6 +1589,7 @@ export function createSyncEngine(options: SyncEngineOptions = {}): SyncEngineWit
           phase = 'error'
         }
       } finally {
+        uploadProgress = null
         if (phase === 'syncing') phase = lastError ? 'error' : 'idle'
         cycleAccount = undefined
         controller.current = null

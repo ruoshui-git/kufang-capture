@@ -31,9 +31,18 @@
       return { text: m.account_sync_error_retry(), kind: 'error' }
     if (syncStatus?.authenticated === false || syncStatus?.phase === 'signed_out')
       return { text: m.account_sign_in_to_sync(), kind: 'warn' }
-    if (syncStatus?.phase === 'syncing') return { text: m.account_syncing(), kind: 'syncing' }
     const uploads = item?.pending_uploads ?? pendingCount
     const bytes = item?.pending_upload_bytes ?? pendingBytes
+    const progress = syncStatus?.upload_progress
+    if (syncStatus?.phase === 'syncing') {
+      const ordinal = progress?.per_collection[collectionId]
+      if (progress && ordinal)
+        return {
+          text: m.account_sync_uploading_photo({ ...ordinal, percent: progress.percent }),
+          kind: 'syncing',
+        }
+      if (!progress || uploads === 0) return { text: m.account_syncing(), kind: 'syncing' }
+    }
     if (uploads > 0 || item?.pending_mutations) {
       const mb = bytes / (1024 * 1024)
       return {

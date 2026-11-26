@@ -35,6 +35,10 @@
     if ($accountAuthenticated === false && syncStatus.phase === 'signed_out') return m.shell_sync_sign_in()
     if (pending === 0) return syncStatus.last_error ?? ''
     if ($accountAuthenticated === false) return m.shell_sync_sign_in()
+    if (syncStatus.upload_progress) {
+      const { n, total, percent } = syncStatus.upload_progress
+      return m.account_sync_uploading_photo({ n, total, percent })
+    }
     if (syncStatus.pending_uploads) {
       const size = new Intl.NumberFormat(getLocale(), {
         minimumFractionDigits: 1,

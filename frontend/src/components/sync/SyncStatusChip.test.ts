@@ -41,6 +41,7 @@ describe('SyncStatusChip', () => {
       pending_mutations: 0,
       pending_uploads: 0,
       pending_upload_bytes: 0,
+      upload_progress: null,
       conflicts: 0,
       per_collection: {},
     }
@@ -77,4 +78,51 @@ describe('SyncStatusChip', () => {
       void setLocale('en', { reload: false })
     }
   })
+
+  it.each([
+    ['en', 'Uploading 2/3 · 40%', 'Sync error — tap to retry', '1 photo pending (1.5 MB)'],
+    ['zh-CN', '上传照片 2/3 · 40%', '同步失败，点击重试', '1 张照片等待上传（1.5 MB）'],
+  ] as const)(
+    'shows collection progress and priority states in %s',
+    async (locale, uploading, error, pending) => {
+      await setLocale(locale, { reload: false })
+      const status = {
+        phase: 'syncing',
+        authenticated: true,
+        per_collection: {
+          room: { pending_uploads: 2 },
+          other: { pending_uploads: 1, pending_upload_bytes: 1572864 },
+        },
+        upload_progress: {
+          photo_id: 'photo',
+          collection_ids: ['room'],
+          sent_bytes: 400,
+          total_bytes: 1000,
+          percent: 40,
+          n: 4,
+          total: 6,
+          per_collection: { room: { n: 2, total: 3 } },
+        },
+      }
+      try {
+        for (const [collectionId, value, label, kind] of [
+          ['room', status, uploading, 'syncing'],
+          ['other', status, pending, 'warn'],
+          ['room', { ...status, per_collection: { room: { errors: 1 } } }, error, 'error'],
+        ] as const) {
+          syncEngine.status.subscribe.mockImplementation((next: (value: unknown) => void) => {
+            next(value)
+            return () => {}
+          })
+          const view = render(SyncStatusChip, { props: { collectionId, mode: 'synced' } })
+          await waitFor(() => expect(screen.getByRole('status')).toHaveTextContent(label))
+          expect(screen.getByRole('status')).toHaveClass(kind)
+          view.unmount()
+        }
+      } finally {
+        cleanup()
+        await setLocale('en', { reload: false })
+      }
+    },
+  )
 })

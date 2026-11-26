@@ -17,6 +17,18 @@ export interface CollectionSyncStatus {
 
 export type SyncPhase = 'idle' | 'syncing' | 'offline' | 'signed_out' | 'blocked' | 'error'
 
+export interface PhotoUploadProgress {
+  photo_id: Id
+  collection_ids: Id[]
+  sent_bytes: number
+  total_bytes: number
+  percent: number
+  /** Ordinal and total over distinct photos, including shared originals only once. */
+  n: number
+  total: number
+  per_collection: Record<Id, { n: number; total: number }>
+}
+
 export interface SyncStatus {
   phase: SyncPhase
   online: boolean
@@ -29,6 +41,7 @@ export interface SyncStatus {
   pending_mutations: number
   pending_uploads: number
   pending_upload_bytes: number
+  upload_progress: PhotoUploadProgress | null
   conflicts: number
   per_collection: Record<Id, CollectionSyncStatus>
 }

@@ -212,6 +212,7 @@
   "account_sync_error_retry": "Sync error — tap to retry",
   "account_sign_in_to_sync": "Sign in to sync",
   "account_syncing": "Syncing",
+  "account_sync_uploading_photo": "Uploading {n}/{total} · {percent}%",
   "account_sync_pending": "Sync pending",
   "account_backed_up": "Backed up",
   "account_sync_conflict_count": "Conflict ({count})",

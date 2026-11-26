@@ -1,10 +1,13 @@
 import { Blob as NodeBlobImpl } from 'node:buffer'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import Dexie from 'dexie'
+import * as captureDb from '../db'
 import type { Id, OutboxEntity, Photo } from '../types'
 import { createRepo, getCaptureDb, queueMutation, repairSyncQueue } from '../db'
 import { sha256 } from '../photos'
-import { createSyncEngine } from './index'
+import { createSyncEngine as newSyncEngine, type SyncEngineOptions } from './index'
+import type { PhotoUploadProgress } from './api'
+import { setLocale } from '../paraglide/runtime.js'
 
 const NodeBlob = NodeBlobImpl as unknown as typeof Blob
 type ServerRecord = Record<string, unknown> & {
@@ -280,6 +283,86 @@ class MemoryServer {
   }
 }
 
+class TestUpload {
+  private controller = new AbortController()
+  readonly upload = {
+    onprogress: null as ((event: { loaded: number }) => void) | null,
+    onload: null as (() => void) | null,
+  }
+  readonly headers = new Headers()
+  url = ''
+  method = ''
+  body!: Blob
+  onload: (() => void) | null = null
+  onerror: (() => void) | null = null
+  onabort: (() => void) | null = null
+  status = 0
+  statusText = ''
+  responseText = ''
+  getAllResponseHeaders = () => ''
+  get aborted() {
+    return this.controller.signal.aborted
+  }
+
+  constructor(private onSend: (xhr: TestUpload) => void) {}
+
+  open(method: string, url: string) {
+    this.method = method
+    this.url = url
+  }
+
+  setRequestHeader(name: string, value: string) {
+    this.headers.set(name, value)
+  }
+
+  send(body: Blob) {
+    this.body = body
+    this.onSend(this)
+  }
+
+  abort() {
+    this.controller.abort()
+    this.onabort?.()
+  }
+
+  async reply(fetcher: typeof fetch) {
+    try {
+      const response = await fetcher(this.url, {
+        method: this.method,
+        headers: this.headers,
+        body: this.body,
+        signal: this.controller.signal,
+      })
+      this.responseText = await response.text()
+      this.status = response.status
+      this.statusText = response.statusText
+      this.getAllResponseHeaders = () =>
+        Array.from(response.headers, ([name, value]) => `${name}: ${value}\r\n`).join('')
+      this.onload?.()
+    } catch {
+      this.onerror?.()
+    }
+  }
+}
+
+function xhrFactory(onSend: (xhr: TestUpload) => void) {
+  return () => new TestUpload(onSend) as unknown as XMLHttpRequest
+}
+
+function deferred<T>() {
+  let resolve!: (value: T) => void
+  const promise = new Promise<T>((done) => (resolve = done))
+  return { promise, resolve }
+}
+
+const engines: ReturnType<typeof newSyncEngine>[] = []
+
+function createSyncEngine(options: SyncEngineOptions) {
+  const engine = newSyncEngine(options)
+  engines.push(engine)
+  return engine
+}
+
 let testIndex = 0
 const dbName = () => `sync-acceptance-${++testIndex}`
 const fixedNow = { value: new Date('2026-11-08T12:00:00.000Z') }
@@ -293,8 +376,14 @@ function makeRepo(name: string) {
   })
 }
 
-function makeEngine(name: string, server: MemoryServer) {
-  return createSyncEngine({ repoDbName: name, fetch: server.fetch as unknown as typeof fetch, now: clock })
+function makeEngine(name: string, server: MemoryServer, options?: SyncEngineOptions) {
+  return createSyncEngine({
+    repoDbName: name,
+    fetch: server.fetch,
+    xhrFactory: xhrFactory((xhr) => void xhr.reply(server.fetch)),
+    now: clock,
+    ...options,
+  })
 }
 
 async function syncedEntry(server: MemoryServer) {
@@ -324,7 +413,9 @@ async function waitFor(predicate: () => Promise<boolean>, message = 'Timed out w
 }
 
 afterEach(() => {
+  for (const engine of engines.splice(0)) engine.stop()
   fixedNow.value = new Date('2026-11-08T12:00:00.000Z')
+  vi.useRealTimers()
   vi.restoreAllMocks()
   vi.unstubAllGlobals()
 })
@@ -638,13 +729,13 @@ describe('sync acceptance against an in-memory API server', () => {
     const engine = createSyncEngine({
       repoDbName: name,
       now: clock,
-      fetch: async (input, init) => {
-        if (String(input) === '/api/photos/' + photo.id + '/original' && init?.method === 'PUT') {
+      fetch: server.fetch,
+      xhrFactory: xhrFactory((xhr) => {
+        if (xhr.url === '/api/photos/' + photo.id + '/original') {
           entered()
-          await gate
-        }
-        return server.fetch(input, init)
-      },
+          void gate.then(() => xhr.reply(server.fetch))
+        } else void xhr.reply(server.fetch)
+      }),
     })
     const first = engine.syncNow()
     await reached
@@ -742,9 +833,7 @@ describe('sync acceptance against an in-memory API server', () => {
       let release!: () => void
       const entered = new Promise<void>((resolve) => (reached = resolve))
       const gate = new Promise<void>((resolve) => (release = resolve))
-      const engine = createSyncEngine({
-        repoDbName: name,
-        now: clock,
+      const engine = makeEngine(name, server, {
         fetch: async (input, init) => {
           if (String(input) === url && init?.method === 'HEAD') {
             reached()
@@ -1307,6 +1396,8 @@ describe('sync acceptance against an in-memory API server', () => {
     firstEngine.stop()
     await pending
     expect((await fixture.db.photos.get(photo.id))?.upload_state).toBe('pending')
+    expect((await fixture.db.photos.get(photo.id))?.upload_attempts ?? 0).toBe(0)
+    expect(await waitForStatus(firstEngine, () => true)).toMatchObject({ upload_progress: null })
     const secondEngine = makeEngine(fixture.name, server)
     secondEngine.start()
     await waitFor(async () => (await fixture.db.photos.get(photo.id))?.upload_state === 'uploaded')
@@ -1462,6 +1553,295 @@ describe('sync acceptance against an in-memory API server', () => {
     fixedNow.value = new Date(failed.upload_next_attempt_at!)
     await fixture.engine.runScheduledCycle()
     expect((await fixture.db.photos.get(photo.id))?.upload_state).toBe('uploaded')
+  })
+
+  it.each([false, true])('retries an original after a watchdog timeout (body sent: %s)', async (bodySent) => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    const server = new MemoryServer()
+    const { name, repo, entry, db } = await syncedEntry(server)
+    const photo = await addPhoto(repo, entry.id)
+    const other = await addPhoto(repo, entry.id)
+    const storedBlob = vi.spyOn(captureDb, 'readPhotoBlob')
+    const started = deferred<TestUpload>()
+    const originals: TestUpload[] = []
+    const engine = makeEngine(name, server, {
+      xhrFactory: xhrFactory((xhr) => {
+        if (xhr.url.endsWith('/original')) {
+          originals.push(xhr)
+          if (originals.length === 1) {
+            if (bodySent) xhr.upload.onload?.()
+            started.resolve(xhr)
+            return
+          }
+        }
+        void xhr.reply(server.fetch)
+      }),
+    })
+    const cycle = engine.runScheduledCycle()
+    const xhr = await started.promise
+    const timeout = bodySent ? 60_000 : 45_000
+    await vi.advanceTimersByTimeAsync(timeout - 1)
+    expect(xhr.aborted).toBe(false)
+    await vi.advanceTimersByTimeAsync(1)
+    await cycle
+    expect(xhr.aborted).toBe(true)
+    expect(originals).toHaveLength(1)
+    expect(await db.photos.get(photo.id)).toMatchObject({
+      upload_state: 'error',
+      upload_attempts: 1,
+      upload_next_attempt_at: new Date(clock().getTime() + 2_000).toISOString(),
+      upload_error: 'Connection stalled. Will retry.',
+    })
+    expect(await db.photos.get(other.id)).toMatchObject({ upload_state: 'pending' })
+    expect(await waitForStatus(engine, (status) => status.phase === 'error')).toMatchObject({
+      last_error: 'Connection stalled. Will retry.',
+      upload_progress: null,
+    })
+    await setLocale('zh-CN', { reload: false })
+    fixedNow.value = new Date(clock().getTime() + 1_999)
+    try {
+      await engine.runScheduledCycle()
+      expect(originals.filter((request) => request.url === xhr.url)).toHaveLength(1)
+      expect(await waitForStatus(engine, (status) => status.phase === 'idle')).toMatchObject({
+        last_error: '连接超时，将重试。',
+      })
+    } finally {
+      await setLocale('en', { reload: false })
+    }
+    fixedNow.value = new Date(clock().getTime() + 1)
+    await engine.runScheduledCycle()
+    const [first, retry] = originals.filter((request) => request.url === xhr.url)
+    expect(retry?.body).toBe(
+      (await storedBlob.mock.results.filter(({ type }) => type === 'return').at(-1)?.value)?.original,
+    )
+    expect(first?.body).toBe((await storedBlob.mock.results[0]?.value)?.original)
+    expect(await retry?.body.arrayBuffer()).toEqual(await first?.body.arrayBuffer())
+    expect(retry?.headers.get('X-Content-SHA256')).toBe(photo.sha256)
+    expect(await db.photos.get(photo.id)).toMatchObject({ upload_state: 'uploaded', upload_attempts: 0 })
+    expect(await waitForStatus(engine, (status) => status.phase === 'idle')).toMatchObject({
+      upload_progress: null,
+    })
+    await db.delete()
+  })
+
+  it('allows an original to progress every 10 seconds for three minutes', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    const server = new MemoryServer()
+    const { name, repo, entry, db } = await syncedEntry(server)
+    const [photo] = await repo.addPhotos(entry.id, [
+      { blob: new NodeBlob(['original'.repeat(100)]), source: 'photo_library' },
+    ])
+    const started = deferred<TestUpload>()
+    const engine = makeEngine(name, server, {
+      xhrFactory: xhrFactory((xhr) => {
+        if (xhr.url.endsWith('/original')) started.resolve(xhr)
+        else void xhr.reply(server.fetch)
+      }),
+    })
+    const cycle = engine.runScheduledCycle()
+    const xhr = await started.promise
+    for (let step = 1; step <= 18; step++) {
+      await vi.advanceTimersByTimeAsync(10_000)
+      expect(xhr.aborted).toBe(false)
+      xhr.upload.onprogress?.({ loaded: step * 40 })
+    }
+    xhr.upload.onload?.()
+    await xhr.reply(server.fetch)
+    await cycle
+    expect(await db.photos.get(photo!.id)).toMatchObject({ upload_state: 'uploaded' })
+    await db.delete()
+  })
+
+  it('times out a thumbnail without displaying its progress, unmarking or reuploading the verified original', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    const server = new MemoryServer()
+    const { name, repo, entry, db } = await syncedEntry(server)
+    const photo = await addPhoto(repo, entry.id)
+    const started = deferred<TestUpload>()
+    const engine = makeEngine(name, server, {
+      timeouts: { uploadStallMs: 500 },
+      xhrFactory: xhrFactory((xhr) => {
+        if (xhr.url.endsWith('/thumbnail')) started.resolve(xhr)
+        else void xhr.reply(server.fetch)
+      }),
+    })
+    const cycle = engine.runScheduledCycle()
+    const xhr = await started.promise
+    expect(await waitForStatus(engine, () => true)).toMatchObject({ upload_progress: null })
+    await vi.advanceTimersByTimeAsync(500)
+    await cycle
+    expect(xhr.aborted).toBe(true)
+    expect(await db.photos.get(photo.id)).toMatchObject({
+      upload_state: 'uploaded',
+      upload_attempts: 0,
+      upload_error: null,
+      server_storage_key: `media/${photo.id}`,
+    })
+    expect(await waitForStatus(engine, (status) => status.phase === 'idle')).toMatchObject({
+      last_error: null,
+      pending_uploads: 0,
+    })
+    await engine.syncNow()
+    expect(await db.photos.get(photo.id)).toMatchObject({ upload_state: 'uploaded' })
+    expect(
+      server.requests.filter(({ url, method }) => url.endsWith('/original') && method === 'PUT'),
+    ).toHaveLength(1)
+    await db.delete()
+  })
+
+  it.each(['/api/auth/session', '/api/sync/batch', '/api/sync/changes', 'HEAD'])(
+    'leaves the cycle retryable after %s hangs for 30 seconds',
+    async (target) => {
+      vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+      const server = new MemoryServer()
+      const { name, repo, entry, db } = await syncedEntry(server)
+      const photo = await addPhoto(repo, entry.id)
+      const started = deferred<AbortSignal>()
+      let hang = true
+      const engine = makeEngine(name, server, {
+        fetch: async (input, init) => {
+          if (hang && (target === 'HEAD' ? init?.method === 'HEAD' : String(input).startsWith(target))) {
+            hang = false
+            started.resolve(init!.signal!)
+            return new Promise(() => {})
+          }
+          return server.fetch(input, init)
+        },
+      })
+      const cycle = engine.runScheduledCycle()
+      const signal = await started.promise
+      await vi.advanceTimersByTimeAsync(29_999)
+      expect(signal.aborted).toBe(false)
+      await vi.advanceTimersByTimeAsync(1)
+      await cycle
+      expect(signal.aborted).toBe(true)
+      expect(await waitForStatus(engine, (status) => status.phase === 'error')).toMatchObject({
+        last_error: 'Connection stalled. Will retry.',
+        upload_progress: null,
+      })
+      if (target === '/api/sync/batch') {
+        expect(await db.outbox.toArray()).toEqual([
+          expect.objectContaining({
+            entity_id: photo.id,
+            attempts: 1,
+            in_flight: false,
+            last_error: 'Connection stalled. Will retry.',
+            next_attempt_at: new Date(clock().getTime() + 2_000).toISOString(),
+          }),
+        ])
+      }
+      if (target === 'HEAD') {
+        expect(await db.photos.get(photo.id)).toMatchObject({
+          upload_state: 'error',
+          upload_attempts: 1,
+          upload_error: 'Connection stalled. Will retry.',
+        })
+      }
+      await engine.syncNow()
+      expect(await db.outbox.count()).toBe(0)
+      expect(await db.photos.get(photo.id)).toMatchObject({ upload_state: 'uploaded' })
+      await db.delete()
+    },
+  )
+
+  it('publishes progress and distinct totals for three originals, including one shared photo', async () => {
+    const server = new MemoryServer()
+    const { name, repo, collection, entry, db } = await syncedEntry(server)
+    const other = await repo.createCollection({ name: 'Other room', storage_mode: 'synced' })
+    const shared = await repo.createEntry(collection.id)
+    await repo.importEntries(other.id, [shared.id])
+    const otherEntry = await repo.createEntry(other.id)
+    const alreadyStored = await addPhoto(repo, entry.id)
+    server.stored.set(alreadyStored.id, {
+      sha256: alreadyStored.sha256,
+      byte_size: alreadyStored.byte_size,
+      key: `media/${alreadyStored.id}`,
+    })
+    const photos = []
+    for (const placement of [entry, shared, otherEntry]) {
+      fixedNow.value = new Date(clock().getTime() + 1_000)
+      photos.push(await addPhoto(repo, placement.id))
+    }
+    const progressStatus: Array<PhotoUploadProgress | null> = []
+    const engine = makeEngine(name, server, {
+      xhrFactory: xhrFactory((xhr) => {
+        if (xhr.url.endsWith('/original')) {
+          xhr.upload.onprogress?.({ loaded: 5 })
+          const emissions = progressStatus.length
+          xhr.upload.onprogress?.({ loaded: 5 })
+          expect(progressStatus).toHaveLength(emissions)
+          xhr.upload.onload?.()
+        }
+        void xhr.reply(server.fetch)
+      }),
+    })
+    engine.status.subscribe((status) => progressStatus.push(status.upload_progress))
+    await engine.runScheduledCycle()
+    const [first, second, third] = photos.map(({ id }) =>
+      progressStatus.filter((progress) => progress?.photo_id === id),
+    )
+    expect(first?.[0]).toMatchObject({
+      n: 1,
+      total: 3,
+      collection_ids: [collection.id],
+      per_collection: { [collection.id]: { n: 1, total: 2 } },
+    })
+    expect(second?.[0]).toMatchObject({
+      n: 2,
+      total: 3,
+      collection_ids: expect.arrayContaining([collection.id, other.id]),
+      per_collection: { [collection.id]: { n: 2, total: 2 }, [other.id]: { n: 1, total: 2 } },
+    })
+    expect(third?.[0]).toMatchObject({
+      n: 3,
+      total: 3,
+      collection_ids: [other.id],
+      per_collection: { [other.id]: { n: 2, total: 2 } },
+    })
+    for (const updates of [first, second, third]) {
+      expect([...new Set(updates?.map((progress) => progress?.sent_bytes))]).toEqual([0, 5, 11])
+      expect([...new Set(updates?.map((progress) => progress?.percent))]).toEqual([0, 45, 100])
+    }
+    expect(progressStatus.at(-1)).toBeNull()
+    expect(await db.photos.get(alreadyStored.id)).toMatchObject({ upload_state: 'uploaded' })
+    expect(progressStatus.some((progress) => progress?.photo_id === alreadyStored.id)).toBe(false)
+    await db.delete()
+  })
+
+  it('leaves photos kept private by a Local Only placement out of the upload totals', async () => {
+    const server = new MemoryServer()
+    const { name, repo, collection, entry, db } = await syncedEntry(server)
+    const privateRoom = await repo.createCollection({ name: 'Private room', storage_mode: 'local_only' })
+    const sharedWithPrivate = await repo.createEntry(collection.id)
+    // A pull can leave an item placed in both a synced and a Local Only collection.
+    const placement = (await db.entries.get(sharedWithPrivate.id))!
+    await db.entries.put({
+      ...placement,
+      id: 'private-placement',
+      collection_id: privateRoom.id,
+      server_revision: null,
+    })
+    const privatePhoto = await addPhoto(repo, sharedWithPrivate.id)
+    fixedNow.value = new Date(clock().getTime() + 1_000)
+    const photo = await addPhoto(repo, entry.id)
+    const progressStatus: Array<PhotoUploadProgress | null> = []
+    const engine = makeEngine(name, server, {
+      xhrFactory: xhrFactory((xhr) => {
+        if (xhr.url.endsWith('/original')) xhr.upload.onload?.()
+        void xhr.reply(server.fetch)
+      }),
+    })
+    engine.status.subscribe((status) => progressStatus.push(status.upload_progress))
+    await engine.runScheduledCycle()
+    expect(progressStatus.filter((progress) => progress?.photo_id === photo.id)[0]).toMatchObject({
+      n: 1,
+      total: 1,
+      per_collection: { [collection.id]: { n: 1, total: 1 } },
+    })
+    expect(progressStatus.some((progress) => progress?.photo_id === privatePhoto.id)).toBe(false)
+    expect(await db.photos.get(photo.id)).toMatchObject({ upload_state: 'uploaded' })
+    expect(server.requests.some(({ url }) => url.includes(privatePhoto.id))).toBe(false)
+    await db.delete()
   })
 
   it('retries immediately when the user taps Sync Now, ignoring the backoff window', async () => {
