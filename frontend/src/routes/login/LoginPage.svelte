@@ -34,7 +34,7 @@
       const { authClient } = await import('$lib/sync')
       if (useCode) await authClient.join(validCode)
       else await authClient.login(password)
-      const destination = returnTo.startsWith('/') && !/^\/[\/\\]/.test(returnTo) ? returnTo : '/'
+      const destination = returnTo.startsWith('/') && !/^\/[/\\]/.test(returnTo) ? returnTo : '/'
       navigate(accountGate.current.kind === 'blocked' ? '/settings' : destination)
     } catch (cause) {
       error = cause instanceof Error && cause.message ? cause.message : 'Could not sign in. Try again.'

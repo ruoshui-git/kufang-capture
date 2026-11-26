@@ -12,8 +12,10 @@
       .subscribe((v) => (rows = v))
     const b = repo.watchDeletedPhotos(collectionId).subscribe((v) => (photos = v))
     return () => {
-      typeof a === 'function' ? a() : a.unsubscribe()
-      typeof b === 'function' ? b() : b.unsubscribe()
+      if (typeof a === 'function') a()
+      else a.unsubscribe()
+      if (typeof b === 'function') b()
+      else b.unsubscribe()
     }
   })
 </script>

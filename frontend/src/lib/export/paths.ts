@@ -3,6 +3,7 @@ import type { Collection, Item, Photo } from '../types'
 export function sanitize(value: string): string {
   let result = value
     .normalize('NFC')
+    // oxlint-disable-next-line no-control-regex -- control characters are invalid in archive paths
     .replace(/[\u0000-\u001f\u007f/\\:*?"<>|]/g, ' ')
     .replace(/\s+/gu, ' ')
     .replace(/^[ .]+|[ .]+$/g, '')

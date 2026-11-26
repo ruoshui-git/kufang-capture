@@ -188,6 +188,7 @@ describe('device export', () => {
       'capture-export/photos/Temple 2 A04/0002/01.jpg',
     ])
     expect(result.filename).toBe('kufang-capture-all-20261108-070000Z.zip')
+    // oxlint-disable-next-line no-useless-spread -- compares bytes as a plain array, not a Uint8Array
     expect([...files['capture-export/entries.csv']!.slice(0, 3)]).toEqual([0xef, 0xbb, 0xbf])
     const entriesCsv = new TextDecoder().decode(files['capture-export/entries.csv'])
     expect(entriesCsv).toContain(

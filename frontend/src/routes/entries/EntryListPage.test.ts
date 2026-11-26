@@ -212,7 +212,7 @@ describe('Entry list', () => {
   })
 
   it('adds a photo to its row without navigating', async () => {
-    const entry = await repo.createEntry(collectionId)
+    await repo.createEntry(collectionId)
     shared.pickPhotos.mockResolvedValue([
       {
         blob: new Blob(['camera bytes'], { type: 'image/jpeg' }),

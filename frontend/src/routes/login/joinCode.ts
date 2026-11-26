@@ -1,5 +1,6 @@
 export function normalizeJoinCode(input: string): string {
   if (input.length > 128) return ''
+  // oxlint-disable-next-line no-control-regex -- strips ASCII separator controls from pasted codes
   const compact = input.replace(/[\p{White_Space}\p{Dash_Punctuation}\x1c-\x1f]/gu, '')
   if (!/^[\da-z]{8}$/i.test(compact)) return ''
   const code = compact.toUpperCase().replaceAll('O', '0').replace(/[IL]/g, '1')

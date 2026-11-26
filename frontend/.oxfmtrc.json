@@ -1,0 +1,23 @@
+{
+  "$schema": "./node_modules/oxfmt/configuration_schema.json",
+  "semi": false,
+  "singleQuote": true,
+  "printWidth": 110,
+  "trailingComma": "all",
+  "sortPackageJson": false,
+  "svelte": {},
+  "associations": [
+    {
+      "files": ["*.svelte"],
+      "language": "svelte"
+    }
+  ],
+  "ignorePatterns": [
+    "dist",
+    "node_modules",
+    "coverage",
+    "test-results",
+    "playwright-report",
+    "pnpm-lock.yaml"
+  ]
+}

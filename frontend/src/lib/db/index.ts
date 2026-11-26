@@ -1,9 +1,6 @@
 import Dexie, { liveQuery, type Table } from 'dexie'
 import type {
   Repo,
-  EntryQuery,
-  EntryPatch,
-  IncomingPhoto,
   NewCollectionInput,
   ClearCheck,
   StorageEstimate,

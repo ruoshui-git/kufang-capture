@@ -265,7 +265,7 @@ export function createSyncEngine(options: SyncEngineOptions = {}): SyncEngineWit
     for (const listener of statusListeners) listener(statusValue)
   }
 
-  const statusSubscription = liveQuery(async () => {
+  liveQuery(async () => {
     await refreshStatus()
     return true
   }).subscribe()
@@ -1578,7 +1578,8 @@ export function createSyncEngine(options: SyncEngineOptions = {}): SyncEngineWit
         if (!conflict) return
         const table = syncTables[conflict.entity]
         const record = (await table.get(conflict.entity_id)) as
-          ((Collection | Item | Entry | Photo | Movement) & RemoteRemoval) | undefined
+          | ((Collection | Item | Entry | Photo | Movement) & RemoteRemoval)
+          | undefined
         const collection = await db.collections.get(conflict.collection_id)
         if (record) {
           if (choice === 'server') {

@@ -41,7 +41,7 @@ Shared Codex/Claude guide. The product and architecture source of truth is [docs
 
 ## Working rules
 
-- TypeScript is strict. Format with Prettier (`.prettierrc.json`: no semicolons, single quotes, 110 columns). Python follows Ruff defaults with 4-space indent, 110 columns, and type hints.
+- TypeScript is strict. Format with oxfmt (`frontend/.oxfmtrc.json`: no semicolons, single quotes, 110 columns) and lint with oxlint (`frontend/.oxlintrc.json`, warnings fail). Python follows Ruff defaults with 4-space indent, 110 columns, and type hints.
 - Prefer small, concrete modules over abstractions without behavior. Reuse `formatSequence`/`entryDisplayTitle` from `types.ts`.
 - Add focused tests for every behavior and invariant you change. Do not weaken assertions to make tests pass.
 - Contracts (`types.ts`, `repo.ts`, `docs/api.md`, `docs/export-format.md`) change only through the orchestrator. Propose the change in your report.
@@ -65,13 +65,14 @@ The local dev DB and media live in `backend/data/` (gitignored). Local dev uses 
 
 ## Validation
 
-Use `scripts/heavy` to serialize heavy commands (builds, Playwright, image builds) between parallel agents.
+Run heavy commands (builds, Playwright, image builds) through `scripts/heavy`, which shares 4 slots (`CAPTURE_HEAVY_SLOTS`) between parallel agents and worktrees. Each worktree gets its own E2E port, so parallel E2E runs do not collide.
 
 | Check | Command (from the directory shown) |
 |---|---|
 | Vitest | `frontend/`: `pnpm test` |
 | Types | `frontend/`: `pnpm check` |
-| Format | `frontend/`: `pnpm format:check` |
+| Format (oxfmt) | `frontend/`: `pnpm format:check` |
+| Lint (oxlint) | `frontend/`: `pnpm lint` |
 | Design tokens | `frontend/`: `pnpm lint:design` |
 | Build | `frontend/`: `../scripts/heavy pnpm build` |
 | Backend tests | `backend/`: `uv run pytest -q` |

@@ -1,13 +1,23 @@
 import { defineConfig, devices } from '@playwright/test'
-import { mkdtempSync } from 'node:fs'
+import { mkdtempSync, statSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { dirname, join, resolve } from 'node:path'
+import { createHash } from 'node:crypto'
 
 // End-to-end tests run the real stack: the production build served by the
 // FastAPI backend (same origin, real SQLite and media storage in a throwaway
 // directory). Chromium runs natively; WebKit (closest to iOS Safari) runs in
 // the Playwright Docker image via `pnpm test:e2e:webkit`.
-const port = Number(process.env.E2E_PORT ?? 8123)
+// The main checkout keeps port 8123; any other checkout (a worktree) gets its
+// own stable port so parallel E2E runs never share a server. Workers inherit
+// the choice through the environment.
+const checkout = resolve(dirname(new URL(import.meta.url).pathname), '..')
+const isMainCheckout = statSync(join(checkout, '.git'), { throwIfNoEntry: false })?.isDirectory() ?? false
+const defaultPort = isMainCheckout
+  ? 8123
+  : 8200 + (createHash('sha256').update(checkout).digest().readUInt16BE(0) % 700)
+process.env.E2E_PORT ??= String(defaultPort)
+const port = Number(process.env.E2E_PORT)
 const baseURL = process.env.E2E_BASE_URL ?? `http://127.0.0.1:${port}`
 const dataDir = process.env.E2E_DATA_DIR ?? mkdtempSync(join(tmpdir(), 'kc-e2e-'))
 process.env.E2E_DATA_DIR = dataDir

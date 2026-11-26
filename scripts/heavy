@@ -1,20 +1,35 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-# Run one memory-heavy command at a time (builds, Playwright, image builds).
-# Parallel agents in this repository share this lock and queue instead of
-# competing for the WSL VM's memory.
+# Run memory-heavy commands (builds, Playwright, image builds) through a small
+# number of shared slots. Parallel agents in this repository and its worktrees
+# queue here instead of exhausting the WSL VM's memory. One E2E run or build
+# needs about 1 GiB, so the default of 4 slots fits comfortably in 13 GiB.
+# CAPTURE_HEAVY_SLOTS=1 restores strict one-at-a-time behaviour.
 
 if [[ $# -eq 0 ]]; then
 	echo "Usage: heavy COMMAND [ARGS...]" >&2
 	exit 2
 fi
 repo=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
-mkdir -p "$repo/.locks"
-lock="${CAPTURE_HEAVY_LOCK:-$repo/.locks/heavy.lock}"
-exec 9>"$lock"
-if ! flock -n 9; then
-	echo "heavy: waiting for another heavy command to finish ($lock)" >&2
-	flock 9
+# Worktrees share the main checkout's lock directory so slots are global.
+common=$(git -C "$repo" rev-parse --path-format=absolute --git-common-dir 2>/dev/null || echo "$repo/.git")
+lockdir="${CAPTURE_HEAVY_LOCK_DIR:-$(dirname -- "$common")/.locks}"
+mkdir -p "$lockdir"
+slots="${CAPTURE_HEAVY_SLOTS:-4}"
+
+acquire() {
+	local i
+	for ((i = 1; i <= slots; i++)); do
+		exec 9>"$lockdir/heavy.$i.lock"
+		if flock -n 9; then return 0; fi
+		exec 9>&-
+	done
+	return 1
+}
+
+if ! acquire; then
+	echo "heavy: all $slots slots busy, waiting ($lockdir)" >&2
+	until acquire; do sleep 2; done
 fi
 "$@"

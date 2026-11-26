@@ -222,6 +222,7 @@
     }
   }
   async function flushAll() {
+    // oxlint-disable-next-line no-useless-spread -- flushField removes keys from dirty while we iterate
     for (const field of [...dirty]) await flushField(field)
   }
   async function add(kind: 'camera' | 'library') {

@@ -217,7 +217,7 @@ class MemoryServer {
         fields.next_sequence_number,
       )
     }
-    const fieldRevisions = { ...(existing?.field_revisions ?? {}) }
+    const fieldRevisions = { ...existing?.field_revisions }
     for (const [field, value] of Object.entries(fields)) {
       if (
         [
@@ -241,7 +241,7 @@ class MemoryServer {
       if (!existing || existing[field] !== value) fieldRevisions[field] = revision
     }
     const record = {
-      ...(existing ?? {}),
+      ...existing,
       ...fields,
       id: mutation.entity_id,
       revision,

@@ -1,15 +1,6 @@
 import { createHash } from 'node:crypto'
 import { test, expect } from '@playwright/test'
-import {
-  addEntry,
-  addPhoto,
-  api,
-  createCollection,
-  photoFixture,
-  signIn,
-  syncNow,
-  waitBackedUp,
-} from './helpers/sync'
+import { addEntry, addPhoto, api, createCollection, signIn, syncNow, waitBackedUp } from './helpers/sync'
 
 test('syncs three entries and six exact originals once, including repeated Sync Now', async ({ page }) => {
   await signIn(page)
