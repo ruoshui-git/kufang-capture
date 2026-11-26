@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { m } from '$lib/paraglide/messages.js'
   import type { CollectionSummary } from '$lib/types'
   import type { ClearCheck } from '$lib/repo'
   import { repo } from '$lib/db'
@@ -30,9 +31,9 @@
     try {
       await repo.clearCollection(item.collection.id, name)
       open = false
-      showToast({ message: 'Collection cleared from this device' })
+      showToast({ message: m.account_cleared() })
     } catch (cause) {
-      error = 'Could not clear this collection. Check the export and confirmation, then try again.'
+      error = m.account_clear_failed()
       await refresh()
     } finally {
       busy = false
@@ -47,7 +48,7 @@
   async function delivered(delivery: ExportDelivery, filename: string) {
     shareAgain = null
     if (delivery === 'shared' || delivery === 'download') {
-      showToast({ message: `Exported ${filename}` })
+      showToast({ message: m.account_exported({ filename }) })
       await refresh()
     }
   }
@@ -66,7 +67,10 @@
         }
       else await delivered(result.delivery, result.filename)
     } catch (cause) {
-      error = `The export failed.${cause instanceof Error && cause.message ? ` ${cause.message}` : ''}`
+      error =
+        cause instanceof Error && cause.message
+          ? m.account_clear_export_failed_reason({ reason: cause.message })
+          : m.account_clear_export_failed()
     } finally {
       exporting = false
     }
@@ -78,7 +82,10 @@
     try {
       await delivered(await again.deliver(), again.filename)
     } catch (cause) {
-      error = `The export failed.${cause instanceof Error && cause.message ? ` ${cause.message}` : ''}`
+      error =
+        cause instanceof Error && cause.message
+          ? m.account_clear_export_failed_reason({ reason: cause.message })
+          : m.account_clear_export_failed()
     } finally {
       exporting = false
     }
@@ -90,41 +97,47 @@
     try {
       await delivered(await again.download(), again.filename)
     } catch (cause) {
-      error = `The export failed.${cause instanceof Error && cause.message ? ` ${cause.message}` : ''}`
+      error =
+        cause instanceof Error && cause.message
+          ? m.account_clear_export_failed_reason({ reason: cause.message })
+          : m.account_clear_export_failed()
     } finally {
       exporting = false
     }
   }
 </script>
 
-<Sheet bind:open title="Clear from this device">
+<Sheet bind:open title={m.account_clear_device()}>
   {#snippet children()}
     <p>
-      <strong>Archive instead keeps everything.</strong> Clearing permanently removes this collection and its photos
-      from this device.
+      <strong>{m.account_archive_instead()}</strong>
+      {m.account_clear_permanent()}
     </p>
-    <p>Unsynced photos will be lost. Export a verified ZIP before clearing.</p>
-    <p>On iPhone, choose Save to Files in the share sheet. On Android, the ZIP is saved to Downloads.</p>
+    <p>{m.account_clear_verify_export()}</p>
+    <p>{m.account_clear_zip_platforms()}</p>
     {#if check}
       {#if check.shared_items > 0}<p>
-          {check.shared_items} shared {check.shared_items === 1 ? 'item stays' : 'items stay'} in other collections.
+          {m.account_clear_shared_items({ count: check.shared_items })}
         </p>{/if}
-      {#if !check.allowed}<p>This collection is blocked from clearing:</p>
+      {#if !check.allowed}<p>{m.account_clear_blocked()}</p>
         <ul>
           {#each check.reasons as reason}<li>{reason}</li>{/each}
         </ul>{/if}
       {#if shareAgain}
-        <p role="status">ZIP ready. Tap Share ZIP to save it.</p>
-        <Button disabled={exporting} onclick={() => void shareNow()}>Share ZIP</Button>
-        <Button variant="quiet" disabled={exporting} onclick={() => void downloadNow()}>Download ZIP</Button>
+        <p role="status">{m.account_zip_ready()}</p>
+        <Button disabled={exporting} onclick={() => void shareNow()}>{m.account_share_zip()}</Button>
+        <Button variant="quiet" disabled={exporting} onclick={() => void downloadNow()}
+          >{m.account_download_zip()}</Button
+        >
       {:else}
         <Button variant="quiet" disabled={exporting} onclick={() => void exportNow()}
-          >{exporting ? 'Building ZIP…' : 'Export ZIP now'}</Button
+          >{exporting ? m.account_building_zip() : m.account_export_zip_now()}</Button
         >
       {/if}
+      {@const [beforeName, afterName] = m.account_confirm_clear_name({ name: '\0' }).split('\0')}
       <label class="confirm"
-        ><span>Type <strong>{item.collection.name}</strong> to confirm</span><input
-          aria-label="Type collection name"
+        ><span>{beforeName}<strong>{item.collection.name}</strong>{afterName}</span><input
+          aria-label={m.account_type_collection_name()}
           bind:value={name}
           autocomplete="off"
         /></label
@@ -132,7 +145,7 @@
       <Button
         variant="danger"
         disabled={!check.allowed || name !== item.collection.name || busy}
-        onclick={() => void clear()}>{busy ? 'Clearing…' : 'Clear collection'}</Button
+        onclick={() => void clear()}>{busy ? m.account_clearing() : m.account_clear_collection()}</Button
       >
     {/if}
     {#if error}<p role="alert">{error}</p>{/if}

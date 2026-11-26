@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { m } from '$lib/paraglide/messages.js'
   import { toasts, dismissToast } from '../../app/toasts.svelte'
 </script>
 
@@ -10,7 +11,7 @@
           onclick={() => {
             toast.action?.()
             dismissToast(toast.id)
-          }}>{toast.actionLabel ?? 'Undo'}</button
+          }}>{toast.actionLabel ?? m.account_undo()}</button
         >{/if}{#each toast.actions ?? [] as action}<button
           type="button"
           onclick={() => {
@@ -20,7 +21,7 @@
         >{/each}<button
         type="button"
         class="toast-close"
-        aria-label="Dismiss notification"
+        aria-label={m.account_dismiss_notification()}
         onclick={() => dismissToast(toast.id)}>×</button
       >
     </div>

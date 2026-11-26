@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { m } from '$lib/paraglide/messages.js'
   import { onMount } from 'svelte'
   import { repo } from '$lib/db'
   import type { StorageMode } from '$lib/types'
@@ -21,27 +22,31 @@
     return () => unsubscribe?.()
   })
   const chipState = $derived.by(() => {
-    if (mode === 'local_only') return { text: 'Local Only', kind: 'neutral' }
-    if (syncStatus?.phase === 'blocked') return { text: 'Sync blocked', kind: 'error' }
+    if (mode === 'local_only') return { text: m.account_local_only(), kind: 'neutral' }
+    if (syncStatus?.phase === 'blocked') return { text: m.account_sync_blocked(), kind: 'error' }
     const item = syncStatus?.per_collection[collectionId]
-    if (item?.conflicts) return { text: `Conflict (${item.conflicts})`, kind: 'error' }
+    if (item?.conflicts)
+      return { text: m.account_sync_conflict_count({ count: item.conflicts }), kind: 'error' }
     if (item?.errors || syncStatus?.phase === 'error')
-      return { text: 'Sync error — tap to retry', kind: 'error' }
+      return { text: m.account_sync_error_retry(), kind: 'error' }
     if (syncStatus?.authenticated === false || syncStatus?.phase === 'signed_out')
-      return { text: 'Sign in to sync', kind: 'warn' }
-    if (syncStatus?.phase === 'syncing') return { text: 'Syncing', kind: 'syncing' }
+      return { text: m.account_sign_in_to_sync(), kind: 'warn' }
+    if (syncStatus?.phase === 'syncing') return { text: m.account_syncing(), kind: 'syncing' }
     const uploads = item?.pending_uploads ?? pendingCount
     const bytes = item?.pending_upload_bytes ?? pendingBytes
     if (uploads > 0 || item?.pending_mutations) {
       const mb = bytes / (1024 * 1024)
       return {
         text: uploads
-          ? `${uploads} photos pending (${mb < 10 ? mb.toFixed(1) : Math.round(mb)} MB)`
-          : 'Sync pending',
+          ? m.account_sync_pending_photos({
+              photos: m.account_photos({ count: uploads }),
+              size: m.account_size_megabytes({ amount: mb < 10 ? mb.toFixed(1) : Math.round(mb) }),
+            })
+          : m.account_sync_pending(),
         kind: 'warn',
       }
     }
-    return { text: 'Backed up', kind: 'ok' }
+    return { text: m.account_backed_up(), kind: 'ok' }
   })
 </script>
 

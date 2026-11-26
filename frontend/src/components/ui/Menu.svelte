@@ -1,10 +1,11 @@
 <script lang="ts">
+  import { m } from '$lib/paraglide/messages.js'
   import { onDestroy } from 'svelte'
   import type { Snippet } from 'svelte'
   import { placeMenu } from './menuPlacement'
   let {
     children,
-    label = 'More actions',
+    label = m.account_more_actions(),
     triggerText,
     variant = 'default',
     active = false,

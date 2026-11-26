@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { m } from '$lib/paraglide/messages.js'
   import { exportFromDevice, type DeviceExportResult } from '$lib/export/device'
   import type { ExportDelivery } from '$lib/export/deliver'
   import type { Id } from '$lib/types'
@@ -7,7 +8,7 @@
   let {
     open = $bindable(false),
     scope,
-    title = 'Export ZIP',
+    title = m.account_export_zip(),
     onexported,
   }: {
     open?: boolean
@@ -22,23 +23,24 @@
   // Set when the ZIP is built but the share sheet needs a fresh tap (see ExportDelivery 'needs_tap').
   let ready = $state<DeviceExportResult | null>(null)
   const collectionCount = $derived(Array.isArray(scope) ? scope.length : 0)
-  const megabytes = (bytes: number) => `${(bytes / (1024 * 1024)).toFixed(1)} MB`
   function finish(result: DeviceExportResult, delivery: ExportDelivery) {
     if (delivery === 'cancelled') {
-      message = 'Export cancelled.'
+      message = m.account_export_cancelled()
       ready = null
     } else if (delivery === 'needs_tap') {
-      message = `ZIP ready (${megabytes(result.byteSize)}). Tap Share ZIP to save it.`
+      message = m.account_zip_ready_size({
+        size: m.account_size_megabytes({ amount: (result.byteSize / (1024 * 1024)).toFixed(1) }),
+      })
       ready = result
     } else {
-      message = `Exported ${result.filename}`
+      message = m.account_exported({ filename: result.filename })
       ready = null
       onexported?.(result.filename)
     }
   }
   function failed(cause: unknown) {
-    const reason = cause instanceof Error && cause.message ? ` ${cause.message}` : ''
-    error = `Could not export this data.${reason}`
+    const reason = cause instanceof Error && cause.message ? cause.message : ''
+    error = reason ? m.account_export_failed_reason({ reason }) : m.account_export_failed()
     message = ''
   }
   async function exportZip() {
@@ -46,11 +48,11 @@
     busy = true
     error = ''
     ready = null
-    message = 'Preparing ZIP…'
+    message = m.account_preparing_zip()
     try {
       const result = await exportFromDevice(scope, {
         includeTrash,
-        onProgress: (done, total) => (message = `Preparing ZIP… photo ${done} of ${total}`),
+        onProgress: (done, total) => (message = m.account_preparing_zip_progress({ done, total })),
       })
       finish(result, result.delivery)
     } catch (cause) {
@@ -94,19 +96,22 @@
 <Sheet bind:open {title}>
   {#snippet children()}
     <p>
-      This export is built on this device{#if collectionCount > 1}{' '}
-        from {collectionCount} collections{/if}. Photos taken on another device are downloaded from the server
-      while the ZIP is built. On iPhone, choose Save to Files in the share sheet. On Android, the ZIP is saved
-      to Downloads.
+      {collectionCount > 1
+        ? m.account_export_hint_multiple({ count: collectionCount })
+        : m.account_export_hint()}
     </p>
     <label class="toggle"
-      ><input type="checkbox" bind:checked={includeTrash} onchange={() => (ready = null)} /> Include Recently Deleted</label
+      ><input type="checkbox" bind:checked={includeTrash} onchange={() => (ready = null)} />
+      {m.account_include_deleted()}</label
     >
     {#if ready}
-      <Button disabled={busy} onclick={() => void shareReady()}>Share ZIP</Button>
-      <Button variant="quiet" disabled={busy} onclick={() => void downloadReady()}>Download ZIP</Button>
+      <Button disabled={busy} onclick={() => void shareReady()}>{m.account_share_zip()}</Button>
+      <Button variant="quiet" disabled={busy} onclick={() => void downloadReady()}
+        >{m.account_download_zip()}</Button
+      >
     {:else}
-      <Button disabled={busy} onclick={() => void exportZip()}>{busy ? 'Building ZIP…' : 'Export ZIP'}</Button
+      <Button disabled={busy} onclick={() => void exportZip()}
+        >{busy ? m.account_building_zip() : m.account_export_zip()}</Button
       >
     {/if}
     {#if message}<p role="status">{message}</p>{/if}{#if error}<p role="alert">{error}</p>{/if}

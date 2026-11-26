@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { m } from '$lib/paraglide/messages.js'
   import type { Snippet } from 'svelte'
   import { onDestroy, tick } from 'svelte'
   import { openOverlay } from '$lib/ui/overlayHistory'
@@ -74,7 +75,18 @@
 >
   <div class="sheet-head">
     <h2>{title}</h2>
-    <button type="button" class="quiet-link" onclick={close}>Close</button>
+    <button type="button" class="quiet-link" onclick={close}>{m.account_close()}</button>
   </div>
   {@render children()}
 </dialog>
+
+<style>
+  .sheet-head:lang(zh-CN) > h2 {
+    min-width: 0;
+    overflow-wrap: anywhere;
+  }
+  .sheet-head:lang(zh-CN) > .quiet-link {
+    flex-shrink: 0;
+    white-space: nowrap;
+  }
+</style>

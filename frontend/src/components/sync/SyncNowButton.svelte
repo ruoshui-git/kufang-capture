@@ -1,6 +1,7 @@
 <script lang="ts">
+  import { m } from '$lib/paraglide/messages.js'
   import Button from '../ui/Button.svelte'
-  let { label = 'Sync now' }: { label?: string } = $props()
+  let { label = m.account_sync_now() }: { label?: string } = $props()
   let busy = $state(false)
   async function sync() {
     busy = true
@@ -14,7 +15,8 @@
 </script>
 
 <span class="sync-now-button"
-  ><Button variant="quiet" disabled={busy} onclick={() => void sync()}>{busy ? 'Syncing…' : label}</Button
+  ><Button variant="quiet" disabled={busy} onclick={() => void sync()}
+    >{busy ? m.account_syncing_busy() : label}</Button
   ></span
 >
 

@@ -1,7 +1,8 @@
 <script lang="ts">
+  import { m } from '$lib/paraglide/messages.js'
   import { onMount } from 'svelte'
   import type { ServerCollection } from '$lib/sync/api'
-  import { accountAccess, accountGate, accountMismatch, accountUnavailable } from '$lib/sync/binding'
+  import { accountAccess, accountGate, accountMismatch } from '$lib/sync/binding'
   import { deliverExport } from '$lib/export/deliver'
   import { navigate } from '../../app/router.svelte'
   import Button from '../../components/ui/Button.svelte'
@@ -36,10 +37,10 @@
     } catch (cause) {
       error =
         cause instanceof TypeError
-          ? 'Could not load server collections. Check your connection and try again.'
+          ? m.account_server_load_connection()
           : cause instanceof Error
             ? cause.message
-            : 'Could not load server collections.'
+            : m.account_server_load_failed()
     } finally {
       loading = false
     }
@@ -60,10 +61,10 @@
     } catch (cause) {
       downloadError =
         cause instanceof TypeError
-          ? "Couldn't download the ZIP. Check your connection and try again."
+          ? m.account_server_download_connection()
           : cause instanceof Error
             ? cause.message
-            : 'Could not download the ZIP.'
+            : m.account_server_download_failed()
     } finally {
       downloading = false
     }
@@ -75,43 +76,49 @@
   }
 </script>
 
-<svelte:head><title>Server exports — Kufang Capture</title></svelte:head>
+<svelte:head><title>{m.account_server_title()}</title></svelte:head>
 <section class="page server-page">
   <div class="page-heading">
-    <h1>Server exports</h1>
-    <a href="/settings">Settings</a>
+    <h1>{m.account_server_exports()}</h1>
+    <a href="/settings">{m.account_settings()}</a>
   </div>
   {#if $accountAccess.kind === 'blocked'}
     <p class="error" role="alert">{accountMismatch($accountAccess.name)}</p>
   {:else if $accountAccess.kind === 'unavailable'}
-    <p class="error" role="alert">{accountUnavailable}</p>
+    <p class="error" role="alert">{m.core_account_unavailable()}</p>
   {:else}
-    <p>Only collections set to Sync to Server appear here. Local Only collections never leave this device.</p>
+    <p>{m.account_server_exports_hint()}</p>
     <label class="toggle"
-      ><input type="checkbox" bind:checked={includeTrash} /> Include Recently Deleted</label
+      ><input type="checkbox" bind:checked={includeTrash} /> {m.account_include_deleted()}</label
     >
     <Button
       disabled={!userId || loading || downloading || !!error || collections.length === 0}
-      onclick={() => download('all')}>Download everything</Button
+      onclick={() => download('all')}>{m.account_download_everything()}</Button
     >
-    {#if downloading}<p role="status">Downloading ZIP…</p>{/if}
+    {#if downloading}<p role="status">{m.account_downloading_zip()}</p>{/if}
     {#if downloadError}<p class="error" role="alert">{downloadError}</p>{/if}
-    {#if !userId}<p>Checking sign-in…</p>{:else if loading}<p>
-        Loading server collections…
+    {#if !userId}<p>{m.account_checking_sign_in()}</p>{:else if loading}<p>
+        {m.account_server_loading()}
       </p>{:else if error}<p class="error" role="alert">{error}</p>
-      <Button variant="quiet" onclick={() => userId && void load(userId)}>Try again</Button
-      >{:else if collections.length === 0}<p>No synced collections on the server.</p>{:else}
+      <Button variant="quiet" onclick={() => userId && void load(userId)}>{m.account_try_again()}</Button
+      >{:else if collections.length === 0}<p>{m.account_server_empty()}</p>{:else}
       <div class="collection-list">
         {#each collections as item (item.id)}<article>
             <div>
               <h2>{item.name}</h2>
-              <p>{item.entry_count} entries, {item.photo_count} photos, {bytes(item.stored_photo_bytes)}</p>
+              <p>
+                {m.account_server_collection_counts({
+                  entries: m.account_entries({ count: item.entry_count }),
+                  photos: m.account_photos({ count: item.photo_count }),
+                  size: bytes(item.stored_photo_bytes),
+                })}
+              </p>
               {#if item.missing_originals}<p class="error">
-                  {item.missing_originals} original photos are missing from server storage.
+                  {m.account_server_missing_originals({ count: item.missing_originals })}
                 </p>{/if}
             </div>
             <Button variant="ink" disabled={downloading} onclick={() => download({ collectionId: item.id })}
-              >Download ZIP</Button
+              >{m.account_download_zip()}</Button
             >
           </article>{/each}
       </div>

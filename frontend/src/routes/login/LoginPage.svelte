@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { m } from '$lib/paraglide/messages.js'
   import LanguagePicker from '../../components/i18n/LanguagePicker.svelte'
   import { navigate } from '../../app/router.svelte'
   import Button from '../../components/ui/Button.svelte'
@@ -26,7 +27,7 @@
     if (busy || (useCode ? !code || inApp : !password)) return
     const validCode = useCode ? normalizeJoinCode(code) : ''
     if (useCode && !validCode) {
-      error = 'Enter the eight-character sign-in code.'
+      error = m.account_code_length()
       return
     }
     busy = true
@@ -38,28 +39,28 @@
       const destination = returnTo.startsWith('/') && !/^\/[/\\]/.test(returnTo) ? returnTo : '/'
       navigate(accountGate.current.kind === 'blocked' ? '/settings' : destination)
     } catch (cause) {
-      error = cause instanceof Error && cause.message ? cause.message : 'Could not sign in. Try again.'
+      error = cause instanceof Error && cause.message ? cause.message : m.account_sign_in_failed()
     } finally {
       busy = false
     }
   }
 </script>
 
-<svelte:head><title>Sign in — Kufang Capture</title></svelte:head>
+<svelte:head><title>{m.account_login_title()}</title></svelte:head>
 <section class="page auth-page">
-  <h1>{useCode ? 'Enter code' : 'Sign in'}</h1>
+  <h1>{useCode ? m.account_enter_code() : m.account_sign_in()}</h1>
   {#if useCode && inApp}
-    <p>Open Capture in Chrome or Safari to enter your helper code.</p>
+    <p>{m.account_login_in_app()}</p>
   {:else}
     {#if useCode}
-      <p>Enter the one-time code from the Capture owner.</p>
+      <p>{m.account_login_one_time()}</p>
     {:else}
-      <p>Local Only collections work without an account.</p>
+      <p>{m.account_local_works_signed_out()}</p>
     {/if}
     <form onsubmit={submit}>
       {#if useCode}
         <label class="field">
-          Sign-in code
+          {m.account_sign_in_code()}
           <input
             type="text"
             value={code}
@@ -71,14 +72,14 @@
             autocapitalize="characters"
             spellcheck="false"
             enterkeyhint="go"
-            placeholder="XXXX-XXXX"
+            placeholder={m.account_code_placeholder()}
             maxlength="128"
             required
           />
         </label>
       {:else}
         <label class="field"
-          >Password<input
+          >{m.account_password()}<input
             type="password"
             bind:value={password}
             autocomplete="current-password"
@@ -88,15 +89,15 @@
       {/if}
       {#if error}<p class="auth-error" role="alert">{error}</p>{/if}
       <Button type="submit" disabled={busy || !(useCode ? code : password)}>
-        {busy ? 'Signing in…' : 'Sign in'}
+        {busy ? m.account_signing_in() : m.account_sign_in()}
       </Button>
     </form>
   {/if}
   <div class="auth-actions">
     <Button variant="quiet" disabled={busy} onclick={changeMode}>
-      {useCode ? 'Use owner password' : 'Enter code'}
+      {useCode ? m.account_owner_password() : m.account_enter_code()}
     </Button>
-    <a href="/settings">Back to Settings</a>
+    <a href="/settings">{m.account_back_settings()}</a>
   </div>
   <LanguagePicker disabled={busy || !!password || !!code} />
 </section>

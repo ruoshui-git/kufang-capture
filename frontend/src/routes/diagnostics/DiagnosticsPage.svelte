@@ -1,4 +1,6 @@
 <script lang="ts">
+  import { getLocale } from '$lib/paraglide/runtime.js'
+  import { m } from '$lib/paraglide/messages.js'
   import { repo } from '$lib/db'
   import { backCameraDevices, openCamera, readCapabilities, stopCamera } from '$lib/camera/stream'
   import { generateSampleData } from '$lib/dev/sampleData'
@@ -22,9 +24,12 @@
     sampleError = ''
     try {
       const result = await generateSampleData()
-      sampleMessage = `Created ${result.name} with 300 entries. Open it from Collections.`
+      sampleMessage =
+        getLocale() === 'en'
+          ? m.account_sample_created_named({ name: result.name, count: 300 })
+          : m.account_sample_created({ count: 300 })
     } catch (cause) {
-      sampleError = 'Could not generate test data. Check available storage and try again.'
+      sampleError = m.account_sample_failed()
     } finally {
       sampleBusy = false
     }
@@ -155,24 +160,48 @@
       const zoom = capabilities.zoom as { min?: number; max?: number } | undefined
       const hardwareZoom =
         zoom && typeof zoom === 'object' && typeof zoom.min === 'number' && typeof zoom.max === 'number'
-          ? `${zoom.min}× to ${zoom.max}×`
-          : 'Not exposed — pinch uses digital crop'
-      const labels = cameras.map((device) => device.label || '(label not exposed)')
+          ? m.account_camera_zoom_range({ min: zoom.min, max: zoom.max })
+          : m.account_no_hardware_zoom()
+      const labels = cameras.map((device) => device.label || m.account_camera_label_missing())
       summaryItems = [
-        `Secure context: ${candidate.secure_context ? 'yes' : 'no'}`,
-        `Installed (standalone): ${candidate.standalone ? 'yes' : 'no'}`,
-        `Cameras found: ${cameras.length}${labels.length ? ` — ${labels.join(', ')}` : ''}`,
-        `Lens choice available: ${backCameras.length > 1 ? 'yes' : 'no'}`,
-        `Hardware zoom: ${hardwareZoom}`,
-        `Torch: ${capabilities.torch === true ? 'yes' : 'no'}`,
-        `Focus controls: ${Array.isArray(capabilities.focusMode) || typeof capabilities.focusDistance === 'object' || capabilities.pointsOfInterest === true ? 'yes' : 'no'}`,
-        `Live frame resolution: ${actualResolution ? `${actualResolution.width} × ${actualResolution.height}` : 'not reported'}`,
-        `ImageCapture.takePhoto available: ${takePhotoAvailable ? 'yes' : 'no'}`,
-        `Storage persisted: ${storage.persisted == null ? 'not reported' : storage.persisted ? 'yes' : 'no'}`,
+        m.account_camera_secure({ value: candidate.secure_context ? m.account_yes() : m.account_no() }),
+        m.account_camera_installed({ value: candidate.standalone ? m.account_yes() : m.account_no() }),
+        labels.length
+          ? m.account_camera_found_with_labels({
+              count: cameras.length,
+              labels: labels.join(getLocale() === 'zh-CN' ? '、' : ', '),
+            })
+          : m.account_camera_found({ count: cameras.length }),
+        m.account_lens_choice({ value: backCameras.length > 1 ? m.account_yes() : m.account_no() }),
+        m.account_camera_hardware_zoom({ value: hardwareZoom }),
+        m.account_camera_torch({ value: capabilities.torch === true ? m.account_yes() : m.account_no() }),
+        m.account_camera_focus({
+          value:
+            Array.isArray(capabilities.focusMode) ||
+            typeof capabilities.focusDistance === 'object' ||
+            capabilities.pointsOfInterest === true
+              ? m.account_yes()
+              : m.account_no(),
+        }),
+        m.account_camera_resolution({
+          value: actualResolution
+            ? `${actualResolution.width} × ${actualResolution.height}`
+            : m.account_not_reported(),
+        }),
+        m.account_camera_take_photo({ value: takePhotoAvailable ? m.account_yes() : m.account_no() }),
+        m.account_camera_persisted({
+          value:
+            storage.persisted == null
+              ? m.account_not_reported()
+              : storage.persisted
+                ? m.account_yes()
+                : m.account_no(),
+        }),
       ]
-      reportText = `Kufang Capture camera diagnostics\n${new Date().toLocaleString()}\n\n${JSON.stringify(candidate, null, 2)}`
+      // i18n-ignore: diagnostics report stays English
+      reportText = `Kufang Capture camera diagnostics\n${new Date().toLocaleString('en')}\n\n${JSON.stringify(candidate, null, 2)}`
     } catch (cause) {
-      error = 'Camera test failed. Allow camera access and try again.'
+      error = m.account_camera_test_failed()
     } finally {
       stopCamera(stream)
       busy = false
@@ -183,51 +212,53 @@
     if (!reportText) return
     try {
       await navigator.clipboard.writeText(reportText)
-      copyMessage = 'Report copied'
+      copyMessage = m.account_report_copied()
     } catch {
       reportArea?.focus()
       reportArea?.select()
-      copyMessage = 'Select and copy the report text'
+      copyMessage = m.account_report_select_copy()
     }
   }
 </script>
 
-<svelte:head><title>Diagnostics — Kufang Capture</title></svelte:head>
+<svelte:head><title>{m.account_diagnostics_title()}</title></svelte:head>
 <section class="page diagnostics-page">
   <div class="page-heading">
     <div>
-      <h1>Diagnostics</h1>
-      <p class="summary-copy">Camera and storage details stay on this device.</p>
+      <h1>{m.account_diagnostics()}</h1>
+      <p class="summary-copy">{m.account_diagnostics_privacy()}</p>
     </div>
   </div>
   <div class="diagnostic-card">
-    <h2>Camera capabilities</h2>
+    <h2>{m.account_camera_capabilities()}</h2>
     <p>
-      Start a test to request camera access, inspect browser-reported controls, and capture one sample frame.
+      {m.account_camera_test_hint()}
     </p>
     <Button variant="primary" disabled={busy} onclick={startTest}
-      >{busy ? 'Testing camera…' : 'Start camera test'}</Button
+      >{busy ? m.account_camera_testing() : m.account_camera_test_start()}</Button
     >
     {#if error}<p class="error" role="alert">{error}</p>{/if}
     {#if report}
       <div class="report-actions">
-        <strong>Test complete</strong><Button variant="quiet" onclick={copyReport}>Copy report</Button>
+        <strong>{m.account_camera_test_complete()}</strong><Button variant="quiet" onclick={copyReport}
+          >{m.account_copy_report()}</Button
+        >
       </div>
       {#if copyMessage}<p role="status">{copyMessage}</p>{/if}
       <ul class="diagnostic-summary">
         {#each summaryItems as item}<li>{item}</li>{/each}
       </ul>
       <label class="report-label"
-        >Camera report <textarea bind:this={reportArea} readonly rows="18" value={reportText}
-        ></textarea></label
+        >{m.account_camera_report()}
+        <textarea bind:this={reportArea} readonly rows="18" value={reportText}></textarea></label
       >
     {/if}
   </div>
   <div class="diagnostic-card">
-    <h2>Test data</h2>
-    <p>Generate a clearly labelled Local Only collection with 300 entries and small sample photos.</p>
+    <h2>{m.account_sample_data()}</h2>
+    <p>{m.account_sample_hint({ count: 300 })}</p>
     <Button variant="quiet" disabled={sampleBusy} onclick={generateTestData}
-      >{sampleBusy ? 'Generating…' : 'Generate 300 sample entries'}</Button
+      >{sampleBusy ? m.account_sample_generating() : m.account_sample_generate_count({ count: 300 })}</Button
     >
     {#if sampleMessage}<p role="status">{sampleMessage}</p>{/if}
     {#if sampleError}<p class="error" role="alert">{sampleError}</p>{/if}

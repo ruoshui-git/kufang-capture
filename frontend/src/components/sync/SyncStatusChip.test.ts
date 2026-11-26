@@ -1,5 +1,6 @@
 import { cleanup, render, screen, waitFor } from '@testing-library/svelte'
 import { describe, expect, it, vi } from 'vitest'
+import { setLocale } from '$lib/paraglide/runtime.js'
 
 const { repo, syncEngine, current } = vi.hoisted(() => ({
   repo: { readForExport: vi.fn() },
@@ -59,6 +60,21 @@ describe('SyncStatusChip', () => {
       render(SyncStatusChip, { props: { collectionId: 'room', mode: 'synced' } })
       await waitFor(() => expect(screen.getByRole('status')).toHaveTextContent(expected))
       cleanup()
+    }
+  })
+
+  it('localizes visible and accessible pending-upload copy in Simplified Chinese', () => {
+    void setLocale('zh-CN', { reload: false })
+    try {
+      render(SyncStatusChip, {
+        props: { collectionId: 'room', mode: 'synced', pendingCount: 1, pendingBytes: 1572864 },
+      })
+      const chip = screen.getByRole('status', { name: /1 张照片等待上传（1\.5\sMB）/ })
+      expect(chip).toHaveTextContent('1 张照片等待上传（1.5 MB）')
+      expect(chip).toHaveAttribute('title', '1 张照片等待上传（1.5\u00a0MB）')
+    } finally {
+      cleanup()
+      void setLocale('en', { reload: false })
     }
   })
 })

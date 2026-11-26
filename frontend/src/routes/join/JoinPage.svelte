@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { m } from '$lib/paraglide/messages.js'
   import LanguagePicker from '../../components/i18n/LanguagePicker.svelte'
   import { onMount } from 'svelte'
   import { navigate } from '../../app/router.svelte'
@@ -28,7 +29,7 @@
       await authClient.join(code)
       navigate(accountGate.current.kind === 'blocked' ? '/settings' : '/', { replace: true })
     } catch (cause) {
-      error = cause instanceof Error ? cause.message : 'Could not sign in. Try again.'
+      error = cause instanceof Error ? cause.message : m.account_sign_in_failed()
     } finally {
       busy = false
     }
@@ -37,32 +38,34 @@
   async function copyCode() {
     try {
       await navigator.clipboard.writeText(code)
-      copyFeedback = 'Code copied.'
+      copyFeedback = m.account_code_copied()
     } catch {
-      copyFeedback = 'Select the code above and copy it.'
+      copyFeedback = m.account_code_select_copy()
     }
   }
 </script>
 
-<svelte:head><title>Helper sign-in — Kufang Capture</title></svelte:head>
+<svelte:head><title>{m.account_helper_sign_in_title()}</title></svelte:head>
 <section class="page auth-page">
-  <h1>{inApp ? 'Open in Chrome or Safari' : 'Sign in as helper?'}</h1>
+  <h1>{inApp ? m.account_open_external_browser() : m.account_helper_sign_in_heading()}</h1>
   {#if loaded && code}
     {#if inApp}
-      <p>Copy this code, open Capture in Chrome or Safari, and choose Enter code.</p>
+      <p>{m.account_join_open_external()}</p>
       <p class="join-code">{code}</p>
-      <Button onclick={copyCode}>Copy code</Button>
+      <Button onclick={copyCode}>{m.account_copy_code()}</Button>
       {#if copyFeedback}<p role="status">{copyFeedback}</p>{/if}
     {:else}
-      <p>Use this one-time code to connect this browser to your Capture account.</p>
+      <p>{m.account_join_connect()}</p>
       <p class="join-code">{code}</p>
       {#if error}<p class="auth-error" role="alert">{error}</p>{/if}
-      <Button disabled={busy} onclick={join}>{busy ? 'Signing in…' : 'Sign in as helper'}</Button>
-      <a href="/login?mode=code">Enter another code</a>
+      <Button disabled={busy} onclick={join}
+        >{busy ? m.account_signing_in() : m.account_helper_sign_in()}</Button
+      >
+      <a href="/login?mode=code">{m.account_another_code()}</a>
     {/if}
   {:else if loaded}
-    <p>This link is missing a valid sign-in code. Ask for a new link or enter your code.</p>
-    {#if !inApp}<a href="/login?mode=code">Enter code</a>{/if}
+    <p>{m.account_invalid_join_link()}</p>
+    {#if !inApp}<a href="/login?mode=code">{m.account_enter_code()}</a>{/if}
   {/if}
   <LanguagePicker
     disabled={busy || !loaded}

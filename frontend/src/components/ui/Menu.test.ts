@@ -1,8 +1,12 @@
 import { cleanup, fireEvent, render, screen } from '@testing-library/svelte'
 import { afterEach, describe, expect, it, vi } from 'vitest'
+import { setLocale } from '$lib/paraglide/runtime.js'
 import MenuHarness from './test/MenuHarness.svelte'
 
-afterEach(cleanup)
+afterEach(() => {
+  cleanup()
+  void setLocale('en', { reload: false })
+})
 
 function setup() {
   const onpick = vi.fn()
@@ -20,6 +24,12 @@ async function open(menu: HTMLDetailsElement, summary: HTMLElement) {
 }
 
 describe('Menu', () => {
+  it('localizes the default trigger accessible name and tooltip', () => {
+    void setLocale('zh-CN', { reload: false })
+    render(MenuHarness, { props: { label: null, onpick: vi.fn() } })
+    expect(screen.getByLabelText('更多操作')).toHaveAttribute('title', '更多操作')
+  })
+
   it('closes on a tap anywhere outside it', async () => {
     const { menu, summary } = setup()
     await open(menu, summary)

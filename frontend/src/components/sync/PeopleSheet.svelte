@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { m } from '$lib/paraglide/messages.js'
   import { onMount } from 'svelte'
   import type { JoinCode, Person } from '$lib/sync/api'
   import { peopleClient } from '$lib/sync/clients'
@@ -25,14 +26,16 @@
   const qr = $derived(view.kind === 'code' && remaining > 0 ? joinQr(view.code.url) : null)
   const title = $derived(
     view.kind === 'list'
-      ? 'People'
+      ? m.account_people()
       : view.kind === 'name'
         ? view.person
-          ? 'Rename person'
-          : 'Add person'
+          ? m.account_rename_person()
+          : m.account_add_person()
         : view.kind === 'code'
-          ? `Sign-in code for ${view.person.name}`
-          : `${view.person.disabled ? 'Enable' : 'Disable'} ${view.person.name}?`,
+          ? m.account_person_code_title({ name: view.person.name })
+          : view.person.disabled
+            ? m.account_enable_person_confirm({ name: view.person.name })
+            : m.account_disable_person_confirm({ name: view.person.name }),
   )
 
   onMount(() => {
@@ -54,10 +57,10 @@
     } catch (cause) {
       error =
         cause instanceof TypeError
-          ? "Couldn't connect to the server. Try again."
+          ? m.account_people_connection()
           : cause instanceof Error
             ? cause.message
-            : 'Could not update People. Try again.'
+            : m.core_people_update_failed()
     } finally {
       busy = false
     }
@@ -107,41 +110,49 @@
 <Sheet bind:open {title}>
   <div class="people-sheet">
     {#if view.kind !== 'list'}
-      <Button variant="quiet" disabled={busy} onclick={showList}>Back to People</Button>
+      <Button variant="quiet" disabled={busy} onclick={showList}>{m.account_people_back()}</Button>
     {/if}
     {#if error}<p class="auth-error" role="alert">{error}</p>{/if}
     {#if view.kind === 'list'}
-      {#if !people.length && busy}<p role="status">Loading People…</p>{/if}
+      {#if !people.length && busy}<p role="status">{m.account_people_loading()}</p>{/if}
       {#if !people.length && error}
         <Button variant="quiet" onclick={() => run(async () => (people = await peopleClient.list()))}
-          >Try again</Button
+          >{m.account_try_again()}</Button
         >
       {:else}
-        <Button disabled={busy} onclick={() => editName()}>Add person</Button>
+        <Button disabled={busy} onclick={() => editName()}>{m.account_add_person()}</Button>
       {/if}
       <ul class="people-list">
         {#each people as person (person.id)}
           <li>
-            <h3>{person.name}</h3>
-            {#if person.is_owner && person.name !== 'Owner'}<p>Owner</p>{:else if person.disabled}<p>
-                Disabled
+            <h3>{person.is_owner && person.name === 'Owner' ? m.core_account_owner() : person.name}</h3>
+            {#if person.is_owner && person.name !== 'Owner'}<p>
+                {m.core_account_owner()}
+              </p>{:else if person.disabled}<p>
+                {m.account_person_disabled()}
               </p>{/if}
             <p>
-              {person.rooms}
-              {person.rooms === 1 ? 'collection' : 'collections'} · {person.entries}
-              {person.entries === 1 ? 'entry' : 'entries'} · {person.photos}
-              {person.photos === 1 ? 'photo' : 'photos'}
+              {m.account_person_counts({
+                collections: m.account_collections({ count: person.rooms }),
+                entries: m.account_entries({ count: person.entries }),
+                photos: m.account_photos({ count: person.photos }),
+              })}
             </p>
             <p>
-              {person.device_count}
-              {person.device_count === 1 ? 'device' : 'devices'}{#if person.missing_originals}
-                · {person.missing_originals} missing originals{/if}
+              {person.missing_originals
+                ? m.account_person_devices_missing({
+                    devices: m.account_person_devices({ count: person.device_count }),
+                    missing: person.missing_originals,
+                  })
+                : m.account_person_devices({ count: person.device_count })}
             </p>
             <div class="person-actions">
               {#if !person.is_owner && !person.disabled}
-                <Button disabled={busy} onclick={() => issueCode(person)}>Sign-in code</Button>
+                <Button disabled={busy} onclick={() => issueCode(person)}>{m.account_sign_in_code()}</Button>
               {/if}
-              <Button variant="quiet" disabled={busy} onclick={() => editName(person)}>Rename</Button>
+              <Button variant="quiet" disabled={busy} onclick={() => editName(person)}
+                >{m.account_rename()}</Button
+              >
               {#if !person.is_owner}
                 <Button
                   variant="quiet"
@@ -151,7 +162,7 @@
                     view = { kind: 'status', person }
                   }}
                 >
-                  {person.disabled ? 'Enable' : 'Disable'}
+                  {person.disabled ? m.account_enable() : m.account_disable()}
                 </Button>
               {/if}
             </div>
@@ -160,48 +171,56 @@
       </ul>
     {:else if view.kind === 'name'}
       <form onsubmit={saveName}>
-        <label class="field">Name<input bind:value={name} maxlength="80" autocomplete="off" required /></label
+        <label class="field"
+          >{m.account_person_name()}<input
+            bind:value={name}
+            maxlength="80"
+            autocomplete="off"
+            required
+          /></label
         >
-        <Button type="submit" disabled={busy || !name.trim()}>{busy ? 'Saving…' : 'Save'}</Button>
+        <Button type="submit" disabled={busy || !name.trim()}
+          >{busy ? m.account_saving() : m.account_save()}</Button
+        >
       </form>
     {:else if view.kind === 'code'}
       {@const person = view.person}
       {#if qr}
-        <p>Scan the QR code, or open Capture and choose Enter code.</p>
+        <p>{m.account_qr_instructions()}</p>
         <svg
           class="qr-code"
           viewBox="0 0 {qr.size} {qr.size}"
           shape-rendering="crispEdges"
           role="img"
-          aria-label="QR code for helper sign-in"
+          aria-label={m.account_qr_accessible()}
         >
           <rect width={qr.size} height={qr.size} class="qr-background" />
           <path d={qr.path} class="qr-modules" />
         </svg>
         <p class="join-code">{view.code.code}</p>
+        {@const [beforeTime, afterTime] = m.account_code_expiry({ time: '\0' }).split('\0')}
         <p>
-          Expires in <time datetime="PT{remaining}S"
+          {beforeTime}<time datetime="PT{remaining}S"
             >{Math.floor(remaining / 60)}:{String(remaining % 60).padStart(2, '0')}</time
-          > · One use
+          >{afterTime}
         </p>
       {:else}
-        <p role="status">This code has expired. Make a new code to sign in.</p>
+        <p role="status">{m.account_code_expired()}</p>
       {/if}
-      <Button disabled={busy} onclick={() => issueCode(person)}>New code</Button>
+      <Button disabled={busy} onclick={() => issueCode(person)}>{m.account_new_code()}</Button>
     {:else}
       {@const person = view.person}
       <p>
-        {person.disabled
-          ? 'This person will be able to sign in with a new code.'
-          : 'This will sign this person out on all devices and cancel their active code.'}
+        {person.disabled ? m.account_person_enable_hint() : m.account_person_disable_hint()}
       </p>
       <Button
         variant={person.disabled ? 'primary' : 'danger'}
         disabled={busy}
         onclick={() => changeStatus(person)}
       >
-        {person.disabled ? 'Enable' : 'Disable'}
-        {person.name}
+        {person.disabled
+          ? m.account_enable_person({ name: person.name })
+          : m.account_disable_person({ name: person.name })}
       </Button>
     {/if}
   </div>

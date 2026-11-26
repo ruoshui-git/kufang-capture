@@ -1,5 +1,6 @@
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/svelte'
 import { afterEach, describe, expect, it, vi } from 'vitest'
+import { setLocale } from '$lib/paraglide/runtime.js'
 import Tag from './Tag.svelte'
 import ToastHost from './ToastHost.svelte'
 import { showToast, toasts } from '../../app/toasts.svelte'
@@ -7,6 +8,7 @@ import { showToast, toasts } from '../../app/toasts.svelte'
 afterEach(() => {
   cleanup()
   toasts.items = []
+  void setLocale('en', { reload: false })
 })
 
 describe('Tag', () => {
@@ -18,6 +20,16 @@ describe('Tag', () => {
 })
 
 describe('Toast host', () => {
+  it('uses Simplified Chinese default action and dismiss labels', async () => {
+    void setLocale('zh-CN', { reload: false })
+    const undo = vi.fn()
+    render(ToastHost)
+    showToast({ message: '已删除条目', action: undo })
+    expect(await screen.findByRole('button', { name: '关闭通知' })).toBeInTheDocument()
+    await fireEvent.click(screen.getByRole('button', { name: '撤销' }))
+    expect(undo).toHaveBeenCalledOnce()
+  })
+
   it('runs the Undo action and dismisses the toast', async () => {
     const undo = vi.fn()
     render(ToastHost)

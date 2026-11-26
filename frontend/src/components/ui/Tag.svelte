@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { m } from '$lib/paraglide/messages.js'
   import { formatSequence } from '$lib/types'
   let {
     sequence,
@@ -10,7 +11,9 @@
 <span
   class="tag {size}"
   class:incomplete
-  aria-label="{formatSequence(sequence)}{incomplete ? ', incomplete' : ''}"
+  aria-label={incomplete
+    ? m.account_tag_incomplete({ sequence: formatSequence(sequence) })
+    : formatSequence(sequence)}
   ><span class="tag-hole"></span>{formatSequence(sequence)}{#if incomplete}<span
       class="fold"
       aria-hidden="true"

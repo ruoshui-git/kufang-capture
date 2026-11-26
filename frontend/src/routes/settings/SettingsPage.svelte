@@ -1,4 +1,6 @@
 <script lang="ts">
+  import { formatBytes } from '$lib/i18n/format'
+  import { m } from '$lib/paraglide/messages.js'
   import LanguagePicker from '../../components/i18n/LanguagePicker.svelte'
   import { onMount } from 'svelte'
   import { repo } from '$lib/db'
@@ -9,7 +11,8 @@
   import ExportSheet from '../../components/sync/ExportSheet.svelte'
   import type { CollectionSummary } from '$lib/types'
   import { navigate } from '../../app/router.svelte'
-  import { accountAccess, accountMismatch, accountUnavailable } from '$lib/sync/binding'
+  import { accountAccess, accountMismatch } from '$lib/sync/binding'
+  import type { SessionUser } from '$lib/sync/api'
   import { accountAuthenticated, startAccountState } from '$lib/sync/account'
 
   let captureMode = $state<CaptureMode>('native')
@@ -46,6 +49,10 @@
     return () => (typeof sub === 'function' ? sub() : sub.unsubscribe())
   })
 
+  function displayAccountName(user: SessionUser) {
+    return user.is_owner && user.name === 'Owner' ? m.core_account_owner() : user.name
+  }
+
   async function chooseMode(mode: CaptureMode) {
     captureMode = mode
     await repo.setSetting(SETTING_KEYS.captureMode, mode)
@@ -53,18 +60,16 @@
 
   async function keepData() {
     const granted = await repo.requestPersistentStorage()
-    storageMessage = granted
-      ? 'The browser will keep this storage until you clear site data.'
-      : 'The browser did not grant persistent storage.'
+    storageMessage = granted ? m.account_storage_granted() : m.account_storage_denied()
     storage = await repo.estimateStorage()
   }
   async function signOut() {
     try {
       const { authClient } = await import('$lib/sync')
       await authClient.logout()
-      accountMessage = 'Signed out.'
+      accountMessage = m.account_signed_out()
     } catch (cause) {
-      accountMessage = 'Could not sign out. Check your connection and try again.'
+      accountMessage = m.account_sign_out_failed()
     }
   }
 
@@ -75,69 +80,62 @@
       const { authClient } = await import('$lib/sync')
       await authClient.switchAccount()
     } catch (cause) {
-      accountMessage = cause instanceof Error ? cause.message : 'Could not switch this device.'
+      accountMessage = cause instanceof Error ? cause.message : m.account_switch_failed()
     } finally {
       switching = false
     }
   }
-
-  function formatBytes(value: number | null | undefined) {
-    if (value == null) return 'Unavailable'
-    if (value < 1024) return `${value} B`
-    const units = ['KB', 'MB', 'GB', 'TB']
-    let size = value
-    let unit = -1
-    do {
-      size /= 1024
-      unit++
-    } while (size >= 1024 && unit < units.length - 1)
-    return `${size.toFixed(size >= 10 ? 0 : 1)} ${units[unit]}`
-  }
 </script>
 
-<svelte:head><title>Settings — Kufang Capture</title></svelte:head>
+<svelte:head><title>{m.account_settings_title()}</title></svelte:head>
 <section class="page settings-page">
-  <div class="page-heading"><h1>Settings</h1></div>
+  <div class="page-heading"><h1>{m.account_settings()}</h1></div>
   <section class="settings-card"><LanguagePicker inline /></section>
   <section class="settings-card" aria-labelledby="account-heading">
-    <h2 id="account-heading">Account &amp; sync</h2>
+    <h2 id="account-heading">{m.account_account_and_sync()}</h2>
     {#if $accountAccess.kind === 'blocked'}
       <p class="auth-error" role="alert">{accountMismatch($accountAccess.name)}</p>
       <div class="settings-actions">
-        <Button variant="quiet" onclick={() => void signOut()}>Sign out</Button>
+        <Button variant="quiet" onclick={() => void signOut()}>{m.account_sign_out()}</Button>
         {#if $accountAccess.canSwitch && $accountAccess.user}
-          <Button disabled={switching} onclick={switchAccount}>Switch to {$accountAccess.user.name}</Button>
+          <Button disabled={switching} onclick={switchAccount}
+            >{m.account_switch_to({ name: displayAccountName($accountAccess.user) })}</Button
+          >
         {/if}
       </div>
     {:else if $accountAccess.kind === 'unavailable'}
-      <p class="auth-error" role="alert">{accountUnavailable}</p>
-      <Button variant="quiet" onclick={() => void signOut()}>Sign out</Button>
+      <p class="auth-error" role="alert">{m.core_account_unavailable()}</p>
+      <Button variant="quiet" onclick={() => void signOut()}>{m.account_sign_out()}</Button>
     {:else if $accountAccess.kind === 'ready'}
-      <p>Signed in as <strong>{$accountAccess.user.name}</strong>.</p>
+      {@const name = displayAccountName($accountAccess.user)}
+      {@const [beforeName, afterName] = m.account_signed_in_as({ name: '\0' }).split('\0')}
+      <p>{beforeName}<strong>{name}</strong>{afterName}</p>
       <div class="settings-actions">
         {#if $accountAccess.user.is_owner}
-          <Button variant="quiet" onclick={() => (peopleOpen = true)}>People</Button>
+          <Button variant="quiet" onclick={() => (peopleOpen = true)}>{m.account_people()}</Button>
         {/if}
-        <Button variant="quiet" onclick={() => navigate('/server')}>Server exports</Button>
-        <Button variant="quiet" onclick={() => void signOut()}>Sign out</Button>
+        <Button variant="quiet" onclick={() => navigate('/server')}>{m.account_server_exports()}</Button>
+        <Button variant="quiet" onclick={() => void signOut()}>{m.account_sign_out()}</Button>
       </div>
     {:else if $accountAuthenticated === null && $accountAccess.kind !== 'signed_out'}
-      <p>Checking sign-in…</p>
+      <p>{m.account_checking_sign_in()}</p>
     {:else}
-      <p>Not signed in. Local Only collections work without an account.</p>
-      <Button onclick={() => navigate(`/login?return=${encodeURIComponent('/settings')}`)}>Sign in</Button>
+      <p>{m.account_signed_out_hint()}</p>
+      <Button onclick={() => navigate(`/login?return=${encodeURIComponent('/settings')}`)}
+        >{m.account_sign_in()}</Button
+      >
     {/if}
     {#if accountMessage}<p role="status">{accountMessage}</p>{/if}
   </section>
   <section class="settings-card" aria-labelledby="export-heading">
-    <h2 id="export-heading">Device export</h2>
+    <h2 id="export-heading">{m.account_device_export()}</h2>
     {#if localDataNeedsExport}<p class="export-reminder">
-        Local Only data lives only on this device. Export a ZIP regularly.
-      </p>{:else}<p>Export a ZIP of this device's collections. This works offline.</p>{/if}
-    <Button variant="quiet" onclick={() => (exportOpen = true)}>Export all data</Button>
+        {m.account_export_reminder()}
+      </p>{:else}<p>{m.account_device_export_hint()}</p>{/if}
+    <Button variant="quiet" onclick={() => (exportOpen = true)}>{m.account_export_all()}</Button>
   </section>
   <section class="settings-card" aria-labelledby="capture-heading">
-    <h2 id="capture-heading">Capture mode</h2>
+    <h2 id="capture-heading">{m.account_capture_mode()}</h2>
     <fieldset>
       <label class="choice"
         ><input
@@ -146,9 +144,7 @@
           checked={captureMode === 'native'}
           onchange={() => chooseMode('native')}
         /><span
-          ><strong>System camera</strong><small
-            >Best quality, opens the phone's camera app for each photo</small
-          ></span
+          ><strong>{m.account_system_camera()}</strong><small>{m.account_system_camera_hint()}</small></span
         ></label
       >
       <label class="choice"
@@ -157,35 +153,40 @@
           name="capture-mode"
           checked={captureMode === 'fast'}
           onchange={() => chooseMode('fast')}
-        /><span
-          ><strong>Fast camera</strong><small>Stays open for rapid shots; video-frame quality</small></span
+        /><span><strong>{m.account_fast_camera()}</strong><small>{m.account_fast_camera_hint()}</small></span
         ></label
       >
     </fieldset>
   </section>
   <section class="settings-card" aria-labelledby="storage-heading">
-    <h2 id="storage-heading">Storage on this device</h2>
+    <h2 id="storage-heading">{m.account_storage_on_device()}</h2>
     <dl>
       <div>
-        <dt>Used</dt>
+        <dt>{m.account_storage_used()}</dt>
         <dd>{formatBytes(storage?.usage)}</dd>
       </div>
       <div>
-        <dt>Available quota</dt>
+        <dt>{m.account_storage_quota()}</dt>
         <dd>{formatBytes(storage?.quota)}</dd>
       </div>
       <div>
-        <dt>Persistent storage</dt>
-        <dd>{storage?.persisted == null ? 'Unavailable' : storage.persisted ? 'Enabled' : 'Not enabled'}</dd>
+        <dt>{m.account_persistent_storage()}</dt>
+        <dd>
+          {storage?.persisted == null
+            ? m.core_unavailable()
+            : storage.persisted
+              ? m.account_storage_enabled()
+              : m.account_storage_disabled()}
+        </dd>
       </div>
     </dl>
-    <Button variant="quiet" onclick={keepData}>Keep data on this device</Button>
+    <Button variant="quiet" onclick={keepData}>{m.account_keep_data()}</Button>
     {#if storageMessage}<p class="storage-message" role="status">{storageMessage}</p>{/if}
   </section>
   <section class="settings-card app-info">
-    <h2>About</h2>
-    <p>Version {import.meta.env.VITE_APP_VERSION ?? 'dev'}</p>
-    <a href="/diagnostics">Open Diagnostics</a>
+    <h2>{m.account_about()}</h2>
+    <p>{m.account_version({ version: import.meta.env.VITE_APP_VERSION ?? m.account_development() })}</p>
+    <a href="/diagnostics">{m.account_diagnostics_open()}</a>
   </section>
 </section>
 {#if peopleOpen && $accountAccess.kind === 'ready' && $accountAccess.user.is_owner}
@@ -193,7 +194,7 @@
     <PeopleSheet bind:open={peopleOpen} />
   {/await}
 {/if}
-<ExportSheet bind:open={exportOpen} scope="all" title="Export all data" />
+<ExportSheet bind:open={exportOpen} scope="all" title={m.account_export_all()} />
 
 <style>
   .settings-page {

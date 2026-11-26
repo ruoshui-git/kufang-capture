@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { m } from '$lib/paraglide/messages.js'
   import { onMount } from 'svelte'
   import type { CollectionSummary } from '$lib/types'
   import { repo } from '$lib/db'
@@ -50,9 +51,12 @@
       .finally(() => (checking = false))
   })
   function blockerMessage(blocker: import('$lib/repo').SharedModeBlocker) {
-    const modeName = blocker.storage_mode === 'local_only' ? 'Local Only' : 'Synced'
-    const noun = blocker.shared_items === 1 ? 'item is' : 'items are'
-    return `${blocker.shared_items} ${noun} shared with ${modeName} collection '${blocker.collection_name}'. Remove them from one side, or switch both.`
+    const modeName = blocker.storage_mode === 'local_only' ? m.account_local_only() : m.account_synced()
+    return m.account_storage_blocker({
+      count: blocker.shared_items,
+      mode: modeName,
+      name: blocker.collection_name,
+    })
   }
   async function enableSync() {
     if ($accountAuthenticated !== true) {
@@ -96,53 +100,61 @@
       open = false
       onchanged?.()
     } catch (cause) {
-      error = 'Could not remove the server copy. Check your connection and try again.'
+      error = m.account_remove_server_failed()
     } finally {
       busy = false
     }
   }
 </script>
 
-<Sheet bind:open title="Change storage mode">
+<Sheet bind:open title={m.account_storage_mode_change()}>
   {#snippet children()}
     {#if item.collection.storage_mode === 'local_only'}
       {#if $accountAuthenticated === false}<p>
-          Sign in first. This collection can stay Local Only while you sign in.
+          {m.account_storage_sign_in()}
         </p>
         <Button onclick={() => navigate(`/login?return=${encodeURIComponent(location.pathname)}`)}
-          >Sign in</Button
+          >{m.account_sign_in()}</Button
         >{:else}
-        {#if $accountAuthenticated === null}<p>Checking account…</p>{/if}
-        <p>
-          Upload this collection's {uploadEntryCount} entries and {uploadPhotoCount} photos ({mb} MB) to capture.kufang.org?
+        {#if $accountAuthenticated === null}<p>{m.account_checking_account()}</p>{/if}
+        <p class="upload-summary">
+          {m.account_storage_upload_confirm({
+            entries: m.account_entries({ count: uploadEntryCount }),
+            photos: m.account_photos({ count: uploadPhotoCount }),
+            size: m.account_size_megabytes({ amount: mb }),
+            host: 'capture.kufang.org',
+          })}
         </p>
-        {#if checking}<p>Checking shared items…</p>{/if}
+        {#if checking}<p>{m.account_checking_shared()}</p>{/if}
         {#each blockers as blocker}<p class="blocker">{blockerMessage(blocker)}</p>{/each}
         <label class="consent"
-          ><input type="checkbox" bind:checked={consent} /> I understand this uploads existing collection data and
-          photos to the server.</label
+          ><input type="checkbox" bind:checked={consent} /> {m.account_storage_consent()}</label
         >
         <Button
           disabled={$accountAuthenticated !== true || !consent || busy || checking || blockers.length > 0}
-          onclick={() => void enableSync()}>{busy ? 'Saving…' : 'Sync to Server'}</Button
+          onclick={() => void enableSync()}>{busy ? m.account_saving() : m.account_sync_to_server()}</Button
         >
       {/if}
     {:else}
-      <p>Future changes stay on this device. The server copy remains until you remove it.</p>
-      {#if checking}<p>Checking shared items…</p>{/if}
+      <p>{m.account_storage_local_future()}</p>
+      {#if checking}<p>{m.account_checking_shared()}</p>{/if}
       {#each blockers as blocker}<p class="blocker">{blockerMessage(blocker)}</p>{/each}
       <Button
         variant="quiet"
         disabled={busy || checking || blockers.length > 0}
-        onclick={() => void disableSync()}>Switch to Local Only</Button
+        onclick={() => void disableSync()}>{m.account_switch_local_only()}</Button
       >
       <hr />
-      <p>Remove the server copy and its uploaded files permanently. Type the collection name to confirm.</p>
-      <input aria-label="Type collection name" bind:value={confirming} placeholder={item.collection.name} />
+      <p>{m.account_remove_server_confirm()}</p>
+      <input
+        aria-label={m.account_type_collection_name()}
+        bind:value={confirming}
+        placeholder={item.collection.name}
+      />
       <Button
         variant="danger"
         disabled={busy || confirming !== item.collection.name}
-        onclick={() => void removeCopy()}>Remove server copy</Button
+        onclick={() => void removeCopy()}>{m.account_remove_server_copy()}</Button
       >
     {/if}
     {#if error}<p role="alert">{error}</p>{/if}
@@ -150,6 +162,9 @@
 </Sheet>
 
 <style>
+  .upload-summary:lang(zh-CN) {
+    text-wrap: balance;
+  }
   .consent {
     display: flex;
     gap: var(--space-3);
