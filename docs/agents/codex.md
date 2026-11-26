@@ -10,7 +10,7 @@ The default route is the **T3 Code harness** (`delegate_task`). Use `scripts/cod
    - where shared-doc changes go: `/tmp/codex-runs/NAME-docs.md`
    - the instruction to leave changes uncommitted and to run no state-changing git commands
 2. **Launch (T3, default).** Call `orchestrator_capabilities` once per thread. Then call `delegate_task` with:
-   - `target: {providerInstanceId: "codex", model: "gpt-6-luna", options: {reasoningEffort: "high", serviceTier: "default"}}`. Use `medium` for small tasks. Use `serviceTier: "priority"` (fast mode) only when the owner asks for it.
+   - `target: {providerInstanceId: "codex", model: "gpt-6-luna", options: {reasoningEffort: "high", serviceTier: "priority"}}`. Use `medium` for small tasks. Fast mode (`priority`) is the owner's preference (2026-11-26). Workspace accounts `codex_ws1`..`codex_ws4` may also use `gpt-6.2-sol`.
    - `role: "implementation"` and a short `title`
    - `task`: "Implement the task in /tmp/codex-runs/NAME.brief.md …". The child sees no parent history, so the brief must stand on its own. Never put secrets in it.
    - `isolation`: `shared` (the main checkout) for one task. Use `worktree` for parallel waves whose owned paths might collide, or when each child needs its own branch.
