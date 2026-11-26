@@ -73,7 +73,7 @@ describe('ConflictSheet', () => {
       })
       render(ConflictSheet, { props: { open: true } })
       expect(await screen.findByRole('heading', { name: '物品字段' })).toBeInTheDocument()
-      for (const text of ['审核状态', '草稿', '已完成', '备注', 'Shelf A', 'Shelf B', '字段']) {
+      for (const text of ['复核状态', '草稿', '已完成', '备注', 'Shelf A', 'Shelf B', '字段']) {
         expect(screen.getByText(text)).toBeInTheDocument()
       }
       expect(screen.getByRole('button', { name: '保留我的版本' })).toBeInTheDocument()

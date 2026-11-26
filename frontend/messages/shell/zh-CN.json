@@ -106,7 +106,7 @@
   "shell_name": "名称",
   "shell_collection_name_example": "例如：2 号殿 / A04",
   "shell_folder": "文件夹",
-  "shell_unfiled": "未归档到文件夹",
+  "shell_unfiled": "无文件夹",
   "shell_description": "说明",
   "shell_optional_details": "可填写补充说明",
   "shell_storage": "存储",
