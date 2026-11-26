@@ -9,6 +9,11 @@
   import { accountAuthenticated, startAccountState } from '$lib/sync/account'
 
   let collections = $state<ServerCollection[]>([])
+  // Live (unrevoked, unexpired) read-only link ids per server collection. This only reads and revokes
+  // records the server already holds, so it also works for collections that are now Local Only.
+  let shareLinks = $state<Record<string, string[]>>({})
+  let stopping = $state('')
+  let stopError = $state('')
   let includeTrash = $state(false)
   let loading = $state(true)
   let downloading = $state(false)
@@ -34,6 +39,7 @@
       const { serverClient } = await import('$lib/sync')
       const listed = await serverClient.listCollections()
       if (userId === account) collections = listed
+      void loadShares(account)
     } catch (cause) {
       error =
         cause instanceof TypeError
@@ -43,6 +49,33 @@
             : m.account_server_load_failed()
     } finally {
       loading = false
+    }
+  }
+
+  async function loadShares(account: string) {
+    try {
+      const { listServerShares } = await import('$lib/share/api')
+      const grouped: Record<string, string[]> = {}
+      for (const link of await listServerShares())
+        if (!link.expired) (grouped[link.collection_id] ??= []).push(link.id)
+      if (userId === account) shareLinks = grouped
+    } catch {
+      // Link counts are optional on this page; exports keep working without them.
+    }
+  }
+
+  async function stopLinks(collectionId: string) {
+    if (!userId || stopping) return
+    const account = userId
+    stopping = collectionId
+    stopError = ''
+    try {
+      const { revokeShare } = await import('$lib/share/api')
+      const results = await Promise.allSettled((shareLinks[collectionId] ?? []).map((id) => revokeShare(id)))
+      if (results.some((result) => result.status === 'rejected')) stopError = collectionId
+    } finally {
+      await loadShares(account)
+      stopping = ''
     }
   }
 
@@ -116,6 +149,15 @@
               {#if item.missing_originals}<p class="error">
                   {m.account_server_missing_originals({ count: item.missing_originals })}
                 </p>{/if}
+              {#if shareLinks[item.id]?.length}<p class="share-links">
+                  {m.account_server_share_links({ count: shareLinks[item.id]!.length })}
+                  <Button variant="quiet" disabled={!!stopping} onclick={() => stopLinks(item.id)}
+                    >{m.account_server_stop_links()}</Button
+                  >
+                </p>{/if}
+              {#if stopError === item.id}<p class="error" role="alert">
+                  {m.account_server_stop_links_failed()}
+                </p>{/if}
             </div>
             <Button variant="ink" disabled={downloading} onclick={() => download({ collectionId: item.id })}
               >{m.account_download_zip()}</Button
@@ -167,6 +209,13 @@
   .collection-list p {
     margin: 0;
     color: var(--color-muted);
+  }
+  .share-links {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--space-3);
+    margin-top: var(--space-2) !important;
   }
   .error {
     color: var(--color-danger) !important;

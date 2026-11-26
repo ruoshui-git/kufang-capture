@@ -1,4 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
+import { repo } from '$lib/db'
+import { accountGate } from '$lib/sync/binding'
 import { createShare, fetchShared, fetchSharedPhoto, listShares, revokeShare } from './api'
 import type { SharedCollection } from './contract'
 
@@ -18,7 +20,10 @@ const snapshot: SharedCollection = {
   updated_at: '2026-11-26T15:00:00.000Z',
 }
 
-afterEach(() => vi.unstubAllGlobals())
+afterEach(() => {
+  vi.unstubAllGlobals()
+  vi.useRealTimers()
+})
 
 describe('public share API', () => {
   it('sends the token only in the header and omits credentials', async () => {
@@ -73,13 +78,50 @@ describe('public share API', () => {
     controller.abort()
     await expect(fetchShared(token, controller.signal)).rejects.toMatchObject({ name: 'AbortError' })
   })
+
+  it.each([
+    ['snapshot', 20_000, () => fetchShared(token), 'json'],
+    ['thumbnail', 30_000, () => fetchSharedPhoto(token, 'photo', 'thumbnail'), 'blob'],
+    ['original', 120_000, () => fetchSharedPhoto(token, 'photo', 'original'), 'blob'],
+  ] as const)('limits the entire %s request to %s ms, including the body', async (_, ms, load, method) => {
+    vi.useFakeTimers()
+    const stalledRead = vi.fn(() => new Promise(() => {}))
+    const fetchMock = vi.fn(
+      (_path: string, _init: RequestInit) =>
+        new Promise((resolve) => setTimeout(() => resolve({ ok: true, [method]: stalledRead }), ms - 1)),
+    )
+    vi.stubGlobal('fetch', fetchMock)
+    const result = expect(load()).rejects.toMatchObject({ code: 'network' })
+    const signal = fetchMock.mock.calls[0]![1].signal
+    await vi.advanceTimersByTimeAsync(ms - 1)
+    expect(stalledRead).toHaveBeenCalledOnce()
+    expect(signal?.aborted).toBe(false)
+    await vi.advanceTimersByTimeAsync(1)
+    await result
+    expect(signal?.aborted).toBe(true)
+  })
+
+  it('preserves cancellation while a response body is pending', async () => {
+    const json = vi.fn(() => new Promise(() => {}))
+    const fetchMock = vi.fn(async (_path: string, _init: RequestInit) => ({ ok: true, json }))
+    vi.stubGlobal('fetch', fetchMock)
+    const controller = new AbortController()
+    const reason = new DOMException('Left the share page', 'AbortError')
+    const result = expect(fetchShared(token, controller.signal)).rejects.toBe(reason)
+    await Promise.resolve()
+    expect(json).toHaveBeenCalledOnce()
+    controller.abort(reason)
+    await result
+    expect(fetchMock.mock.calls[0]![1].signal?.reason).toBe(reason)
+  })
 })
 
 describe('owner share API', () => {
   const session = { authenticated: true, user: { id: 'owner', name: 'Owner', is_owner: true } }
 
+  afterEach(() => accountGate.reset())
+
   it('lists, creates and revokes under the verified account and mutation headers', async () => {
-    const { repo } = await import('$lib/db')
     const collection = await repo.createCollection({ name: 'Shared room', storage_mode: 'synced' })
     const link = {
       id: 'link/id',
@@ -120,7 +162,6 @@ describe('owner share API', () => {
   })
 
   it('never fetches for a Local Only collection', async () => {
-    const { repo } = await import('$lib/db')
     const collection = await repo.createCollection({ name: 'Local room', storage_mode: 'local_only' })
     const mock = vi.fn()
     vi.stubGlobal('fetch', mock)
@@ -133,7 +174,6 @@ describe('owner share API', () => {
   })
 
   it('checks storage again after an in-flight sign-in check', async () => {
-    const { repo } = await import('$lib/db')
     const collection = await repo.createCollection({ name: 'Changing room', storage_mode: 'synced' })
     const mock = vi.fn(async (_path: string) => {
       await repo.setStorageMode(collection.id, 'local_only', { consentToUploadExisting: false })

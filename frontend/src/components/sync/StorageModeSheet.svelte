@@ -6,6 +6,8 @@
   import Sheet from '../ui/Sheet.svelte'
   import Button from '../ui/Button.svelte'
   import { navigate } from '../../app/router.svelte'
+  import { showToast } from '../../app/toasts.svelte'
+  import { revokeCollectionShares } from '$lib/share/api'
   import { accountAuthenticated, startAccountState } from '$lib/sync/account'
   let {
     item,
@@ -77,10 +79,15 @@
     }
   }
   async function disableSync() {
+    if (busy || item.collection.storage_mode !== 'synced') return
+    const id = item.collection.id
     busy = true
     error = ''
     try {
-      await repo.setStorageMode(item.collection.id, 'local_only', { consentToUploadExisting: false })
+      await revokeCollectionShares(id).catch(() => {
+        showToast({ message: m.account_storage_share_revoke_failed(), persistent: true })
+      })
+      await repo.setStorageMode(id, 'local_only', { consentToUploadExisting: false })
       open = false
       onchanged?.()
     } catch (cause) {
@@ -137,6 +144,7 @@
       {/if}
     {:else}
       <p>{m.account_storage_local_future()}</p>
+      <p>{m.account_storage_share_links_stop()}</p>
       {#if checking}<p>{m.account_checking_shared()}</p>{/if}
       {#each blockers as blocker}<p class="blocker">{blockerMessage(blocker)}</p>{/each}
       <Button

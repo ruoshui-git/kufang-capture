@@ -1,5 +1,6 @@
 import { cleanup, fireEvent, render, screen } from '@testing-library/svelte'
 import { afterEach, expect, it, vi } from 'vitest'
+import { m } from '$lib/paraglide/messages.js'
 import { setLocale } from '$lib/paraglide/runtime.js'
 import { toasts } from './app/toasts.svelte'
 import App from './App.svelte'
@@ -16,6 +17,7 @@ vi.mock('$lib/sync', () => ({
 
 afterEach(async () => {
   cleanup()
+  await vi.dynamicImportSettled()
   vi.clearAllMocks()
   vi.unstubAllGlobals()
   toasts.items = []
@@ -28,6 +30,7 @@ it('offers a Chinese reload action when a service worker update is waiting', asy
   await setLocale('zh-CN', { reload: false })
   registerSW.mockReturnValue(updateSW)
   render(App)
+  expect(screen.getByRole('heading', { name: m.shell_collections() })).toBeInTheDocument()
   expect(registerSW).toHaveBeenCalledOnce()
   registerSW.mock.calls[0]![0].onNeedRefresh()
 
@@ -67,4 +70,8 @@ it('serves a fresh share URL without opening IndexedDB, starting sync or checkin
   )
   expect(openDb).not.toHaveBeenCalled()
   expect(startSync).not.toHaveBeenCalled()
+
+  // The shared page always reads the server, so it never claims to work offline.
+  registerSW.mock.calls[0]![0].onOfflineReady()
+  expect(toasts.items).toEqual([])
 })

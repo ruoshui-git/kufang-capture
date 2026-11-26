@@ -100,6 +100,18 @@
       }
     }
   ],
+  "account_server_share_links": [
+    {
+      "declarations": ["input count", "local countPlural = count: plural"],
+      "selectors": ["countPlural"],
+      "match": {
+        "countPlural=one": "{count} read-only link still works.",
+        "countPlural=*": "{count} read-only links still work."
+      }
+    }
+  ],
+  "account_server_stop_links": "Stop links",
+  "account_server_stop_links_failed": "Couldn't stop the links. Check your connection and try again.",
   "account_diagnostics": "Diagnostics",
   "account_sample_failed": "Could not generate test data. Check available storage and try again.",
   "account_camera_test_failed": "Camera test failed. Allow camera access and try again.",
@@ -203,6 +215,8 @@
   "account_checking_shared": "Checking shared items…",
   "account_storage_consent": "I understand this uploads existing collection data and photos to the server.",
   "account_storage_local_future": "Future changes stay on this device. The server copy remains until you remove it.",
+  "account_storage_share_links_stop": "Read-only links to this collection will stop working.",
+  "account_storage_share_revoke_failed": "Couldn't stop this collection's read-only links. They still show what was uploaded earlier. Stop them under Settings → Server exports.",
   "account_switch_local_only": "Switch to Local Only",
   "account_remove_server_confirm": "Remove the server copy and its uploaded files permanently. Type the collection name to confirm.",
   "account_remove_server_copy": "Remove server copy",

@@ -185,6 +185,8 @@ These routes follow the ordinary session, CSRF and account-binding rules. They a
 | POST | `/api/shares` | `{"collection_id":"…","label":"Boss","expires_in_days":30}` → `201` with the new ShareLink. `label` is optional, so it can be omitted, `null` or a string. A string is trimmed, has 1–40 characters and no control characters, and an empty string becomes `null`. `expires_in_days` is an integer 1–365 or `null` for no expiry. If it's omitted, the default is 30. |
 | DELETE | `/api/shares/{id}` | No body → `204`. Sets `revoked_at`. The link stops working at once and leaves the list. |
 
+Removing a collection's server copy (`DELETE /api/collections/{id}/server-copy`) revokes all of its links in the same request, before the collection is deleted. If a later sync recreates the same collection ID, old links stay dead.
+
 A ShareLink looks like this. `url` can be read again at any time, so the owner can copy the link later. The server keeps the token for that reason, plus its SHA-256 for lookup. A share token gives only read access to data stored beside it.
 
 ```json
@@ -221,7 +223,7 @@ A link is valid when all of these hold:
 Errors are as follows:
 
 - `401 share_required`: the `X-Capture-Share` header is missing or malformed.
-- `404 share_not_found`: the token is unknown or revoked, the account is disabled, or the collection is gone.
+- `404 share_not_found`: the token is unknown or revoked, the account is disabled, or the collection is gone. Unknown tokens are rejected before the server takes its writer lock.
 - `410 share_expired`: the link has expired.
 - `429 too_many_attempts` with `Retry-After`: more than 10 requests from one IP in a rolling 60 seconds ended in `401` or `404 share_not_found`. Requests with a valid token are never throttled.
 

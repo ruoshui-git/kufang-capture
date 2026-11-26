@@ -1,7 +1,10 @@
 import { afterEach, expect, it, vi } from 'vitest'
 import { loadSharedThumbnail } from './thumbnailQueue'
 
-afterEach(() => vi.unstubAllGlobals())
+afterEach(() => {
+  vi.unstubAllGlobals()
+  vi.useRealTimers()
+})
 
 it('caps thumbnail requests at four and drops queued work that leaves view', async () => {
   const finish: (() => void)[] = []
@@ -26,4 +29,25 @@ it('caps thumbnail requests at four and drops queued work that leaves view', asy
   expect(mock).toHaveBeenLastCalledWith('/api/share/photos/next/thumbnail', expect.anything())
   for (const complete of finish) complete()
   await Promise.all([...active, next])
+})
+
+it('starts the next thumbnail after all four active requests time out', async () => {
+  vi.useFakeTimers()
+  const mock = vi.fn((path: string) =>
+    path.endsWith('/next/thumbnail') ? Promise.resolve(new Response('next image')) : new Promise(() => {}),
+  )
+  vi.stubGlobal('fetch', mock)
+  const { signal } = new AbortController()
+  const token = 't'.repeat(43)
+  const stalled = Array.from({ length: 4 }, (_, id) =>
+    expect(loadSharedThumbnail(token, `photo-${id}`, signal)).rejects.toMatchObject({ code: 'network' }),
+  )
+  const next = loadSharedThumbnail(token, 'next', signal)
+  expect(mock).toHaveBeenCalledTimes(4)
+
+  await vi.advanceTimersByTimeAsync(30_000)
+
+  await Promise.all(stalled)
+  expect(mock).toHaveBeenCalledTimes(5)
+  await expect((await next).text()).resolves.toBe('next image')
 })

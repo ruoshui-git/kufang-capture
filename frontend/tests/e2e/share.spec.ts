@@ -1,6 +1,18 @@
 import { expect, test } from '@playwright/test'
 import type { ShareLink } from '../../src/lib/share/contract'
+import type { BrowserContext, Page } from '@playwright/test'
 import { addEntry, addPhoto, createCollection, signIn, waitBackedUp } from './helpers/sync'
+
+/** Chromium grants real clipboard access; WebKit has no clipboard permission, so stub the write. */
+async function allowClipboard(page: Page, context: BrowserContext) {
+  if (context.browser()?.browserType().name() === 'chromium') {
+    await context.grantPermissions(['clipboard-read', 'clipboard-write'])
+    return
+  }
+  await page.evaluate(() =>
+    Object.defineProperty(navigator.clipboard, 'writeText', { value: async () => {} }),
+  )
+}
 
 test('an owner shares and revokes a synced collection for a signed-out visitor', async ({
   page,
@@ -23,7 +35,7 @@ test('an owner shares and revokes a synced collection for a signed-out visitor',
   }
   await addPhoto(page, entry, 'shared photo')
   await waitBackedUp(page)
-  await context.grantPermissions(['clipboard-read', 'clipboard-write'])
+  await allowClipboard(page, context)
   await page.getByLabel('Collection actions').click()
   await page.getByRole('menuitem', { name: 'Share read-only link…' }).click()
   const sheet = page.getByRole('dialog', { name: 'Share read-only link' })
@@ -128,4 +140,81 @@ test('the Local Only share sheet makes no share request', async ({ page }, { pro
   )
   await expect(sheet.getByRole('button', { name: 'Create link' })).toHaveCount(0)
   expect(shareRequests).toEqual([])
+})
+
+test('switching to Local Only revokes the share link and keeps the server copy', async ({
+  page,
+  context,
+  request,
+}, { project }) => {
+  const name = `Share mode room ${project.name} ${Date.now()}`
+  await signIn(page)
+  await createCollection(page, name, 'synced')
+  await addEntry(page)
+  await waitBackedUp(page)
+  await allowClipboard(page, context)
+  await page.getByLabel('Collection actions').click()
+  await page.getByRole('menuitem', { name: 'Share read-only link…' }).click()
+  const shareSheet = page.getByRole('dialog', { name: 'Share read-only link' })
+  const created = page.waitForResponse(
+    (response) =>
+      new URL(response.url()).pathname === '/api/shares' && response.request().method() === 'POST',
+  )
+  await shareSheet.getByRole('button', { name: 'Create link' }).click()
+  const response = await created
+  expect(response.status()).toBe(201)
+  const link: ShareLink = await response.json()
+  const viewShared = () =>
+    request.get('/api/share', { headers: { 'X-Capture-Share': new URL(link.url).hash.slice(1) } })
+  expect((await viewShared()).status()).toBe(200)
+
+  await page.goto('/')
+  await page.getByLabel(`Actions for ${name}`).click()
+  await page.getByRole('menuitem', { name: 'Change storage mode…' }).click()
+  const storage = page.getByRole('dialog', { name: 'Change storage mode' })
+  await expect(storage.getByText('Read-only links to this collection will stop working.')).toBeVisible()
+  const revoked = page.waitForResponse(
+    (response) =>
+      new URL(response.url()).pathname === `/api/shares/${link.id}` &&
+      response.request().method() === 'DELETE',
+  )
+  await storage.getByRole('button', { name: 'Switch to Local Only' }).click()
+  expect((await revoked).status()).toBe(204)
+  await expect(storage).toBeHidden()
+  const card = page.locator('.collection-card').filter({ has: page.getByRole('link', { name }) })
+  await expect(card.getByRole('status', { name: 'Local Only' })).toBeVisible()
+  expect((await viewShared()).status()).toBe(404)
+
+  const server = await context.request.get('/api/collections')
+  expect(server.ok()).toBe(true)
+  expect(await server.json()).toContainEqual(expect.objectContaining({ id: link.collection_id }))
+})
+
+test('the Server page stops the live links of a server copy', async ({ page, request }, { project }) => {
+  const name = `Share server room ${project.name} ${Date.now()}`
+  await signIn(page)
+  await createCollection(page, name, 'synced')
+  await addEntry(page)
+  await waitBackedUp(page)
+  await page.getByLabel('Collection actions').click()
+  await page.getByRole('menuitem', { name: 'Share read-only link…' }).click()
+  const created = page.waitForResponse(
+    (response) =>
+      new URL(response.url()).pathname === '/api/shares' && response.request().method() === 'POST',
+  )
+  await page
+    .getByRole('dialog', { name: 'Share read-only link' })
+    .getByRole('button', { name: 'Create link' })
+    .click()
+  const link: ShareLink = await (await created).json()
+  const viewShared = () =>
+    request.get('/api/share', { headers: { 'X-Capture-Share': new URL(link.url).hash.slice(1) } })
+  expect((await viewShared()).status()).toBe(200)
+
+  await page.goto('/server')
+  const card = page.locator('article').filter({ has: page.getByRole('heading', { name }) })
+  await expect(card.getByText('1 read-only link still works.')).toBeVisible()
+  await card.getByRole('button', { name: 'Stop links' }).click()
+  await expect(card.getByText('1 read-only link still works.')).toBeHidden()
+  expect((await viewShared()).status()).toBe(404)
 })

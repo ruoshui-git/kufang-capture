@@ -97,6 +97,18 @@
       }
     }
   ],
+  "account_server_share_links": [
+    {
+      "declarations": ["input count", "local countPlural = count: plural"],
+      "selectors": ["countPlural"],
+      "match": {
+        "countPlural=one": "{count} 个只读链接仍可访问。",
+        "countPlural=*": "{count} 个只读链接仍可访问。"
+      }
+    }
+  ],
+  "account_server_stop_links": "停用链接",
+  "account_server_stop_links_failed": "无法停用链接。请检查网络连接后重试。",
   "account_diagnostics": "诊断",
   "account_sample_failed": "无法生成测试数据。请检查可用存储空间后重试。",
   "account_camera_test_failed": "相机测试失败。请允许访问相机后重试。",
@@ -197,6 +209,8 @@
   "account_checking_shared": "正在检查共享物品…",
   "account_storage_consent": "我了解此操作会将现有的清点单数据和照片上传到服务器。",
   "account_storage_local_future": "以后的更改将仅保存在此设备上。服务器副本会一直保留，直到你删除它。",
+  "account_storage_share_links_stop": "此清点单的只读链接将停用。",
+  "account_storage_share_revoke_failed": "无法停用此清点单的只读链接。通过这些链接仍可查看之前上传的内容。可在“设置 → 服务器导出”中停用。",
   "account_switch_local_only": "切换为仅本设备",
   "account_remove_server_confirm": "永久删除服务器副本和已上传的文件。请输入清点单名称以确认。",
   "account_remove_server_copy": "删除服务器副本",

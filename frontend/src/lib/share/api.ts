@@ -45,24 +45,52 @@ async function failure(response: Response): Promise<never> {
   }
 }
 
+async function withDeadline<T>(
+  timeoutMs: number,
+  run: (signal: AbortSignal) => Promise<T>,
+  signal?: AbortSignal,
+): Promise<T> {
+  signal?.throwIfAborted()
+  const controller = new AbortController()
+  const cancel = () => controller.abort(signal?.reason)
+  const interrupted = new Promise<never>((_, reject) => {
+    controller.signal.addEventListener('abort', () => reject(controller.signal.reason), { once: true })
+  })
+  signal?.addEventListener('abort', cancel, { once: true })
+  const timer = setTimeout(() => controller.abort(new ShareError('network')), timeoutMs)
+  try {
+    return await Promise.race([run(controller.signal), interrupted])
+  } finally {
+    clearTimeout(timer)
+    signal?.removeEventListener('abort', cancel)
+  }
+}
+
 async function publicRequest<T>(
   token: string,
   path: string,
+  timeoutMs: number,
   read: (response: Response) => Promise<T>,
   signal?: AbortSignal,
 ): Promise<T> {
   if (!validShareToken(token)) throw new ShareError('share_required')
   try {
-    const response = await fetch(path, {
-      headers: { [SHARE_HEADER]: token },
-      cache: 'no-store',
-      credentials: 'omit',
-      redirect: 'error',
-      referrerPolicy: 'no-referrer',
+    return await withDeadline(
+      timeoutMs,
+      async (requestSignal) => {
+        const response = await fetch(path, {
+          headers: { [SHARE_HEADER]: token },
+          cache: 'no-store',
+          credentials: 'omit',
+          redirect: 'error',
+          referrerPolicy: 'no-referrer',
+          signal: requestSignal,
+        })
+        requestSignal.throwIfAborted()
+        return response.ok ? read(response) : failure(response)
+      },
       signal,
-    })
-    if (!response.ok) return await failure(response)
-    return await read(response)
+    )
   } catch (error) {
     signal?.throwIfAborted()
     if (error instanceof ShareError) throw error
@@ -71,7 +99,7 @@ async function publicRequest<T>(
 }
 
 export function fetchShared(token: string, signal?: AbortSignal): Promise<SharedCollection> {
-  return publicRequest(token, '/api/share', (response) => response.json(), signal)
+  return publicRequest(token, '/api/share', 20_000, (response) => response.json(), signal)
 }
 
 export function fetchSharedPhoto(
@@ -83,13 +111,14 @@ export function fetchSharedPhoto(
   return publicRequest(
     token,
     `/api/share/photos/${encodeURIComponent(photoId)}/${kind}`,
+    kind === 'thumbnail' ? 30_000 : 120_000,
     (response) => response.blob(),
     signal,
   )
 }
 
 async function ownerRequest(path: string, init: RequestInit, collectionId?: string) {
-  // Only management requests load account binding and IndexedDB.
+  // Only owner requests access account binding and IndexedDB.
   const { accountGate, AccountRequestError } = await import('$lib/sync/binding')
   const { getCaptureDb } = await import('$lib/db')
   const db = collectionId ? getCaptureDb() : undefined
@@ -138,6 +167,13 @@ export async function listShares(collectionId: string, signal?: AbortSignal): Pr
   return body.shares
 }
 
+/** Every live link of the signed-in account, for server copies listed by the server itself. */
+export async function listServerShares(signal?: AbortSignal): Promise<ShareLink[]> {
+  const response = await ownerRequest('/api/shares', { signal })
+  const body: { shares: ShareLink[] } = await response.json()
+  return body.shares
+}
+
 export async function createShare(request: CreateShareRequest, signal?: AbortSignal): Promise<ShareLink> {
   const response = await ownerRequest(
     '/api/shares',
@@ -154,4 +190,14 @@ export async function createShare(request: CreateShareRequest, signal?: AbortSig
 
 export async function revokeShare(id: string, signal?: AbortSignal, collectionId?: string): Promise<void> {
   await ownerRequest(`/api/shares/${encodeURIComponent(id)}`, { method: 'DELETE', signal }, collectionId)
+}
+
+export async function revokeCollectionShares(collectionId: string): Promise<void> {
+  await withDeadline(8_000, async (signal) => {
+    const links = await listShares(collectionId, signal)
+    signal.throwIfAborted()
+    const results = await Promise.allSettled(links.map(({ id }) => revokeShare(id, signal, collectionId)))
+    const failure = results.find((result) => result.status === 'rejected')
+    if (failure) throw failure.reason
+  })
 }
