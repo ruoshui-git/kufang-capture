@@ -10,6 +10,7 @@ export type Route =
   | { name: 'login' }
   | { name: 'join' }
   | { name: 'server' }
+  | { name: 'share' }
   | { name: 'not-found' }
 
 function match(path: string): Route {
@@ -20,6 +21,7 @@ function match(path: string): Route {
   if (clean === '/diagnostics') return { name: 'diagnostics' }
   if (clean === '/join') return { name: 'join' }
   if (clean === '/login') return { name: 'login' }
+  if (clean === '/share') return { name: 'share' }
   if (clean === '/server') return { name: 'server' }
   const detail = clean.match(/^\/c\/([^/]+)\/e\/([^/]+)$/)
   if (detail)
@@ -100,6 +102,12 @@ function requestNavigation(path: string, replace: boolean) {
 }
 
 function applyNavigation(path: string, replace: boolean) {
+  const destination = new URL(path, location.href)
+  if ((router.route.name === 'share') !== (match(destination.pathname).name === 'share')) {
+    if (replace) location.replace(destination)
+    else location.assign(destination)
+    return
+  }
   if (replace) history.replaceState(null, '', path)
   else history.pushState(null, '', path)
   update()

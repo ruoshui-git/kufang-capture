@@ -59,10 +59,28 @@ beforeEach(async () => {
 
 afterEach(async () => {
   cleanup()
+  vi.unstubAllGlobals()
   await setLocale('en', { reload: false })
 })
 
 describe('Entry list', () => {
+  it('opens the Local Only explanation from collection actions without making a request', async () => {
+    const fetchMock = vi.fn()
+    vi.stubGlobal('fetch', fetchMock)
+    render(EntryListPage, { props: { collectionId } })
+    await screen.findByRole('heading', { name: 'Test room' })
+    await fireEvent.click(screen.getByLabelText('Collection actions'))
+    await fireEvent.click(screen.getByRole('menuitem', { name: 'Share read-only link…' }))
+    expect(await screen.findByRole('dialog', { name: 'Share read-only link' })).toBeInTheDocument()
+    expect(
+      screen.getByText(
+        'Only collections that sync to the server can be shared. This collection stays on this device.',
+      ),
+    ).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Create link' })).not.toBeInTheDocument()
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+
   it('shows a Chinese empty list and focuses the title after creating an entry', async () => {
     await setLocale('zh-CN', { reload: false })
     render(EntryListPage, { props: { collectionId } })

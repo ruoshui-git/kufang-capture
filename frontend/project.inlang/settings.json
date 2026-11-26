@@ -8,7 +8,8 @@
       "./messages/core/{locale}.json",
       "./messages/shell/{locale}.json",
       "./messages/entry/{locale}.json",
-      "./messages/account/{locale}.json"
+      "./messages/account/{locale}.json",
+      "./messages/share/{locale}.json"
     ]
   }
 }

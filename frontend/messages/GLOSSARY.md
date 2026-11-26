@@ -21,5 +21,7 @@
 | Digital crop               | 数码裁切          |
 | Storage mode               | 存储模式          |
 | Server exports             | 服务器导出        |
+| Read-only link             | 只读链接          |
+| Revoke (a link)            | 停用链接          |
 
 Use concise Mainland Simplified Chinese and full-width punctuation. Put a space between Chinese and Latin text or digits, as in `3 个条目` and `条目 #0042`. Keep Capture and Kufang Capture in English. Treat names, notes, quantities and units supplied by users as data.

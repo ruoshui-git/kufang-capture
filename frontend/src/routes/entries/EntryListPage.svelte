@@ -25,6 +25,7 @@
   import SyncNowButton from '../../components/sync/SyncNowButton.svelte'
   import ExportSheet from '../../components/sync/ExportSheet.svelte'
   import ImportEntriesSheet from '../../components/entry/ImportEntriesSheet.svelte'
+  import ShareSheet from '../../components/share/ShareSheet.svelte'
   import MoveEntriesSheet from '../../components/entry/MoveEntriesSheet.svelte'
 
   let { collectionId, detailEntryId }: { collectionId: string; detailEntryId?: string } = $props()
@@ -45,6 +46,7 @@
   let previousDetailEntryId: string | undefined
   let sentinel = $state<HTMLDivElement>()
   let listElement = $state<HTMLDivElement>()
+  let shareOpen = $state(false)
   let exportOpen = $state(false)
   let importOpen = $state(false)
   let moveOpen = $state(false)
@@ -413,6 +415,9 @@
               void repo.setSetting(SETTING_KEYS.entrySort, sort)
             }}>{sort === 'last_edited' ? '✓ ' : ''}{m.shell_last_edited()}</button
           >
+          {#if summary}
+            <button role="menuitem" onclick={() => (shareOpen = true)}>{m.share_menu()}</button>
+          {/if}
           <button role="menuitem" onclick={() => (exportOpen = true)}>{m.shell_export_zip()}</button>
           <button role="menuitem" onclick={() => (importOpen = true)}>{m.shell_import_collections()}</button>
           <button role="menuitem" onclick={() => (moveOpen = true)}>{m.shell_move_entries()}</button>
@@ -476,6 +481,11 @@
     bind:open={viewerOpen}
     entryId={viewerEntryId}
     startPhotoId={viewerPhotoId}
+  />{/if}
+{#if shareOpen && summary}<ShareSheet
+    bind:open={shareOpen}
+    {collectionId}
+    storageMode={summary.collection.storage_mode}
   />{/if}
 {#if summary}<ExportSheet
     bind:open={exportOpen}

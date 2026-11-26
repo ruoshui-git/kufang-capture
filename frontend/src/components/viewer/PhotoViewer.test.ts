@@ -19,8 +19,10 @@ afterEach(cleanup)
 
 describe('photo viewer', () => {
   const createUrl = URL.createObjectURL
+  const revokeUrl = URL.revokeObjectURL
   afterEach(() => {
     URL.createObjectURL = createUrl
+    URL.revokeObjectURL = revokeUrl
   })
   it('opens at the requested photo, moves with arrow keys, and closes with Escape', async () => {
     URL.createObjectURL = vi.fn(() => 'blob:test')
@@ -39,5 +41,40 @@ describe('photo viewer', () => {
     await waitFor(() =>
       expect(screen.queryByRole('dialog', { name: 'Photo viewer' })).not.toBeInTheDocument(),
     )
+  })
+  it('loads a shared original, releases it on slide change and skips an unuploaded photo', async () => {
+    URL.createObjectURL = vi.fn(() => 'blob:shared')
+    URL.revokeObjectURL = vi.fn()
+    const loader = vi.fn().mockResolvedValue(new Blob(['photo']))
+    const watchLocal = vi.spyOn(repo, 'watchPhotos')
+    const opener = document.createElement('button')
+    document.body.append(opener)
+    opener.focus()
+    try {
+      const info = { width: 40, height: 20, byte_size: 200 }
+      render(PhotoViewer, {
+        props: {
+          open: true,
+          photoSource: {
+            photos: [
+              { ...info, id: 'stored', caption: 'Shared photo', stored: true },
+              { ...info, id: 'pending', caption: '', stored: false },
+            ],
+            loadOriginal: loader,
+          },
+        },
+      })
+      expect(await screen.findByRole('img', { name: 'Shared photo' })).toHaveAttribute('src', 'blob:shared')
+      const dialog = screen.getByRole('dialog', { name: 'Photo viewer' })
+      await fireEvent.keyDown(dialog, { key: 'ArrowRight' })
+      expect(await screen.findByText('Not uploaded yet')).toBeInTheDocument()
+      expect(loader).toHaveBeenCalledExactlyOnceWith('stored', expect.any(AbortSignal))
+      expect(URL.revokeObjectURL).toHaveBeenCalledExactlyOnceWith('blob:shared')
+      expect(watchLocal).not.toHaveBeenCalled()
+      await fireEvent.keyDown(dialog, { key: 'Escape' })
+      await waitFor(() => expect(opener).toHaveFocus())
+    } finally {
+      opener.remove()
+    }
   })
 })

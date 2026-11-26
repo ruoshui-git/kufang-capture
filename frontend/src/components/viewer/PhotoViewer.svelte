@@ -1,20 +1,45 @@
+<script module lang="ts">
+  import type { Id, Photo } from '$lib/types'
+
+  type ViewPhoto = Pick<Photo, 'id' | 'caption' | 'width' | 'height' | 'byte_size'> &
+    Partial<Pick<Photo, 'capture_source'>> & { stored?: boolean }
+
+  export interface ViewerPhotoSource {
+    photos: ViewPhoto[]
+    loadOriginal: (id: Id, signal: AbortSignal) => Promise<Blob>
+    onError?: (error: unknown) => void
+  }
+
+  async function loadLocalSource() {
+    const [{ repo }, { originalUrl, thumbnailUrl }, { photoAccount }] = await Promise.all([
+      import('$lib/db'),
+      import('$lib/photos'),
+      import('$lib/sync/binding'),
+    ])
+    return { repo, originalUrl, thumbnailUrl, photoAccount }
+  }
+</script>
+
 <script lang="ts">
   import { m } from '$lib/paraglide/messages.js'
   import { formatBytes } from '$lib/i18n/format'
   import { getLocale } from '$lib/paraglide/runtime.js'
-  import { onMount } from 'svelte'
-  import { repo } from '$lib/db'
-  import type { Id, Photo } from '$lib/types'
-  import { originalUrl, thumbnailUrl } from '$lib/photos'
-  import { photoAccount } from '$lib/sync/binding'
+  import { onDestroy, untrack } from 'svelte'
   import { openOverlay } from '$lib/ui/overlayHistory'
 
   let {
     open = $bindable(false),
     entryId,
     startPhotoId = null,
-  }: { open?: boolean; entryId: Id; startPhotoId?: Id | null } = $props()
-  let photos = $state<Photo[]>([])
+    photoSource,
+  }: { open?: boolean; startPhotoId?: Id | null } & (
+    | { entryId: Id; photoSource?: never }
+    | { entryId?: never; photoSource: ViewerPhotoSource }
+  ) = $props()
+  let local = $state.raw<Awaited<ReturnType<typeof loadLocalSource>>>()
+  let localPhotos = $state<Photo[]>([])
+  let account = $state<string | null>(null)
+  const photos: ViewPhoto[] = $derived(photoSource?.photos ?? localPhotos)
   let index = $state(0)
   let source = $state<{ id: Id; url: string; account: string | null } | null>(null)
   let initialFocus: HTMLButtonElement | undefined = $state()
@@ -26,7 +51,6 @@
   let pinchDistance = 0
   let previousTap = 0
   let savedFocus: HTMLElement | null = null
-  let subscription: (() => void) | { unsubscribe(): void } | undefined
   let unregisterOverlay: (() => void) | undefined
   const current = $derived(photos[index])
 
@@ -34,44 +58,100 @@
     if (open) {
       unregisterOverlay = openOverlay(() => (open = false))
       savedFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null
-      if (!subscription) {
-        subscription = repo.watchPhotos(entryId).subscribe((items) => {
-          photos = items
-          const requested = startPhotoId ? items.findIndex((photo) => photo.id === startPhotoId) : -1
-          if (requested >= 0) index = requested
-          else if (index >= items.length) index = Math.max(0, items.length - 1)
-        })
-      }
       queueMicrotask(() => initialFocus?.focus())
     } else {
       unregisterOverlay?.()
       unregisterOverlay = undefined
-      if (subscription) {
-        if (typeof subscription === 'function') subscription()
-        else subscription.unsubscribe()
-        subscription = undefined
-      }
       savedFocus?.focus()
       resetZoom()
     }
   })
+
+  $effect(() => {
+    if (!open || photoSource || local) return
+    let active = true
+    void loadLocalSource().then((source) => {
+      if (active) local = source
+    })
+    return () => {
+      active = false
+    }
+  })
+
+  function chooseStartingPhoto(items: ViewPhoto[], requestedId: Id | null) {
+    const requested = requestedId ? items.findIndex((photo) => photo.id === requestedId) : -1
+    if (requested >= 0) index = requested
+    else if (index >= items.length) index = Math.max(0, items.length - 1)
+  }
+
+  $effect(() => {
+    if (!open || !local || !entryId) return
+    const stopAccount = local.photoAccount.subscribe((value) => (account = value))
+    const subscription = local.repo.watchPhotos(entryId).subscribe((items) => {
+      localPhotos = items
+      untrack(() => chooseStartingPhoto(items, startPhotoId))
+    })
+    return () => {
+      stopAccount()
+      if (typeof subscription === 'function') subscription()
+      else subscription.unsubscribe()
+    }
+  })
+
+  $effect(() => {
+    if (!open || !photoSource) return
+    const requested = startPhotoId
+    index = 0
+    untrack(() => chooseStartingPhoto(photoSource!.photos, requested))
+  })
+
+  let sharedLoadFailed = $state(false)
   $effect(() => {
     if (!open || !current) return
-    void loadImage(current.id, $photoAccount)
-    for (const photo of [photos[index - 1], photos[index + 1]]) if (photo) void thumbnailUrl(photo.id)
+    const id = current.id
+    if (local && !photoSource) {
+      void loadLocalImage(id, account, local)
+      for (const photo of [photos[index - 1], photos[index + 1]]) if (photo) void local.thumbnailUrl(photo.id)
+      return
+    }
+    if (!photoSource) return
+    source = null
+    sharedLoadFailed = false
+    if (current.stored === false) return
+    const loader = photoSource
+    const controller = new AbortController()
+    let objectUrl: string | undefined
+    void loader.loadOriginal(id, controller.signal).then(
+      (blob) => {
+        if (controller.signal.aborted) return
+        objectUrl = URL.createObjectURL(blob)
+        source = { id, url: objectUrl, account: null }
+      },
+      (error: unknown) => {
+        if (controller.signal.aborted) return
+        sharedLoadFailed = true
+        loader.onError?.(error)
+      },
+    )
+    return () => {
+      controller.abort()
+      if (objectUrl) URL.revokeObjectURL(objectUrl)
+    }
   })
 
-  onMount(() => () => {
-    if (typeof subscription === 'function') subscription()
-    else subscription?.unsubscribe()
-  })
+  onDestroy(() => unregisterOverlay?.())
 
-  async function loadImage(id: Id, account: string | null) {
-    const preview = await thumbnailUrl(id)
-    if (current?.id !== id || $photoAccount !== account) return
-    source = preview ? { id, url: preview, account } : null
-    const full = await originalUrl(id)
-    if (current?.id === id && $photoAccount === account && full) source = { id, url: full, account }
+  async function loadLocalImage(
+    id: Id,
+    requestAccount: string | null,
+    urls: Awaited<ReturnType<typeof loadLocalSource>>,
+  ) {
+    const preview = await urls.thumbnailUrl(id)
+    if (current?.id !== id || account !== requestAccount) return
+    source = preview ? { id, url: preview, account: requestAccount } : null
+    const full = await urls.originalUrl(id)
+    if (current?.id === id && account === requestAccount && full)
+      source = { id, url: full, account: requestAccount }
   }
   function change(delta: number) {
     const next = index + delta
@@ -159,7 +239,7 @@
       }
     }
   }
-  function sourceLabel(photo: Photo) {
+  function sourceLabel(photo: ViewPhoto) {
     return photo.capture_source === 'native_camera'
       ? m.entry_system_camera()
       : photo.capture_source === 'photo_library'
@@ -202,13 +282,15 @@
       onpointercancel={onPointerUp}
       ondblclick={onDoubleTap}
     >
-      {#if source && source.id === current?.id && source.account === $photoAccount}<img
+      {#if source && source.id === current?.id && source.account === account}<img
           class="viewer-image"
           src={source.url}
           alt={current?.caption || m.entry_photo_number({ number: index + 1 })}
           style:transform="translate({panX}px, {panY}px) scale({scale})"
           draggable="false"
-        />{:else}<p>{m.entry_no_photo_available()}</p>{/if}
+        />{:else if photoSource && current?.stored === false}<p>{m.share_unuploaded()}</p>
+      {:else if photoSource && current && !sharedLoadFailed}<p>{m.entry_loading_photo()}</p>
+      {:else}<p>{m.entry_no_photo_available()}</p>{/if}
     </div>
     <button
       class="viewer-prev"
@@ -224,12 +306,18 @@
     >
     {#if current}<footer class="viewer-meta">
         <strong>{current.caption || m.entry_no_caption()}</strong><span
-          >{m.entry_photo_metadata({
-            source: sourceLabel(current),
-            width: current.width ?? '—',
-            height: current.height ?? '—',
-            size: sizeLabel(current.byte_size),
-          })}</span
+          >{photoSource
+            ? m.share_photo_metadata({
+                width: current.width ?? '—',
+                height: current.height ?? '—',
+                size: sizeLabel(current.byte_size),
+              })
+            : m.entry_photo_metadata({
+                source: sourceLabel(current),
+                width: current.width ?? '—',
+                height: current.height ?? '—',
+                size: sizeLabel(current.byte_size),
+              })}</span
         >
       </footer>{/if}
   </div>

@@ -11,6 +11,7 @@ describe('router matching', () => {
       collectionId: 'room-1',
       entryId: 'item-2',
     })
+    expect(matchRoute('/share')).toEqual({ name: 'share' })
     expect(matchRoute('/settings')).toEqual({ name: 'settings' })
     expect(matchRoute('/diagnostics')).toEqual({ name: 'diagnostics' })
   })
