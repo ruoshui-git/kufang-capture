@@ -1,4 +1,6 @@
 <script lang="ts">
+  import { getLocale } from '$lib/paraglide/runtime.js'
+  import { m } from '$lib/paraglide/messages.js'
   import type { Snippet } from 'svelte'
   import { navigate, router } from './router.svelte'
   import { repo } from '$lib/db'
@@ -8,7 +10,7 @@
   import type { CollectionSummary } from '$lib/types'
   import type { SyncStatus } from '$lib/sync/api'
   import SyncNowButton from '../components/sync/SyncNowButton.svelte'
-  import { accountAccess, accountMismatch, accountUnavailable } from '$lib/sync/binding'
+  import { accountAccess, accountMismatch } from '$lib/sync/binding'
   import { accountAuthenticated, startAccountState } from '$lib/sync/account'
   import StarredPage from '../routes/starred/StarredPage.svelte'
   import { collectionMatches } from '../routes/collections/collectionSearch'
@@ -22,22 +24,26 @@
   const syncMessage = $derived.by(() => {
     if (authPage) return ''
     if ($accountAccess.kind === 'blocked')
-      return router.route.name === 'settings' ? 'Sync blocked' : accountMismatch($accountAccess.name)
-    if ($accountAccess.kind === 'unavailable') return accountUnavailable
+      return router.route.name === 'settings' ? m.shell_sync_blocked() : accountMismatch($accountAccess.name)
+    if ($accountAccess.kind === 'unavailable') return m.core_account_unavailable()
     if (!syncStatus) return ''
-    if (!online || syncStatus.phase === 'offline')
-      return pending ? 'Saved on this device. Will sync when online.' : ''
+    if (!online || syncStatus.phase === 'offline') return pending ? m.shell_sync_offline() : ''
     if (syncStatus.phase === 'error')
       return syncStatus.last_error
-        ? `Sync error. ${syncStatus.last_error}`
-        : 'Sync error. Check your connection, then retry.'
-    if ($accountAuthenticated === false && syncStatus.phase === 'signed_out')
-      return 'Sign in to sync your Sync to Server collections'
+        ? m.shell_sync_error_detail({ detail: syncStatus.last_error })
+        : m.shell_sync_error()
+    if ($accountAuthenticated === false && syncStatus.phase === 'signed_out') return m.shell_sync_sign_in()
     if (pending === 0) return syncStatus.last_error ?? ''
-    if ($accountAuthenticated === false) return 'Sign in to sync your Sync to Server collections'
-    if (syncStatus.pending_uploads)
-      return `${syncStatus.pending_uploads} ${syncStatus.pending_uploads === 1 ? 'photo' : 'photos'} pending (${(syncStatus.pending_upload_bytes / 1048576).toFixed(1)} MB)`
-    return syncStatus.phase === 'syncing' ? 'Syncing' : 'Changes waiting to sync'
+    if ($accountAuthenticated === false) return m.shell_sync_sign_in()
+    if (syncStatus.pending_uploads) {
+      const size = new Intl.NumberFormat(getLocale(), {
+        minimumFractionDigits: 1,
+        maximumFractionDigits: 1,
+        useGrouping: false,
+      }).format(syncStatus.pending_upload_bytes / 1048576)
+      return m.shell_photos_pending({ count: syncStatus.pending_uploads, size })
+    }
+    return syncStatus.phase === 'syncing' ? m.shell_syncing() : m.shell_sync_waiting()
   })
   const syncTone = $derived(
     syncStatus?.phase === 'error' ||
@@ -99,13 +105,13 @@
 
 <div class="app-layout">
   {#if router.isDesktop}
-    <aside class="rail" aria-label="Collections">
-      <a class="rail-title" href="/">Collections</a>
+    <aside class="rail" aria-label={m.shell_collections()}>
+      <a class="rail-title" href="/">{m.shell_collections()}</a>
       <input
         class="rail-search"
         type="search"
-        aria-label="Filter collections"
-        placeholder="Filter collections"
+        aria-label={m.shell_filter_collections()}
+        placeholder={m.shell_filter_collections()}
         autocomplete="off"
         autocapitalize="off"
         spellcheck="false"
@@ -123,13 +129,13 @@
           }
         }}
       />
-      <a href="/starred">★ Starred</a>
+      <a href="/starred">{m.shell_starred_link()}</a>
       {#if search.trim() && filteredCollections.length === 0}<div
           class="rail-empty"
           role="status"
           aria-live="polite"
         >
-          No matches
+          {m.shell_no_matches()}
         </div>{/if}
       {#each collectionGroups as group (group.folder)}
         {#if group.folder}<div class="rail-folder">{group.folder}</div>{/if}
@@ -141,13 +147,14 @@
           >
         {/each}
       {/each}
-      <a class="rail-new" href="/?new=1">+ New collection</a>
-      <nav class="rail-account" aria-label="Account">
+      <a class="rail-new" href="/?new=1">{m.shell_new_collection_link()}</a>
+      <nav class="rail-account" aria-label={m.shell_account()}>
         {#if !authPage && $accountAuthenticated === true && $accountAccess.kind !== 'blocked' && $accountAccess.kind !== 'unavailable'}<a
-            href="/server">Server exports</a
-          >{:else if !authPage && $accountAuthenticated === false}<a href="/login?return=%2Fserver">Sign in</a
+            href="/server">{m.shell_server_exports()}</a
+          >{:else if !authPage && $accountAuthenticated === false}<a href="/login?return=%2Fserver"
+            >{m.shell_sign_in()}</a
           >{/if}
-        <a href="/settings">Settings</a>
+        <a href="/settings">{m.shell_settings()}</a>
       </nav>
     </aside>
   {/if}
@@ -157,15 +164,15 @@
       class="global-sync"
       class:empty={!syncMessage}
       class:danger={!authPage && syncTone === 'danger'}
-      aria-label="Sync status"
+      aria-label={m.shell_sync_status()}
       aria-live="polite"
     >
       <span class="global-sync-dot" aria-hidden="true"></span><span>{syncMessage}</span>
       {#if authPage || ($accountAccess.kind === 'blocked' && router.route.name === 'settings')}
         <span class="sync-action-placeholder" aria-hidden="true"></span>
-      {:else if $accountAccess.kind === 'blocked'}<a href="/settings">Account</a>
+      {:else if $accountAccess.kind === 'blocked'}<a href="/settings">{m.shell_account()}</a>
       {:else if $accountAuthenticated === false && (pending > 0 || syncStatus?.phase === 'signed_out')}<a
-          href="/login">Sign in</a
+          href="/login">{m.shell_sign_in()}</a
         >{:else if pending > 0 || syncStatus?.phase === 'error' || syncStatus?.phase === 'offline'}<SyncNowButton
         />{:else}<span class="sync-action-placeholder" aria-hidden="true"></span>{/if}
     </div>

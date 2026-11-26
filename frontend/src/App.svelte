@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { m } from '$lib/paraglide/messages.js'
   import Layout from './app/Layout.svelte'
   import { router } from './app/router.svelte'
   import { onMount } from 'svelte'
@@ -18,22 +19,21 @@
   onMount(() => {
     if (consumeInterruptedCamera())
       showToast({
-        message:
-          "The browser restarted while the camera was open, so that photo wasn't saved. Take it again. If this keeps happening, switch to the in-app camera in Settings.",
+        message: m.shell_camera_interrupted(),
       })
     void import('$lib/sync').then(({ syncEngine }) => syncEngine.start())
     const updateSW = registerSW({
       immediate: true,
       onNeedRefresh() {
         showToast({
-          message: 'Update available',
-          actionLabel: 'Reload',
+          message: m.shell_update_available(),
+          actionLabel: m.shell_reload(),
           action: () => updateSW(true),
           persistent: true,
         })
       },
       onOfflineReady() {
-        showToast({ message: 'Ready to work offline' })
+        showToast({ message: m.shell_offline_ready() })
       },
     })
     return installKeyboardShortcuts(() => window.dispatchEvent(new CustomEvent('capture: new-entry')))
@@ -60,9 +60,9 @@
     {:else if router.route.name === 'join'}<JoinPage />
     {:else if router.route.name === 'server'}<ServerPage />
     {:else}<section class="page">
-        <h1>Page not found</h1>
-        <p>The address does not match a Kufang Capture page.</p>
-        <a href="/">Back to Collections</a>
+        <h1>{m.shell_page_not_found()}</h1>
+        <p>{m.shell_page_not_found_description()}</p>
+        <a href="/">{m.shell_back_to_collections()}</a>
       </section>{/if}
   {/snippet}
 </Layout>

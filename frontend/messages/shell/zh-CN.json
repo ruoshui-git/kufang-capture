@@ -1,1 +1,193 @@
-{}
+{
+  "shell_collections": "清点单",
+  "shell_collection": "清点单",
+  "shell_page_title": "{title}｜Kufang Capture",
+  "shell_starred": "已加星标",
+  "shell_starred_link": "★ 已加星标",
+  "shell_sign_in": "登录",
+  "shell_settings": "设置",
+  "shell_account": "账号",
+  "shell_undo": "撤销",
+  "shell_export_zip": "导出 ZIP",
+  "shell_export_named": "导出“{name}”",
+  "shell_cancel": "取消",
+  "shell_new_collection": "新建清点单",
+  "shell_needs_review": "待复核",
+  "shell_collection_count": [
+    {
+      "declarations": ["input count", "local countPlural = count: plural"],
+      "selectors": ["countPlural"],
+      "match": {
+        "countPlural=*": "{count} 份清点单"
+      }
+    }
+  ],
+  "shell_entry_count": [
+    {
+      "declarations": ["input count", "local countPlural = count: plural"],
+      "selectors": ["countPlural"],
+      "match": {
+        "countPlural=*": "{count} 个条目"
+      }
+    }
+  ],
+  "shell_photo_count": [
+    {
+      "declarations": ["input count", "local countPlural = count: plural"],
+      "selectors": ["countPlural"],
+      "match": {
+        "countPlural=*": "{count} 张照片"
+      }
+    }
+  ],
+  "shell_incomplete_count": "{count} 个未填完整",
+  "shell_camera_interrupted": "浏览器在拍照时重启，照片未保存。请重新拍摄。如果反复出现此问题，请在设置中切换到应用内相机。",
+  "shell_update_available": "有新版本",
+  "shell_reload": "重新加载",
+  "shell_offline_ready": "可以离线使用了",
+  "shell_page_not_found": "找不到页面",
+  "shell_page_not_found_description": "此地址没有对应的 Kufang Capture 页面。",
+  "shell_back_to_collections": "返回清点单",
+  "shell_sync_blocked": "同步受阻",
+  "shell_sync_offline": "已保存到本设备，联网后将同步。",
+  "shell_sync_error_detail": "同步出错。{detail}",
+  "shell_sync_error": "同步出错。请检查网络连接后重试。",
+  "shell_sync_sign_in": "登录后可同步清点单",
+  "shell_syncing": "正在同步",
+  "shell_sync_waiting": "更改等待同步",
+  "shell_filter_collections": "筛选清点单",
+  "shell_no_matches": "没有匹配结果",
+  "shell_new_collection_link": "+ 新建清点单",
+  "shell_server_exports": "服务器导出",
+  "shell_sync_status": "同步状态",
+  "shell_photos_pending": [
+    {
+      "declarations": ["input count", "input size", "local countPlural = count: plural"],
+      "selectors": ["countPlural"],
+      "match": {
+        "countPlural=*": "{count} 张照片待上传（{size} MB）"
+      }
+    }
+  ],
+  "shell_collection_updated": "清点单已更新",
+  "shell_collection_created_signed_out": "已在本设备创建。登录后即可同步。",
+  "shell_collection_created_online": "已创建，将自动同步。",
+  "shell_collection_created_offline": "已创建，联网后将同步。",
+  "shell_collection_save_failed": "无法保存此清点单。请检查填写的内容后重试。",
+  "shell_collection_restored": "清点单已取消归档",
+  "shell_collection_archived": "清点单已归档",
+  "shell_collection_summary": "清点单概览",
+  "shell_cancel_selection": "取消选择",
+  "shell_select": "选择",
+  "shell_new_short": "+ 新建",
+  "shell_search_collections": "搜索清点单",
+  "shell_show_archived": "显示已归档",
+  "shell_no_archived_collections": "没有已归档的清点单",
+  "shell_no_collections_yet": "还没有清点单",
+  "shell_collections_empty_hint": "为一个房间或一次盘点新建清点单。即使离线，也能边清点边添加照片和数量。",
+  "shell_collections_no_match": "没有与“{query}”匹配的清点单",
+  "shell_clear_search": "清除搜索",
+  "shell_clear_folder_selection": "清除选择",
+  "shell_select_all": "全选",
+  "shell_not_in_folder": "未归入文件夹",
+  "shell_updated_at": "更新：{time}",
+  "shell_open_collection": "打开“{name}”",
+  "shell_show_sync_conflicts": "查看同步冲突",
+  "shell_collection_actions_for": "“{name}”的操作",
+  "shell_rename_edit": "重命名或编辑",
+  "shell_unarchive": "取消归档",
+  "shell_archive": "归档",
+  "shell_change_storage_mode": "更改存储模式…",
+  "shell_clear_from_device": "从本设备清除…",
+  "shell_export_selected": "导出所选清点单",
+  "shell_selected_count": "已选 {count} 项",
+  "shell_merge_action": "合并…",
+  "shell_edit_collection": "编辑清点单",
+  "shell_name": "名称",
+  "shell_collection_name_example": "例如：2 号殿 / A04",
+  "shell_folder": "文件夹",
+  "shell_unfiled": "未归档到文件夹",
+  "shell_description": "说明",
+  "shell_optional_details": "可填写补充说明",
+  "shell_storage": "存储",
+  "shell_local_only": "仅本设备",
+  "shell_local_only_description": "数据保存在本设备，可导出 ZIP 备份",
+  "shell_sync_to_server": "同步到服务器",
+  "shell_sync_to_server_description": "登录后将数据上传到 Capture 服务器",
+  "shell_enter_collection_name": "请输入名称后继续。",
+  "shell_saving": "正在保存…",
+  "shell_save_changes": "保存更改",
+  "shell_create_collection": "创建清点单",
+  "shell_collection_search_count": [
+    {
+      "declarations": ["input shown", "input total", "local totalPlural = total: plural"],
+      "selectors": ["totalPlural"],
+      "match": {
+        "totalPlural=*": "共 {total} 份清点单，匹配 {shown} 份"
+      }
+    }
+  ],
+  "shell_export_selected_title": [
+    {
+      "declarations": ["input count", "local countPlural = count: plural"],
+      "selectors": ["countPlural"],
+      "match": {
+        "countPlural=*": "导出 {count} 份清点单"
+      }
+    }
+  ],
+  "shell_entries": "条目",
+  "shell_entry_list_back": "‹ 清点单",
+  "shell_removed_from_collection": "已从{source}移除，仍保留在“{destination}”。",
+  "shell_removed_from_collection_more": "已从{source}移除，仍保留在“{destination}”及另外 {count} 份清点单中。",
+  "shell_this_collection": "此清点单",
+  "shell_collection_name_in_sentence": "“{name}”",
+  "shell_entry_deleted": "已删除 {sequence}",
+  "shell_no_quantity": "未填数量",
+  "shell_no_title": "未填标题",
+  "shell_no_photos": "没有照片",
+  "shell_incomplete": "未填完整",
+  "shell_needs_review_count": "{count} 个待复核",
+  "shell_quantities_by_unit": "按单位汇总数量",
+  "shell_quantity_without_unit": "{total}（无单位）",
+  "shell_entry_filters": "条目筛选",
+  "shell_all": "全部",
+  "shell_any_incomplete": "所有未填完整的条目",
+  "shell_pending_sync": "等待同步",
+  "shell_recently_deleted": "最近删除",
+  "shell_collection_actions": "清点单操作",
+  "shell_newest_first": "最新条目在前",
+  "shell_oldest_first": "最早条目在前",
+  "shell_last_edited": "按最近编辑排序",
+  "shell_import_collections": "从其他清点单导入",
+  "shell_move_entries": "移动条目…",
+  "shell_search_entries": "搜索条目",
+  "shell_new_entry": "＋ 新建条目",
+  "shell_no_matching_entries": "没有匹配的条目",
+  "shell_entries_hidden": "此清点单没有符合当前搜索或筛选条件的条目。",
+  "shell_show_all_entries": "显示所有条目",
+  "shell_no_entries_yet": "还没有条目",
+  "shell_entries_empty_hint": "先点按“新建条目”，再点按“添加照片”，开始清点。",
+  "shell_entry_search_count": "共 {total} 个条目，匹配 {shown} 个",
+  "shell_entry_display_count": "共 {total} 个条目，已显示 {shown} 个",
+  "shell_show_the_rest": "显示其余条目",
+  "shell_starred_back": "← 清点单",
+  "shell_starred_empty": "还没有加星标的条目。点按条目上的星标按钮，即可在这里找到它。",
+  "shell_archived": "已归档",
+  "shell_unstar_entry": "取消条目的星标",
+  "shell_merge_collections": "合并清点单",
+  "shell_merge_keep": "选择要保留的清点单",
+  "shell_merge_target": "目标清点单",
+  "shell_merge_modes_differ": "清点单必须使用相同的存储模式。",
+  "shell_merging": "正在合并…",
+  "shell_merged": "已将 {count} 份清点单合并到“{target}”，其余清点单已归档。",
+  "shell_merge_summary": [
+    {
+      "declarations": ["input count", "input source", "input target", "local countPlural = count: plural"],
+      "selectors": ["countPlural"],
+      "match": {
+        "countPlural=*": "将“{source}”中的 {count} 个条目移至{target}。"
+      }
+    }
+  ]
+}

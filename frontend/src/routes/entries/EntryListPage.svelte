@@ -5,9 +5,10 @@
 </script>
 
 <script lang="ts">
+  import { m } from '$lib/paraglide/messages.js'
   import { onMount, tick } from 'svelte'
   import { repo } from '$lib/db'
-  import { SETTING_KEYS, type CollectionSummary, type EntryRow } from '$lib/types'
+  import { formatSequence, SETTING_KEYS, type CollectionSummary, type EntryRow } from '$lib/types'
   import type { EntryFilter, EntrySort, Watchable } from '$lib/repo'
   import { navigate, saveScroll, restoreScroll } from '../../app/router.svelte'
   import { showToast } from '../../app/toasts.svelte'
@@ -213,24 +214,29 @@
     }
     // The live query may render after the user has already moved to another field.
     if (!row || document.activeElement !== focusOrigin) return
-    const titleInput = row?.querySelector('[aria-label="Entry title"]') as HTMLInputElement | null
+    const titleInput = row.querySelector<HTMLInputElement>('input.title')
     titleInput?.focus()
     row?.scrollIntoView({ block: 'center', behavior: 'auto' })
   }
   async function deleteRow(row: EntryRow) {
     await repo.deleteEntry(row.entry.id)
     const shared = row.entry.shared_with
-    const message = shared.length
-      ? `Removed from ${summary?.collection.name ?? 'this collection'}. Still in ${shared[0]!.collection_name}${shared.length > 1 ? ` (+${shared.length - 1})` : ''}.`
-      : `Deleted ${format(row.entry.sequence_number)}`
+    let message = m.shell_entry_deleted({ sequence: formatSequence(row.entry.sequence_number) })
+    if (shared.length) {
+      const source = summary
+        ? m.shell_collection_name_in_sentence({ name: summary.collection.name })
+        : m.shell_this_collection()
+      const destination = shared[0]!.collection_name
+      message =
+        shared.length === 1
+          ? m.shell_removed_from_collection({ source, destination })
+          : m.shell_removed_from_collection_more({ source, destination, count: shared.length - 1 })
+    }
     showToast({
       message,
-      actionLabel: 'Undo',
+      actionLabel: m.shell_undo(),
       action: () => void repo.restoreEntry(row.entry.id),
     })
-  }
-  function format(value: number) {
-    return `#${String(value).padStart(4, '0')}`
   }
   function openDetails(entry: EntryRow['entry']) {
     savePosition()
@@ -268,29 +274,31 @@
   const narrowed = $derived(filter !== 'all' || appliedSearch !== '')
   const incompleteLabel = $derived(
     filter === 'missing_quantity'
-      ? 'No quantity'
+      ? m.shell_no_quantity()
       : filter === 'missing_title'
-        ? 'No title'
+        ? m.shell_no_title()
         : filter === 'missing_photos'
-          ? 'No photos'
+          ? m.shell_no_photos()
           : filter === 'needs_review'
-            ? 'Needs review'
-            : 'Incomplete',
+            ? m.shell_needs_review()
+            : m.shell_incomplete(),
   )
   const incompleteFilterActive = $derived(
     ['incomplete', 'missing_quantity', 'missing_title', 'missing_photos', 'needs_review'].includes(filter),
   )
 </script>
 
-<svelte:head><title>{summary?.collection.name ?? 'Entries'} — Kufang Capture</title></svelte:head>
+<svelte:head
+  ><title>{m.shell_page_title({ title: summary?.collection.name ?? m.shell_entries() })}</title></svelte:head
+>
 <div class="list-with-detail" class:has-detail={!!detailEntryId}>
   <section class="page entries-page">
     <div class="collection-heading">
       <div class="heading-title">
         {#if !detailEntryId && !matchMedia('(min-width: 900px)').matches}<a class="back" href="/"
-            >‹ Collections</a
+            >{m.shell_entry_list_back()}</a
           >{/if}
-        <h1>{summary?.collection.name ?? 'Collection'}</h1>
+        <h1>{summary?.collection.name ?? m.shell_collection()}</h1>
         {#if summary}<button class="status-trigger" type="button" onclick={() => void openConflicts()}
             ><SyncStatusChip
               collectionId={summary.collection.id}
@@ -303,28 +311,31 @@
     </div>
     {#if summary}
       <div class="summary-chips">
-        <Chip>{summary.entry_count} {summary.entry_count === 1 ? 'entry' : 'entries'}</Chip>
-        <Chip>{summary.photo_count} {summary.photo_count === 1 ? 'photo' : 'photos'}</Chip>
+        <Chip>{m.shell_entry_count({ count: summary.entry_count })}</Chip>
+        <Chip>{m.shell_photo_count({ count: summary.photo_count })}</Chip>
         {#if summary.incomplete_count > 0}<button
             class="summary-filter"
-            onclick={() => (filter = 'incomplete')}><Chip>{summary.incomplete_count} incomplete</Chip></button
+            onclick={() => (filter = 'incomplete')}
+            ><Chip>{m.shell_incomplete_count({ count: summary.incomplete_count })}</Chip></button
           >{/if}
         {#if summary.needs_review_count > 0}<button
             class="summary-filter"
             onclick={() => (filter = 'needs_review')}
-            ><Chip>{summary.needs_review_count} needs review</Chip></button
+            ><Chip>{m.shell_needs_review_count({ count: summary.needs_review_count })}</Chip></button
           >{/if}
-        <div class="quantity-chips" aria-label="Quantities by unit">
+        <div class="quantity-chips" aria-label={m.shell_quantities_by_unit()}>
           {#each summary.quantity_by_unit as quantity (quantity.unit)}<Chip variant="quantity"
-              >{quantity.total} {quantity.unit || 'no unit'}</Chip
+              >{quantity.unit
+                ? `${quantity.total} ${quantity.unit}`
+                : m.shell_quantity_without_unit({ total: quantity.total })}</Chip
             >{/each}
         </div>
       </div>
     {/if}
     <div class="toolbar">
       <div class="filter-row">
-        <div class="filters" role="group" aria-label="Entry filters">
-          <button class:active={filter === 'all'} onclick={() => (filter = 'all')}>All</button>
+        <div class="filters" role="group" aria-label={m.shell_entry_filters()}>
+          <button class:active={filter === 'all'} onclick={() => (filter = 'all')}>{m.shell_all()}</button>
           <Menu
             label={incompleteLabel}
             triggerText={`${incompleteLabel} ▾`}
@@ -336,53 +347,55 @@
               aria-checked={filter === 'incomplete'}
               onclick={() => (filter = 'incomplete')}
             >
-              {filter === 'incomplete' ? '✓ ' : ''}Any incomplete
+              {filter === 'incomplete' ? '✓ ' : ''}{m.shell_any_incomplete()}
             </button>
             <button
               role="menuitemradio"
               aria-checked={filter === 'missing_quantity'}
               onclick={() => (filter = 'missing_quantity')}
             >
-              {filter === 'missing_quantity' ? '✓ ' : ''}No quantity
+              {filter === 'missing_quantity' ? '✓ ' : ''}{m.shell_no_quantity()}
             </button>
             <button
               role="menuitemradio"
               aria-checked={filter === 'missing_title'}
               onclick={() => (filter = 'missing_title')}
             >
-              {filter === 'missing_title' ? '✓ ' : ''}No title
+              {filter === 'missing_title' ? '✓ ' : ''}{m.shell_no_title()}
             </button>
             <button
               role="menuitemradio"
               aria-checked={filter === 'missing_photos'}
               onclick={() => (filter = 'missing_photos')}
             >
-              {filter === 'missing_photos' ? '✓ ' : ''}No photos
+              {filter === 'missing_photos' ? '✓ ' : ''}{m.shell_no_photos()}
             </button>
             <button
               role="menuitemradio"
               aria-checked={filter === 'needs_review'}
               onclick={() => (filter = 'needs_review')}
             >
-              {filter === 'needs_review' ? '✓ ' : ''}Needs review
+              {filter === 'needs_review' ? '✓ ' : ''}{m.shell_needs_review()}
             </button>
           </Menu>
-          <button class:active={filter === 'starred'} onclick={() => (filter = 'starred')}>Starred</button>
+          <button class:active={filter === 'starred'} onclick={() => (filter = 'starred')}
+            >{m.shell_starred()}</button
+          >
           <button class:active={filter === 'pending_sync'} onclick={() => (filter = 'pending_sync')}
-            >Pending sync</button
+            >{m.shell_pending_sync()}</button
           >
           <button class:active={filter === 'deleted'} onclick={() => (filter = 'deleted')}
-            >Recently Deleted</button
+            >{m.shell_recently_deleted()}</button
           >
         </div>
-        <Menu label="Collection actions">
+        <Menu label={m.shell_collection_actions()}>
           <button
             role="menuitemradio"
             aria-checked={sort === 'newest'}
             onclick={() => {
               sort = 'newest'
               void repo.setSetting(SETTING_KEYS.entrySort, sort)
-            }}>{sort === 'newest' ? '✓ ' : ''}Newest first</button
+            }}>{sort === 'newest' ? '✓ ' : ''}{m.shell_newest_first()}</button
           >
           <button
             role="menuitemradio"
@@ -390,7 +403,7 @@
             onclick={() => {
               sort = 'oldest'
               void repo.setSetting(SETTING_KEYS.entrySort, sort)
-            }}>{sort === 'oldest' ? '✓ ' : ''}Oldest first</button
+            }}>{sort === 'oldest' ? '✓ ' : ''}{m.shell_oldest_first()}</button
           >
           <button
             role="menuitemradio"
@@ -398,24 +411,24 @@
             onclick={() => {
               sort = 'last_edited'
               void repo.setSetting(SETTING_KEYS.entrySort, sort)
-            }}>{sort === 'last_edited' ? '✓ ' : ''}Last edited</button
+            }}>{sort === 'last_edited' ? '✓ ' : ''}{m.shell_last_edited()}</button
           >
-          <button role="menuitem" onclick={() => (exportOpen = true)}>Export ZIP</button>
-          <button role="menuitem" onclick={() => (importOpen = true)}>Import from another collection</button>
-          <button role="menuitem" onclick={() => (moveOpen = true)}>Move entries…</button>
+          <button role="menuitem" onclick={() => (exportOpen = true)}>{m.shell_export_zip()}</button>
+          <button role="menuitem" onclick={() => (importOpen = true)}>{m.shell_import_collections()}</button>
+          <button role="menuitem" onclick={() => (moveOpen = true)}>{m.shell_move_entries()}</button>
         </Menu>
       </div>
       <div class="search-row">
         <input
-          aria-label="Search entries"
-          placeholder="Search entries"
+          aria-label={m.shell_search_entries()}
+          placeholder={m.shell_search_entries()}
           value={search}
           oninput={(event) => searchChanged(event.currentTarget.value)}
         />
       </div>
       <div class="new-entry-toolbar">
         {#if summary?.collection.storage_mode === 'synced'}<SyncNowButton />{/if}
-        <Button variant="ink" onclick={() => void createEntry()}>＋ New Entry</Button>
+        <Button variant="ink" onclick={() => void createEntry()}>{m.shell_new_entry()}</Button>
       </div>
     </div>
     {#if filter === 'deleted'}
@@ -423,21 +436,17 @@
     {:else if rows.length === 0 && !loaded}
       <!-- Rows are still being read: an empty state here would claim the room has nothing in it. -->
     {:else if rows.length === 0 && narrowed}
-      <EmptyState title="No matching entries"
-        >Entries in this collection are hidden by the current search or filter.</EmptyState
-      >
+      <EmptyState title={m.shell_no_matching_entries()}>{m.shell_entries_hidden()}</EmptyState>
       <div class="list-status">
-        <Button variant="quiet" onclick={showAllEntries}>Show all entries</Button>
+        <Button variant="quiet" onclick={showAllEntries}>{m.shell_show_all_entries()}</Button>
       </div>
     {:else if rows.length === 0}
-      <EmptyState title="No entries yet"
-        >Tap New Entry, then Add Photo to start counting this room.</EmptyState
-      >
+      <EmptyState title={m.shell_no_entries_yet()}>{m.shell_entries_empty_hint()}</EmptyState>
     {:else}
       {#if narrowed}
         <div class="list-status">
-          <span>{rows.length} of {unitRows.length} entries match</span>
-          <Button variant="quiet" onclick={showAllEntries}>Show all entries</Button>
+          <span>{m.shell_entry_search_count({ shown: rows.length, total: unitRows.length })}</span>
+          <Button variant="quiet" onclick={showAllEntries}>{m.shell_show_all_entries()}</Button>
         </div>
       {/if}
       <div class="entry-list" bind:this={listElement}>
@@ -450,8 +459,8 @@
       </div>
       {#if visibleRows.length < rows.length}
         <div class="list-status">
-          <span>Showing {visibleRows.length} of {rows.length} entries</span>
-          <Button variant="quiet" onclick={() => (limit = rows.length)}>Show the rest</Button>
+          <span>{m.shell_entry_display_count({ shown: visibleRows.length, total: rows.length })}</span>
+          <Button variant="quiet" onclick={() => (limit = rows.length)}>{m.shell_show_the_rest()}</Button>
         </div>
       {/if}
     {/if}
@@ -461,7 +470,7 @@
   {/if}
 </div>
 {#if !matchMedia('(min-width: 900px)').matches}<div class="new-entry-bar">
-    <Button variant="ink" onclick={() => void createEntry()}>＋ New Entry</Button>
+    <Button variant="ink" onclick={() => void createEntry()}>{m.shell_new_entry()}</Button>
   </div>{/if}
 {#if viewerEntryId}<PhotoViewer
     bind:open={viewerOpen}
@@ -471,7 +480,7 @@
 {#if summary}<ExportSheet
     bind:open={exportOpen}
     scope={[summary.collection.id]}
-    title={`Export ${summary.collection.name}`}
+    title={m.shell_export_named({ name: summary.collection.name })}
   />{/if}
 {#if summary}<ImportEntriesSheet
     bind:open={importOpen}

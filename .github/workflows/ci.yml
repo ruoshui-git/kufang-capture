@@ -30,6 +30,7 @@ jobs:
       - run: pnpm format:check
       - run: pnpm lint
       - run: pnpm lint:design
+      - run: pnpm lint:i18n
       - run: pnpm test
       - run: pnpm build
 

@@ -4,11 +4,12 @@ Shared Codex/Claude guide. The product and architecture source of truth is [docs
 
 **This repository is PUBLIC.** Never commit secrets, private keys, passwords, tokens, session secrets, `.env` files or `credentials/`. Hostnames and public IPs are fine. If you need a secret at runtime, read it from the environment or from an operator file that is gitignored.
 
-## Owner decisions (2026-11-08)
+## Owner decisions (2026-11-08, 2026-11-26)
 
 - The domain is `https://capture.kufang.org`.
 - No server backups (nightly or off-VPS). This is a helper tool. A pre-deploy SQLite snapshot is kept only for rollback. Spec acceptance item 13 is waived.
 - The repository is public, `ruoshui-git/kufang-capture`. CI deploys with a forced-command SSH key.
+- The UI ships in English and Simplified Chinese (no Traditional). The app name stays "Capture"; exports stay English (2026-11-26).
 
 ## Invariants
 
@@ -21,7 +22,7 @@ Shared Codex/Claude guide. The product and architecture source of truth is [docs
 - **Server acknowledgment and hash verification come before `Backed up`.** The outbox is cleared only on acknowledgment.
 - **Camera honesty.** Show lens, zoom, focus or torch controls only when the browser exposes them through `enumerateDevices`/`getCapabilities`. Label digital crop as digital. Never claim a real-device result without evidence from the user.
 - **Independence.** Nothing here depends on Frappe, ERPNext, temple_inventory, MariaDB or Redis.
-- **English UI**, help and docs. User-entered text may be in any language.
+- **Fully bilingual UI: English and Simplified Chinese (`zh-CN`).** Every user-visible string, including aria labels, errors and toasts, goes through a Paraglide message in both locales (`frontend/messages/`, glossary in `frontend/messages/GLOSSARY.md`). `pnpm lint:i18n` and the `i18n-*` E2E specs enforce it. Persisted data, export archives and docs stay English. User-entered text may be in any language.
 
 ## Repository map
 
@@ -74,6 +75,7 @@ Run heavy commands (builds, Playwright, image builds) through `scripts/heavy`, w
 | Format (oxfmt) | `frontend/`: `pnpm format:check` |
 | Lint (oxlint) | `frontend/`: `pnpm lint` |
 | Design tokens | `frontend/`: `pnpm lint:design` |
+| Untranslated UI text | `frontend/`: `pnpm lint:i18n` |
 | Build | `frontend/`: `../scripts/heavy pnpm build` |
 | Backend tests | `backend/`: `uv run pytest -q` |
 | Ruff | `backend/`: `uv run ruff check . && uv run ruff format --check .` |

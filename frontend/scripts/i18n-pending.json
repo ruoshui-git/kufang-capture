@@ -1,8 +1,1 @@
-[
-  "src/app",
-  "src/App.svelte",
-  "src/components/collection",
-  "src/routes/collections",
-  "src/routes/entries",
-  "src/routes/starred"
-]
+[]

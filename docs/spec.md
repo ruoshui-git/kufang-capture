@@ -28,7 +28,7 @@ The user must be able to:
 - Download complete raw data **and original captured photo files**, with stable links between entries and photo files.
 - See useful counts without incorrectly combining different units.
 
-The application interface, field labels, errors, help, and developer documentation should be **English**. User-entered notes and later AI results can contain Chinese or other languages.
+The application interface, field labels, errors and help are available in **English and Simplified Chinese** (owner decision, 2026-11-26). The first launch follows the device language; Settings and the sign-in page switch it per device. Export archives and developer documentation stay **English**. User-entered notes and later AI results can contain Chinese or other languages.
 
 ## 2. Information model
 

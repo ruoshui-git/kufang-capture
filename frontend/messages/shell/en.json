@@ -1,1 +1,200 @@
-{}
+{
+  "shell_collections": "Collections",
+  "shell_collection": "Collection",
+  "shell_page_title": "{title} — Kufang Capture",
+  "shell_starred": "Starred",
+  "shell_starred_link": "★ Starred",
+  "shell_sign_in": "Sign in",
+  "shell_settings": "Settings",
+  "shell_account": "Account",
+  "shell_undo": "Undo",
+  "shell_export_zip": "Export ZIP",
+  "shell_export_named": "Export {name}",
+  "shell_cancel": "Cancel",
+  "shell_new_collection": "New collection",
+  "shell_needs_review": "Needs review",
+  "shell_collection_count": [
+    {
+      "declarations": ["input count", "local countPlural = count: plural"],
+      "selectors": ["countPlural"],
+      "match": {
+        "countPlural=one": "{count} collection",
+        "countPlural=*": "{count} collections"
+      }
+    }
+  ],
+  "shell_entry_count": [
+    {
+      "declarations": ["input count", "local countPlural = count: plural"],
+      "selectors": ["countPlural"],
+      "match": {
+        "countPlural=one": "{count} entry",
+        "countPlural=*": "{count} entries"
+      }
+    }
+  ],
+  "shell_photo_count": [
+    {
+      "declarations": ["input count", "local countPlural = count: plural"],
+      "selectors": ["countPlural"],
+      "match": {
+        "countPlural=one": "{count} photo",
+        "countPlural=*": "{count} photos"
+      }
+    }
+  ],
+  "shell_incomplete_count": "{count} incomplete",
+  "shell_camera_interrupted": "The browser restarted while the camera was open, so that photo wasn't saved. Take it again. If this keeps happening, switch to the in-app camera in Settings.",
+  "shell_update_available": "Update available",
+  "shell_reload": "Reload",
+  "shell_offline_ready": "Ready to work offline",
+  "shell_page_not_found": "Page not found",
+  "shell_page_not_found_description": "The address does not match a Kufang Capture page.",
+  "shell_back_to_collections": "Back to Collections",
+  "shell_sync_blocked": "Sync blocked",
+  "shell_sync_offline": "Saved on this device. Will sync when online.",
+  "shell_sync_error_detail": "Sync error. {detail}",
+  "shell_sync_error": "Sync error. Check your connection, then retry.",
+  "shell_sync_sign_in": "Sign in to sync your Sync to Server collections",
+  "shell_syncing": "Syncing",
+  "shell_sync_waiting": "Changes waiting to sync",
+  "shell_filter_collections": "Filter collections",
+  "shell_no_matches": "No matches",
+  "shell_new_collection_link": "+ New collection",
+  "shell_server_exports": "Server exports",
+  "shell_sync_status": "Sync status",
+  "shell_photos_pending": [
+    {
+      "declarations": ["input count", "input size", "local countPlural = count: plural"],
+      "selectors": ["countPlural"],
+      "match": {
+        "countPlural=one": "{count} photo pending ({size} MB)",
+        "countPlural=*": "{count} photos pending ({size} MB)"
+      }
+    }
+  ],
+  "shell_collection_updated": "Collection updated",
+  "shell_collection_created_signed_out": "Created locally. Sign in to start syncing.",
+  "shell_collection_created_online": "Created. Syncs automatically.",
+  "shell_collection_created_offline": "Created. Will sync when online.",
+  "shell_collection_save_failed": "Could not save this collection. Check the details and try again.",
+  "shell_collection_restored": "Collection restored",
+  "shell_collection_archived": "Collection archived",
+  "shell_collection_summary": "Collection summary",
+  "shell_cancel_selection": "Cancel selection",
+  "shell_select": "Select",
+  "shell_new_short": "+ New",
+  "shell_search_collections": "Search collections",
+  "shell_show_archived": "Show archived",
+  "shell_no_archived_collections": "No archived collections",
+  "shell_no_collections_yet": "No collections yet",
+  "shell_collections_empty_hint": "Create a collection for a room or counting session. Add photos and counts as you work, even when you are offline.",
+  "shell_collections_no_match": "No collections match “{query}”",
+  "shell_clear_search": "Clear search",
+  "shell_clear_folder_selection": "Clear",
+  "shell_select_all": "Select all",
+  "shell_not_in_folder": "Not in a folder",
+  "shell_updated_at": "Updated {time}",
+  "shell_open_collection": "Open {name}",
+  "shell_show_sync_conflicts": "Show sync conflicts",
+  "shell_collection_actions_for": "Actions for {name}",
+  "shell_rename_edit": "Rename / Edit",
+  "shell_unarchive": "Unarchive",
+  "shell_archive": "Archive",
+  "shell_change_storage_mode": "Change storage mode…",
+  "shell_clear_from_device": "Clear from this device…",
+  "shell_export_selected": "Export selected collections",
+  "shell_selected_count": "{count} selected",
+  "shell_merge_action": "Merge…",
+  "shell_edit_collection": "Edit collection",
+  "shell_name": "Name",
+  "shell_collection_name_example": "e.g. Temple 2 / A04",
+  "shell_folder": "Folder",
+  "shell_unfiled": "Unfiled",
+  "shell_description": "Description",
+  "shell_optional_details": "Optional details",
+  "shell_storage": "Storage",
+  "shell_local_only": "Local Only",
+  "shell_local_only_description": "Stays on this device; export ZIPs to back up",
+  "shell_sync_to_server": "Sync to Server",
+  "shell_sync_to_server_description": "Uploads to capture.kufang.org after you sign in",
+  "shell_enter_collection_name": "Enter a name to continue.",
+  "shell_saving": "Saving…",
+  "shell_save_changes": "Save changes",
+  "shell_create_collection": "Create collection",
+  "shell_collection_search_count": [
+    {
+      "declarations": ["input shown", "input total", "local totalPlural = total: plural"],
+      "selectors": ["totalPlural"],
+      "match": {
+        "totalPlural=one": "{shown} of {total} collection",
+        "totalPlural=*": "{shown} of {total} collections"
+      }
+    }
+  ],
+  "shell_export_selected_title": [
+    {
+      "declarations": ["input count", "local countPlural = count: plural"],
+      "selectors": ["countPlural"],
+      "match": {
+        "countPlural=one": "Export {count} collection",
+        "countPlural=*": "Export {count} collections"
+      }
+    }
+  ],
+  "shell_entries": "Entries",
+  "shell_entry_list_back": "‹ Collections",
+  "shell_removed_from_collection": "Removed from {source}. Still in {destination}.",
+  "shell_removed_from_collection_more": "Removed from {source}. Still in {destination} (+{count}).",
+  "shell_this_collection": "this collection",
+  "shell_collection_name_in_sentence": "{name}",
+  "shell_entry_deleted": "Deleted {sequence}",
+  "shell_no_quantity": "No quantity",
+  "shell_no_title": "No title",
+  "shell_no_photos": "No photos",
+  "shell_incomplete": "Incomplete",
+  "shell_needs_review_count": "{count} needs review",
+  "shell_quantities_by_unit": "Quantities by unit",
+  "shell_quantity_without_unit": "{total} no unit",
+  "shell_entry_filters": "Entry filters",
+  "shell_all": "All",
+  "shell_any_incomplete": "Any incomplete",
+  "shell_pending_sync": "Pending sync",
+  "shell_recently_deleted": "Recently Deleted",
+  "shell_collection_actions": "Collection actions",
+  "shell_newest_first": "Newest first",
+  "shell_oldest_first": "Oldest first",
+  "shell_last_edited": "Last edited",
+  "shell_import_collections": "Import from another collection",
+  "shell_move_entries": "Move entries…",
+  "shell_search_entries": "Search entries",
+  "shell_new_entry": "＋ New Entry",
+  "shell_no_matching_entries": "No matching entries",
+  "shell_entries_hidden": "Entries in this collection are hidden by the current search or filter.",
+  "shell_show_all_entries": "Show all entries",
+  "shell_no_entries_yet": "No entries yet",
+  "shell_entries_empty_hint": "Tap New Entry, then Add Photo to start counting this room.",
+  "shell_entry_search_count": "{shown} of {total} entries match",
+  "shell_entry_display_count": "Showing {shown} of {total} entries",
+  "shell_show_the_rest": "Show the rest",
+  "shell_starred_back": "← Collections",
+  "shell_starred_empty": "No starred entries yet. Use the star button on an entry to keep it here.",
+  "shell_archived": "Archived",
+  "shell_unstar_entry": "Unstar entry",
+  "shell_merge_collections": "Merge collections",
+  "shell_merge_keep": "Keep this collection",
+  "shell_merge_target": "the target",
+  "shell_merge_modes_differ": "Collections must use the same storage mode.",
+  "shell_merging": "Merging…",
+  "shell_merged": "Merged {count} collections into \"{target}\". The others are archived.",
+  "shell_merge_summary": [
+    {
+      "declarations": ["input count", "input source", "input target", "local countPlural = count: plural"],
+      "selectors": ["countPlural"],
+      "match": {
+        "countPlural=one": "{count} entry from {source} moves into {target}.",
+        "countPlural=*": "{count} entries from {source} move into {target}."
+      }
+    }
+  ]
+}

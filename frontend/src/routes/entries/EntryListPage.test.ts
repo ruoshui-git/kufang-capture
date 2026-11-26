@@ -1,6 +1,7 @@
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/svelte'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { createRepo } from '$lib/db'
+import { setLocale } from '$lib/paraglide/runtime.js'
 
 const { shared } = vi.hoisted(() => ({
   shared: { repo: null as unknown, navigate: vi.fn(), pickPhotos: vi.fn() },
@@ -56,9 +57,46 @@ beforeEach(async () => {
   shared.pickPhotos.mockResolvedValue([])
 })
 
-afterEach(() => cleanup())
+afterEach(async () => {
+  cleanup()
+  await setLocale('en', { reload: false })
+})
 
 describe('Entry list', () => {
+  it('shows a Chinese empty list and focuses the title after creating an entry', async () => {
+    await setLocale('zh-CN', { reload: false })
+    render(EntryListPage, { props: { collectionId } })
+    expect(await screen.findByText('还没有条目')).toBeInTheDocument()
+    const create = screen.getAllByRole('button', { name: /新建条目/ })[0]!
+    create.focus()
+    await fireEvent.click(create)
+    await waitFor(() => expect(document.querySelector('input.title')).toHaveFocus())
+    expect(await screen.findByText('1 个条目')).toBeInTheDocument()
+    expect(screen.getByRole('group', { name: '条目筛选' })).toBeInTheDocument()
+  })
+
+  it.each([1, 2])('gives a Chinese removal notification with %s other placements', async (placements) => {
+    await setLocale('zh-CN', { reload: false })
+    const entry = await repo.createEntry(collectionId, { title: 'Shared item' })
+    for (let number = 1; number <= placements; number++) {
+      const collection = await repo.createCollection({
+        name: `Stockroom ${number}`,
+        storage_mode: 'local_only',
+      })
+      await repo.importEntries(collection.id, [entry.id])
+    }
+    const { container } = render(EntryListPage, { props: { collectionId } })
+    await waitFor(() => expect(container.querySelector('.menu-cell summary')).toBeInTheDocument())
+    await fireEvent.click(container.querySelector('.menu-cell summary')!)
+    const deleteEntry = screen.getByRole('menuitem', { name: /Delete entry|删除条目/ })
+    await fireEvent.click(deleteEntry)
+    const expected =
+      placements === 1
+        ? '已从“Test room”移除，仍保留在“Stockroom 1”。'
+        : '已从“Test room”移除，仍保留在“Stockroom 1”及另外 1 份清点单中。'
+    await waitFor(() => expect(toasts.items[0]).toMatchObject({ message: expected, actionLabel: '撤销' }))
+  })
+
   it('creates the next numbered row and focuses its title without navigating', async () => {
     render(EntryListPage, { props: { collectionId } })
     await fireEvent.click(screen.getAllByRole('button', { name: /New Entry/ })[0]!)

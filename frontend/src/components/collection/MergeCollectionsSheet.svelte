@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { m } from '$lib/paraglide/messages.js'
   import { repo } from '$lib/db'
   import type { CollectionSummary, Id } from '$lib/types'
   import { showToast } from '../../app/toasts.svelte'
@@ -33,7 +34,7 @@
       )
       open = false
       showToast({
-        message: `Merged ${selected.length} collections into "${target.collection.name}". The others are archived.`,
+        message: m.shell_merged({ count: selected.length, target: target.collection.name }),
       })
     } catch (cause) {
       error = cause instanceof Error ? cause.message : String(cause)
@@ -43,16 +44,16 @@
   }
 </script>
 
-<Sheet bind:open title="Merge collections">
+<Sheet bind:open title={m.shell_merge_collections()}>
   {#snippet children()}
     <fieldset class="target-list">
-      <legend>Keep this collection</legend>
+      <legend>{m.shell_merge_keep()}</legend>
       {#each selected as item (item.collection.id)}
         <label class="target-row">
           <input type="radio" name="merge-target" value={item.collection.id} bind:group={targetId} />
           <span
             ><strong>{item.collection.name}</strong><small
-              >{item.entry_count} {item.entry_count === 1 ? 'entry' : 'entries'}</small
+              >{m.shell_entry_count({ count: item.entry_count })}</small
             ></span
           >
         </label>
@@ -60,16 +61,20 @@
     </fieldset>
     {#each sources as source (source.collection.id)}
       <p class="summary">
-        {source.entry_count}
-        {source.entry_count === 1 ? 'entry' : 'entries'} from {source.collection.name}
-        {source.entry_count === 1 ? 'moves' : 'move'} into {target?.collection.name ?? 'the target'}.
+        {m.shell_merge_summary({
+          count: source.entry_count,
+          source: source.collection.name,
+          target: target
+            ? m.shell_collection_name_in_sentence({ name: target.collection.name })
+            : m.shell_merge_target(),
+        })}
       </p>
     {/each}
-    {#if !modesMatch}<p class="blocked" role="alert">Collections must use the same storage mode.</p>{/if}
+    {#if !modesMatch}<p class="blocked" role="alert">{m.shell_merge_modes_differ()}</p>{/if}
     {#if error}<p class="blocked" role="alert">{error}</p>{/if}
     <div class="actions">
       <Button disabled={!modesMatch || !target || busy} onclick={() => void merge()}
-        >{busy ? 'Merging…' : 'Merge collections'}</Button
+        >{busy ? m.shell_merging() : m.shell_merge_collections()}</Button
       >
     </div>
   {/snippet}

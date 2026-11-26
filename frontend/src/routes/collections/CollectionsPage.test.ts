@@ -23,6 +23,7 @@ vi.mock('../../app/toasts.svelte', () => ({ showToast: showToastSpy }))
 vi.mock('$lib/export/device', () => ({ exportFromDevice }))
 import CollectionsPage from './CollectionsPage.svelte'
 import { accountAuthenticated } from '$lib/sync/account'
+import { setLocale } from '$lib/paraglide/runtime.js'
 
 const sample = {
   collection: {
@@ -43,7 +44,10 @@ const sample = {
   ],
 } as never
 
-afterEach(() => cleanup())
+afterEach(async () => {
+  cleanup()
+  await setLocale('en', { reload: false })
+})
 beforeEach(() => {
   vi.clearAllMocks()
   accountAuthenticated.set(null)
@@ -62,6 +66,26 @@ beforeEach(() => {
 })
 
 describe('Collections page', () => {
+  it('shows Chinese counts, dates, storage choices and a failed save', async () => {
+    await setLocale('zh-CN', { reload: false })
+    fakeRepo.createCollection.mockRejectedValueOnce(new Error())
+    render(CollectionsPage)
+    expect(screen.getByRole('heading', { name: '清点单' })).toBeInTheDocument()
+    expect(screen.getByText('1 份清点单')).toBeInTheDocument()
+    expect(screen.getAllByText('2 个条目')).toHaveLength(2)
+    expect(screen.getByRole('link', { name: '打开“Temple 2 / A04”' })).toBeInTheDocument()
+    expect(screen.getByText(/更新：/)).toBeInTheDocument()
+
+    await fireEvent.click(screen.getByRole('button', { name: '新建清点单' }))
+    expect(screen.getByRole('dialog', { name: '新建清点单' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '创建清点单' })).toBeDisabled()
+    expect(screen.getByRole('radio', { name: /仅本设备/ })).toBeChecked()
+    expect(screen.getByRole('radio', { name: /同步到服务器/ })).toBeInTheDocument()
+    await fireEvent.input(screen.getByLabelText('名称'), { target: { value: 'Room name' } })
+    await fireEvent.click(screen.getByRole('button', { name: '创建清点单' }))
+    expect(await screen.findByRole('alert')).toHaveTextContent('无法保存此清点单。请检查填写的内容后重试。')
+  })
+
   it('shows collection and entry totals without any global quantity', () => {
     render(CollectionsPage)
     expect(screen.getByText('1 collection')).toBeInTheDocument()

@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { m } from '$lib/paraglide/messages.js'
   import { onMount } from 'svelte'
   import { onDestroy } from 'svelte'
   import SettingsIcon from '@lucide/svelte/icons/settings'
@@ -91,7 +92,7 @@
   const displayedItems = $derived(groups.flatMap((group) => group.items))
   const searchStatus = $derived(
     searching && summaries.length > 0
-      ? `${displayedItems.length} of ${summaries.length} ${summaries.length === 1 ? 'collection' : 'collections'}`
+      ? m.shell_collection_search_count({ shown: displayedItems.length, total: summaries.length })
       : '',
   )
   const allItemsInDisplayOrder = $derived.by(() => {
@@ -201,7 +202,7 @@
           description: description.trim(),
           folder: folder.trim(),
         })
-        showToast({ message: 'Collection updated' })
+        showToast({ message: m.shell_collection_updated() })
       } else {
         const created = await repo.createCollection({
           name: name.trim(),
@@ -213,16 +214,16 @@
         if (storageMode === 'synced') {
           if ($accountAuthenticated === false) {
             showToast({
-              message: 'Created locally. Sign in to start syncing.',
-              actionLabel: 'Sign in',
+              message: m.shell_collection_created_signed_out(),
+              actionLabel: m.shell_sign_in(),
               action: () => navigate(`/login?return=${encodeURIComponent(`/c/${created.id}`)}`),
             })
           } else {
             showToast({
               message:
                 $accountAuthenticated === true
-                  ? 'Created. Syncs automatically.'
-                  : 'Created. Will sync when online.',
+                  ? m.shell_collection_created_online()
+                  : m.shell_collection_created_offline(),
             })
           }
         }
@@ -233,7 +234,7 @@
       }
       sheetOpen = false
     } catch (cause) {
-      error = 'Could not save this collection. Check the details and try again.'
+      error = m.shell_collection_save_failed()
     } finally {
       saving = false
     }
@@ -241,53 +242,56 @@
   async function toggleArchive(item: CollectionSummary) {
     if (item.collection.status === 'archived') {
       await repo.unarchiveCollection(item.collection.id)
-      showToast({ message: 'Collection restored' })
+      showToast({ message: m.shell_collection_restored() })
     } else {
       await repo.archiveCollection(item.collection.id)
       showToast({
-        message: 'Collection archived',
-        actionLabel: 'Undo',
+        message: m.shell_collection_archived(),
+        actionLabel: m.shell_undo(),
         action: () => void repo.unarchiveCollection(item.collection.id),
       })
     }
   }
 </script>
 
-<svelte:head><title>Collections — Kufang Capture</title></svelte:head>
+<svelte:head><title>{m.shell_page_title({ title: m.shell_collections() })}</title></svelte:head>
 <svelte:window onkeydown={selectionKeydown} />
 <section class="page collections-page">
   <div class="page-heading">
     <div>
-      <h1>Collections</h1>
-      <div class="summary-copy" aria-label="Collection summary">
-        <span class="summary-chip"
-          >{summaries.length} {summaries.length === 1 ? 'collection' : 'collections'}</span
-        >
-        <span class="summary-chip">{totalEntries} {totalEntries === 1 ? 'entry' : 'entries'}</span>
+      <h1>{m.shell_collections()}</h1>
+      <div class="summary-copy" aria-label={m.shell_collection_summary()}>
+        <span class="summary-chip">{m.shell_collection_count({ count: summaries.length })}</span>
+        <span class="summary-chip">{m.shell_entry_count({ count: totalEntries })}</span>
       </div>
     </div>
     <div class="page-heading-actions">
       {#if selectionMode}
-        <button class="button quiet" type="button" onclick={leaveSelection}>Cancel selection</button>
+        <button class="button quiet" type="button" onclick={leaveSelection}
+          >{m.shell_cancel_selection()}</button
+        >
       {:else}
         <button
           bind:this={selectButton}
           class="button quiet select-action"
           type="button"
-          onclick={enterSelection}>Select</button
+          onclick={enterSelection}>{m.shell_select()}</button
         >
       {/if}
-      <a class="button quiet" href="/starred">★ Starred</a>
-      <a class="button quiet icon-link" href="/settings" aria-label="Settings" title="Settings"
-        ><SettingsIcon size={20} aria-hidden="true" /></a
+      <a class="button quiet" href="/starred">{m.shell_starred_link()}</a>
+      <a
+        class="button quiet icon-link"
+        href="/settings"
+        aria-label={m.shell_settings()}
+        title={m.shell_settings()}><SettingsIcon size={20} aria-hidden="true" /></a
       >
       <button
         class="button ink new-collection-action"
         type="button"
-        aria-label="New collection"
+        aria-label={m.shell_new_collection()}
         onclick={openNew}
       >
-        <span aria-hidden="true">+ New</span>
+        <span aria-hidden="true">{m.shell_new_short()}</span>
       </button>
     </div>
   </div>
@@ -296,8 +300,8 @@
       <input
         bind:this={searchInput}
         type="search"
-        aria-label="Search collections"
-        placeholder="Search collections"
+        aria-label={m.shell_search_collections()}
+        placeholder={m.shell_search_collections()}
         enterkeyhint="search"
         autocomplete="off"
         autocapitalize="off"
@@ -306,18 +310,19 @@
         onkeydown={searchKeydown}
       />
     </div>
-    <label class="toggle-row"><input type="checkbox" bind:checked={includeArchived} /> Show archived</label>
+    <label class="toggle-row"
+      ><input type="checkbox" bind:checked={includeArchived} /> {m.shell_show_archived()}</label
+    >
   </div>
   <p class="search-status" aria-live="polite">{searchStatus}</p>
   {#if summaries.length === 0}
-    <EmptyState title={includeArchived ? 'No archived collections' : 'No collections yet'}
-      >Create a collection for a room or counting session. Add photos and counts as you work, even when you
-      are offline.</EmptyState
+    <EmptyState title={includeArchived ? m.shell_no_archived_collections() : m.shell_no_collections_yet()}
+      >{m.shell_collections_empty_hint()}</EmptyState
     >
   {:else}
     {#if searching && displayedItems.length === 0}
-      <EmptyState title={`No collections match “${search.trim()}”`}>
-        <button class="button quiet" type="button" onclick={clearSearch}>Clear search</button>
+      <EmptyState title={m.shell_collections_no_match({ query: search.trim() })}>
+        <button class="button quiet" type="button" onclick={clearSearch}>{m.shell_clear_search()}</button>
       </EmptyState>
     {:else}{#each groups as group (group.name)}
         {#if group.name}<div class="folder-heading-row">
@@ -338,13 +343,14 @@
                 type="button"
                 onclick={() => toggleFolderSelection(group.items)}
               >
-                {#if group.items.every((item) => selectedIds.includes(item.collection.id))}Clear{:else}Select
-                  all{/if}
+                {group.items.every((item) => selectedIds.includes(item.collection.id))
+                  ? m.shell_clear_folder_selection()
+                  : m.shell_select_all()}
               </button>
             {/if}
           </div>{:else if groups.length > 1}<div class="folder-heading-row">
             <h2 class="unfiled-heading">
-              Not in a folder <span class="chip folder-count">{group.items.length}</span>
+              {m.shell_not_in_folder()} <span class="chip folder-count">{group.items.length}</span>
             </h2>
             {#if selectionMode}
               <button
@@ -352,8 +358,9 @@
                 type="button"
                 onclick={() => toggleFolderSelection(group.items)}
               >
-                {#if group.items.every((item) => selectedIds.includes(item.collection.id))}Clear{:else}Select
-                  all{/if}
+                {group.items.every((item) => selectedIds.includes(item.collection.id))
+                  ? m.shell_clear_folder_selection()
+                  : m.shell_select_all()}
               </button>
             {/if}
           </div>{/if}
@@ -386,43 +393,39 @@
                       <span class="collection-title">{item.collection.name}</span>
                     </span>
                     <span class="collection-meta">
-                      <span class="stat-chip"
-                        >{item.entry_count} {item.entry_count === 1 ? 'entry' : 'entries'}</span
-                      >
-                      <span class="stat-chip"
-                        >{item.photo_count} {item.photo_count === 1 ? 'photo' : 'photos'}</span
-                      >
+                      <span class="stat-chip">{m.shell_entry_count({ count: item.entry_count })}</span>
+                      <span class="stat-chip">{m.shell_photo_count({ count: item.photo_count })}</span>
                       <span class="stat-chip" class:incomplete={item.incomplete_count > 0}
-                        >{item.incomplete_count} incomplete</span
+                        >{m.shell_incomplete_count({ count: item.incomplete_count })}</span
                       >
                     </span>
-                    <span class="collection-updated">Updated {relativeTime(item.last_activity_at)}</span>
+                    <span class="collection-updated"
+                      >{m.shell_updated_at({ time: relativeTime(item.last_activity_at) })}</span
+                    >
                   </div>{:else}<a
                     class="collection-open"
                     href="/c/{item.collection.id}"
-                    aria-label="Open {item.collection.name}"
+                    aria-label={m.shell_open_collection({ name: item.collection.name })}
                   >
                     <span class="collection-title-row">
                       <span class="collection-title">{item.collection.name}</span>
                     </span>
                     <span class="collection-meta">
-                      <span class="stat-chip"
-                        >{item.entry_count} {item.entry_count === 1 ? 'entry' : 'entries'}</span
-                      >
-                      <span class="stat-chip"
-                        >{item.photo_count} {item.photo_count === 1 ? 'photo' : 'photos'}</span
-                      >
+                      <span class="stat-chip">{m.shell_entry_count({ count: item.entry_count })}</span>
+                      <span class="stat-chip">{m.shell_photo_count({ count: item.photo_count })}</span>
                       <span class="stat-chip" class:incomplete={item.incomplete_count > 0}>
-                        {item.incomplete_count} incomplete
+                        {m.shell_incomplete_count({ count: item.incomplete_count })}
                       </span>
                     </span>
-                    <span class="collection-updated">Updated {relativeTime(item.last_activity_at)}</span>
+                    <span class="collection-updated"
+                      >{m.shell_updated_at({ time: relativeTime(item.last_activity_at) })}</span
+                    >
                   </a>{/if}
                 {#if !selectionMode}
                   <button
                     class="status-trigger"
                     type="button"
-                    aria-label="Show sync conflicts"
+                    aria-label={m.shell_show_sync_conflicts()}
                     onclick={() => void openConflicts()}
                     ><SyncStatusChip
                       collectionId={item.collection.id}
@@ -432,31 +435,31 @@
                     /></button
                   >
                   <div class="collection-card-menu">
-                    <Menu label={`Actions for ${item.collection.name}`}>
-                      <button role="menuitem" onclick={() => openEdit(item)}>Rename / Edit</button>
+                    <Menu label={m.shell_collection_actions_for({ name: item.collection.name })}>
+                      <button role="menuitem" onclick={() => openEdit(item)}>{m.shell_rename_edit()}</button>
                       <button role="menuitem" onclick={() => toggleArchive(item)}>
-                        {item.collection.status === 'archived' ? 'Unarchive' : 'Archive'}
+                        {item.collection.status === 'archived' ? m.shell_unarchive() : m.shell_archive()}
                       </button>
                       <button
                         role="menuitem"
                         onclick={() => {
                           selected = item
                           exportOpen = true
-                        }}>Export ZIP</button
+                        }}>{m.shell_export_zip()}</button
                       >
                       <button
                         role="menuitem"
                         onclick={() => {
                           selected = item
                           storageOpen = true
-                        }}>Change storage mode…</button
+                        }}>{m.shell_change_storage_mode()}</button
                       >
                       <button
                         role="menuitem"
                         onclick={() => {
                           selected = item
                           clearOpen = true
-                        }}>Clear from this device…</button
+                        }}>{m.shell_clear_from_device()}</button
                       >
                     </Menu>
                   </div>
@@ -468,30 +471,36 @@
   {/if}
 </section>
 {#if selectionMode}
-  <div class="selection-bar" role="region" aria-label="Export selected collections">
-    <span aria-live="polite">{selectedIds.length} selected</span>
+  <div class="selection-bar" role="region" aria-label={m.shell_export_selected()}>
+    <span aria-live="polite">{m.shell_selected_count({ count: selectedIds.length })}</span>
     <div class="selection-actions">
       <Button variant="quiet" disabled={selectedIds.length < 2} onclick={() => (mergeOpen = true)}
-        >Merge…</Button
+        >{m.shell_merge_action()}</Button
       >
-      <Button disabled={selectedIds.length === 0} onclick={openSelectedExport}>Export ZIP</Button>
-      <Button variant="quiet" onclick={leaveSelection}>Cancel</Button>
+      <Button disabled={selectedIds.length === 0} onclick={openSelectedExport}>{m.shell_export_zip()}</Button>
+      <Button variant="quiet" onclick={leaveSelection}>{m.shell_cancel()}</Button>
     </div>
   </div>
 {/if}
 {#if mergeOpen && selectedInDisplayOrder.length >= 2}
   <MergeCollectionsSheet bind:open={mergeOpen} selected={selectedInDisplayOrder} />
 {/if}
-<Sheet bind:open={sheetOpen} title={editing ? 'Edit collection' : 'New collection'}>
+<Sheet bind:open={sheetOpen} title={editing ? m.shell_edit_collection() : m.shell_new_collection()}>
   {#snippet children()}
     <form class="collection-form" onsubmit={save}>
-      <TextField label="Name" bind:value={name} required placeholder="e.g. Temple 2 / A04" />
+      <TextField
+        label={m.shell_name()}
+        bind:value={name}
+        required
+        placeholder={m.shell_collection_name_example()}
+      />
       <label class="field"
-        >Folder <input
-          aria-label="Folder"
+        >{m.shell_folder()}
+        <input
+          aria-label={m.shell_folder()}
           bind:value={folder}
           list="collection-folders"
-          placeholder="Unfiled"
+          placeholder={m.shell_unfiled()}
         /></label
       >
       <datalist id="collection-folders"
@@ -500,20 +509,21 @@
               .filter(Boolean))] as existing}<option value={existing}></option>{/each}</datalist
       >
       <label class="field"
-        >Description <textarea bind:value={description} rows="3" placeholder="Optional details"
+        >{m.shell_description()}
+        <textarea bind:value={description} rows="3" placeholder={m.shell_optional_details()}
         ></textarea></label
       >
       {#if !editing}
         <fieldset class="storage-choice">
-          <legend>Storage</legend>
+          <legend>{m.shell_storage()}</legend>
           <label class="choice"
             ><input type="radio" name="storage-mode" value="local_only" bind:group={storageMode} /><span
-              ><strong>Local Only</strong><small>Stays on this device; export ZIPs to back up</small></span
+              ><strong>{m.shell_local_only()}</strong><small>{m.shell_local_only_description()}</small></span
             ></label
           >
           <label class="choice"
             ><input type="radio" name="storage-mode" value="synced" bind:group={storageMode} /><span
-              ><strong>Sync to Server</strong><small>Uploads to capture.kufang.org after you sign in</small
+              ><strong>{m.shell_sync_to_server()}</strong><small>{m.shell_sync_to_server_description()}</small
               ></span
             ></label
           >
@@ -521,13 +531,17 @@
       {/if}
       {#if error}<p class="form-error" role="alert">{error}</p>{/if}
       {#if !editing && !name.trim()}
-        <p class="form-hint">Enter a name to continue.</p>
+        <p class="form-hint">{m.shell_enter_collection_name()}</p>
       {/if}
       <div class="form-actions">
-        <Button variant="quiet" onclick={() => (sheetOpen = false)}>Cancel</Button><Button
+        <Button variant="quiet" onclick={() => (sheetOpen = false)}>{m.shell_cancel()}</Button><Button
           type="submit"
           disabled={!name.trim() || saving}
-          >{saving ? 'Saving…' : editing ? 'Save changes' : 'Create collection'}</Button
+          >{saving
+            ? m.shell_saving()
+            : editing
+              ? m.shell_save_changes()
+              : m.shell_create_collection()}</Button
         >
       </div>
     </form>
@@ -546,8 +560,10 @@
         ? [selected.collection.id]
         : []}
     title={selectedIds.length > 0
-      ? `Export ${selectedIds.length} ${selectedIds.length === 1 ? 'collection' : 'collections'}`
-      : `Export ${selected?.collection.name ?? 'ZIP'}`}
+      ? m.shell_export_selected_title({ count: selectedIds.length })
+      : selected
+        ? m.shell_export_named({ name: selected.collection.name })
+        : m.shell_export_zip()}
   />
 {/if}
 {#if conflictOpen && ConflictSheetView}<ConflictSheetView bind:open={conflictOpen} />{/if}
@@ -694,6 +710,15 @@
       width: 100%;
       flex-wrap: wrap;
       justify-content: flex-start;
+    }
+    :global([lang='zh-CN']) .page-heading-actions .button:not(.icon-link) {
+      padding-inline: var(--space-3);
+    }
+    :global([lang='zh-CN']) .collection-form {
+      gap: var(--space-3);
+    }
+    :global([lang='zh-CN'] dialog.sheet):has(.collection-form) {
+      max-height: calc(100dvh - var(--space-5));
     }
     .select-action {
       min-width: 0;

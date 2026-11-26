@@ -26,6 +26,7 @@ vi.mock('./router.svelte', async (importOriginal) => {
 import Layout from './Layout.svelte'
 import { router } from './router.svelte'
 import { accountAuthenticated } from '$lib/sync/account'
+import { setLocale } from '$lib/paraglide/runtime.js'
 
 function summary(id: string, name: string, folder = '') {
   return {
@@ -43,9 +44,14 @@ function summary(id: string, name: string, folder = '') {
 const children = createRawSnippet(() => ({ render: () => '<p>page</p>' }))
 let unsubscribeSummary: ReturnType<typeof vi.fn>
 
-afterEach(() => cleanup())
+afterEach(async () => {
+  cleanup()
+  await setLocale('en', { reload: false })
+})
 beforeEach(() => {
   vi.clearAllMocks()
+  shared.statusListener = undefined
+  accountAuthenticated.set(null)
   router.isDesktop = true
   unsubscribeSummary = vi.fn()
   fakeRepo.watchCollectionSummaries.mockReturnValue({
@@ -65,6 +71,34 @@ function railRow(name: string) {
 }
 
 describe('Desktop rail search', () => {
+  it('uses Chinese in sync status, including plural uploads and fallback errors', async () => {
+    await setLocale('zh-CN', { reload: false })
+    const { container } = render(Layout, { children })
+    const slot = container.querySelector('.global-sync')
+    await waitFor(() => expect(shared.statusListener).toBeTypeOf('function'))
+    const status = {
+      phase: 'syncing',
+      online: true,
+      authenticated: true,
+      last_success_at: null,
+      last_error: null,
+      pending_mutations: 1,
+      pending_uploads: 2,
+      pending_upload_bytes: 262144,
+      conflicts: 0,
+      per_collection: {},
+    }
+    accountAuthenticated.set(true)
+    shared.statusListener?.(status)
+    await waitFor(() => expect(slot).toHaveTextContent('2 张照片待上传（0.3 MB）'))
+    shared.statusListener?.({ ...status, pending_uploads: 0, phase: 'idle' })
+    await waitFor(() => expect(slot).toHaveTextContent('更改等待同步'))
+    shared.statusListener?.({ ...status, phase: 'offline' })
+    await waitFor(() => expect(slot).toHaveTextContent('已保存到本设备，联网后将同步。'))
+    shared.statusListener?.({ ...status, phase: 'error' })
+    await waitFor(() => expect(slot).toHaveTextContent('同步出错。请检查网络连接后重试。'))
+  })
+
   it('keeps the polite sync slot mounted while its message changes', async () => {
     const { container } = render(Layout, { children })
     const slot = container.querySelector('.global-sync')

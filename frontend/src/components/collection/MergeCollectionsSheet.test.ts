@@ -5,18 +5,34 @@ const { repo, showToast } = vi.hoisted(() => ({ repo: { mergeCollections: vi.fn(
 vi.mock('$lib/db', () => ({ repo }))
 vi.mock('../../app/toasts.svelte', () => ({ showToast }))
 import MergeCollectionsSheet from './MergeCollectionsSheet.svelte'
+import { m } from '$lib/paraglide/messages.js'
+import { setLocale } from '$lib/paraglide/runtime.js'
 
 const collection = (id: string, name: string, created_at: string, storage_mode = 'local_only') =>
   ({
     collection: { id, name, created_at, storage_mode },
     entry_count: 3,
   }) as never
-afterEach(() => {
+afterEach(async () => {
   cleanup()
   vi.clearAllMocks()
+  await setLocale('en', { reload: false })
 })
 
 describe('MergeCollectionsSheet', () => {
+  it('renders the localized repository error and keeps the selection open', async () => {
+    await setLocale('zh-CN', { reload: false })
+    repo.mergeCollections.mockRejectedValueOnce(new Error(m.core_source_collections_invalid()))
+    render(MergeCollectionsSheet, {
+      props: { selected: [collection('a', 'Room A', '1'), collection('b', 'Room B', '2')], open: true },
+    })
+    expect(screen.getByText('将“Room B”中的 3 个条目移至“Room A”。')).toBeInTheDocument()
+    await fireEvent.click(screen.getByRole('button', { name: '合并清点单' }))
+    expect(await screen.findByRole('alert')).toHaveTextContent('来源清点单必须存在，且不能与目标清点单相同。')
+    expect(screen.getByRole('dialog', { name: '合并清点单' })).toBeInTheDocument()
+    expect(showToast).not.toHaveBeenCalled()
+  })
+
   it('defaults to the oldest target, blocks different storage modes, and merges selected sources', async () => {
     repo.mergeCollections.mockResolvedValue({ created: [], restored: [], merged_into_existing: [] })
     render(MergeCollectionsSheet, {

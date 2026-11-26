@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { m } from '$lib/paraglide/messages.js'
   import { repo } from '$lib/db'
   import { entryDisplayTitle, formatSequence, type StarredRow } from '$lib/types'
   import ThumbnailStrip from '../../components/entry/ThumbnailStrip.svelte'
@@ -24,18 +25,19 @@
       .join(' · ')
 </script>
 
-<svelte:head><title>Starred — Kufang Capture</title></svelte:head>
+<svelte:head><title>{m.shell_page_title({ title: m.shell_starred() })}</title></svelte:head>
 <section class="page">
-  <a class="starred-back" href="/">← Collections</a>
-  <h1>Starred</h1>
+  <a class="starred-back" href="/">{m.shell_starred_back()}</a>
+  <h1>{m.shell_starred()}</h1>
   {#if !rows.length}
-    <p>No starred entries yet. Use the star button on an entry to keep it here.</p>
+    <p>{m.shell_starred_empty()}</p>
   {:else}
     {#each groups as group (group.collection.id)}
       <section class="starred-group">
         <h2>
           {group.collection.name}{#if group.collection.folder}<small>{group.collection.folder}</small>{/if}
-          {#if group.collection.status === 'archived'}<small class="archived-note">Archived</small>{/if}
+          {#if group.collection.status === 'archived'}<small class="archived-note">{m.shell_archived()}</small
+            >{/if}
         </h2>
         {#each group.rows as row (row.entry.id)}
           <div class="starred-row">
@@ -49,12 +51,13 @@
               <span class="starred-title-row">
                 <span class="sequence-label">{formatSequence(row.entry.sequence_number)}</span>
                 <span class="entry-title">{entryDisplayTitle(row.entry)}</span>
-                {#if row.entry.review_status === 'needs_review'}<span class="review-badge">Needs review</span
+                {#if row.entry.review_status === 'needs_review'}<span class="review-badge"
+                    >{m.shell_needs_review()}</span
                   >{/if}
               </span>
               {#if notesFor(row)}<span class="entry-notes">{notesFor(row)}</span>{/if}
             </a><button
-              aria-label="Unstar entry"
+              aria-label={m.shell_unstar_entry()}
               aria-pressed="true"
               onclick={() => void repo.setEntryStarred(row.entry.id, false)}>★</button
             >
@@ -144,6 +147,10 @@
     color: var(--color-warn);
     padding: var(--space-1) var(--space-3);
     font-size: var(--text-xs);
+  }
+  :global([lang='zh-CN']) .review-badge,
+  :global([lang='zh-CN']) .archived-note {
+    white-space: nowrap;
   }
   .starred-row button {
     min-width: var(--size-touch);

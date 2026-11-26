@@ -60,8 +60,9 @@ Use these everywhere: rows, Detail, collection cards, header badges.
 
 | Token | Value | Use |
 |---|---|---|
-| `--font-display` | `'Barlow Condensed', system-ui, sans-serif` (600) | Tag numbers, screen titles, summary figures |
-| `--font-body` | `-apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Segoe UI', system-ui, sans-serif` | Everything else |
+| `--font-display` | `'Barlow Condensed', system-ui, var(--font-cjk), sans-serif` (600) | Tag numbers, screen titles, summary figures |
+| `--font-body` | `-apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Segoe UI', system-ui, var(--font-cjk), sans-serif` | Everything else |
+| `--font-cjk` | `'PingFang SC', 'Hiragino Sans GB', 'Noto Sans CJK SC', 'Noto Sans SC', 'Microsoft YaHei'` | Simplified Chinese fallback inside both stacks |
 | `--text-xs` | `12px` | Badges and fine print only |
 | `--text-sm` | `13px` | Status lines, meta text |
 | `--text-md` | `15px` | Secondary body, chips, buttons |

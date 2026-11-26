@@ -90,6 +90,8 @@ Shared items: the collection menu offers `Import from another collection`; the s
 
 Empty states give direction. For example: "No entries yet. Tap New Entry, then Add Photo to start counting this room." Errors say what happened and what to do next: "Couldn't reach the server. Changes are saved on this device and will upload when you're back online."
 
+Every string exists in English and Simplified Chinese. Chinese copy is natural Mainland usage, not word-for-word: concise verbs, full-width punctuation, and the terms in `frontend/messages/GLOSSARY.md` (清点单, 条目, 物品, 已保存到本设备, 已备份到服务器, 仅本设备, 同步到服务器, 最近删除, 撤销, …). Every layout must fit both languages at 360px without clipping. Sequence numbers, quantities and units keep their stored form in both languages.
+
 ## Helper sign-in
 
 Settings shows the active account name. Owners open People from the account card to add, rename,
