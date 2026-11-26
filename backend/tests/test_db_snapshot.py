@@ -2,9 +2,11 @@ import json
 import shutil
 import sqlite3
 from contextlib import closing
+from pathlib import Path
 
 import pytest
 
+from kufang_capture import auth
 from kufang_capture.auth import auth_connect, init_accounts, user_data_dir
 from kufang_capture.db import connect, run_migrations, single_writer
 from kufang_capture.snapshot import create_snapshot, main, prune_snapshots, restore_snapshot
@@ -29,9 +31,40 @@ def test_migrations_are_recorded_and_idempotent(tmp_path):
         assert db.execute("PRAGMA busy_timeout").fetchone()[0] == 5000
 
 
-def test_items_migration_splits_shared_fields_and_keeps_photo_storage(tmp_path):
-    from pathlib import Path
+def test_shares_migration_allows_previous_startup_and_snapshot_rollback(tmp_path: Path) -> None:
+    data = tmp_path / "data"
+    previous = tmp_path / "previous-auth-migrations"
+    previous.mkdir()
+    migrations = Path(auth.__file__).with_name("auth_migrations")
+    shutil.copy(migrations / "0001_accounts.sql", previous)
 
+    def previous_migrations(
+        data_dir: Path, migrations_dir: Path | None = None, filename: str = "capture.sqlite3"
+    ) -> None:
+        run_migrations(data_dir, previous if filename == auth.AUTH_FILE else migrations_dir, filename)
+
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(auth, "run_migrations", previous_migrations)
+        assert init_accounts(data) == set()
+    snapshot = tmp_path / "pre-deploy"
+    create_snapshot(snapshot, data)
+
+    assert init_accounts(data) == set()
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(auth, "run_migrations", previous_migrations)
+        assert init_accounts(data) == set()
+        with auth_connect(data) as db:
+            assert db.execute("SELECT COUNT(*) FROM shares").fetchone()[0] == 0
+        restore_snapshot(snapshot, data)
+        assert init_accounts(data) == set()
+        with auth_connect(data) as db:
+            assert [row[0] for row in db.execute("SELECT version FROM schema_migrations")] == [
+                "0001_accounts.sql"
+            ]
+            assert db.execute("SELECT id FROM users WHERE is_owner=1").fetchone()[0] == "owner"
+
+
+def test_items_migration_splits_shared_fields_and_keeps_photo_storage(tmp_path):
     from kufang_capture.db import connect
 
     data = tmp_path / "legacy"

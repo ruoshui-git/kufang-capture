@@ -375,10 +375,8 @@ async def upload_thumbnail(request: Request, data_dir: Path, authorize: Callable
     return {"photo_id": photo_id, "byte_size": size}
 
 
-def get_photo(data_dir: Path, photo_id: str, thumbnail: bool):
-    record = _photo(data_dir, photo_id)
-    if record is None:
-        raise HTTPException(404, detail="photo_not_found")
+def photo_file(data_dir: Path, record: sqlite3.Row, thumbnail: bool) -> tuple[Path, str | None, bool]:
+    photo_id = record["id"]
     if thumbnail:
         path = data_dir / "media" / "thumbnails" / photo_id[:2] / photo_id
         mime = None
@@ -392,6 +390,14 @@ def get_photo(data_dir: Path, photo_id: str, thumbnail: bool):
         thumbnail = False
     if not path.is_file():
         raise HTTPException(404, detail="photo_not_stored")
+    return path, mime, thumbnail
+
+
+def get_photo(data_dir: Path, photo_id: str, thumbnail: bool) -> FileResponse:
+    record = _photo(data_dir, photo_id)
+    if record is None:
+        raise HTTPException(404, detail="photo_not_found")
+    path, mime, thumbnail = photo_file(data_dir, record, thumbnail)
     etag = record["sha256"] if not thumbnail else hashlib.sha256(path.read_bytes()).hexdigest()
     return FileResponse(path, media_type=mime, headers={"ETag": f'"{etag}"'})
 

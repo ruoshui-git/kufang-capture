@@ -32,6 +32,7 @@ from .photos import (
     upload_thumbnail,
 )
 from .settings import Settings, get_settings
+from .shares import is_share_path, public_share_router, revoke_collection_shares, shares_router
 from .sync import apply_batch, now, pull_changes
 
 SYNC_BATCH_BYTES = 8 * 1024 * 1024
@@ -80,6 +81,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             "checksum_mismatch": "Photo checksum does not match metadata",
             "server_storage_low": "Server storage is low",
             "photo_too_large": "Photo exceeds size limit",
+            "share_required": "A share token is required",
+            "share_not_found": "Share link was not found",
+            "share_expired": "Share link has expired",
+            "too_many_shares": "Revoke a share link before creating another",
+            "invalid_label": "Use a label of up to 40 characters without control characters",
+            "invalid_expiry": "Use a whole number from 1 to 365 for expiry or null for no expiry",
+            "method_not_allowed": "Only GET and HEAD are allowed",
         }
         headers = exc.headers or {}
         return JSONResponse(
@@ -100,6 +108,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(agent_router(config))
     app.include_router(auth_router(config, cookies, get_client_ip, unavailable))
     app.include_router(people_router(config))
+    app.include_router(shares_router(config))
+    app.include_router(public_share_router(config, get_client_ip, unavailable))
 
     async def auth_and_csrf(request: Request, call_next):
         if is_agent_path(request.url.path):
@@ -107,9 +117,17 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             if response is None:
                 response = await call_next(request)
             return response
-        if request.url.path == "/api/health" or not request.url.path.startswith("/api/"):
+        path = request.url.path
+        if is_share_path(path):
+            if request.method not in {"GET", "HEAD"}:
+                return await http_error(
+                    request,
+                    HTTPException(405, detail="method_not_allowed", headers={"Allow": "GET, HEAD"}),
+                )
             return await call_next(request)
-        # Deny by default: every /api path except health and auth requires a session.
+        if path == "/api/health" or not path.startswith("/api/"):
+            return await call_next(request)
+        # Deny by default after the public and separately authorized routes.
         unsafe = request.method in {"POST", "PUT", "PATCH", "DELETE"}
         if unsafe and (
             request.headers.get("x-capture-request") != "1"
@@ -121,7 +139,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             return JSONResponse(
                 {"detail": "csrf_failed", "message": "Request verification failed"}, status_code=403
             )
-        if (request.method, request.url.path) in AUTH_ROUTES:
+        if (request.method, path) in AUTH_ROUTES:
             response = await call_next(request)
             if request.method == "GET" and "set-cookie" in response.headers:
                 # Suppress a prepared renewal if sign-in, logout or disable revoked its token.
@@ -145,7 +163,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 {"detail": "auth_required", "message": "Authentication is required"}, status_code=401
             )
         user = session.user
-        is_people = request.url.path == "/api/people" or request.url.path.startswith("/api/people/")
+        is_people = path == "/api/people" or path.startswith("/api/people/")
         accounts = request.headers.getlist("x-capture-account")
         if is_people and not user["is_owner"]:
             response = JSONResponse({"detail": "owner_required"}, status_code=403)
@@ -286,6 +304,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 raise HTTPException(404, detail="collection_not_found")
             if confirm != row[0]:
                 raise HTTPException(409, detail="confirmation_name_mismatch")
+            # Revoke first: if sync later recreates this collection ID, old links must not see it.
+            revoke_collection_shares(config.data_dir, request.state.user["id"], collection_id)
             orphan_items = [
                 r[0]
                 for r in db.execute(
@@ -358,10 +378,15 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         if path.startswith("/api/photos/"):
             response.headers["Cache-Control"] = "private, no-store"
             response.headers.add_vary_header("Cookie, X-Capture-Account")
+        elif path.startswith("/api/share/photos/"):
+            response.headers["Cache-Control"] = "private, no-store"
         elif path.startswith("/api/") and path != "/api/health":
             response.headers["Cache-Control"] = "no-store"
         for name, value in SECURITY_HEADERS.items():
             response.headers[name] = value
+        if path == "/share" or is_share_path(path):
+            response.headers["Referrer-Policy"] = "no-referrer"
+            response.headers["X-Robots-Tag"] = "noindex, nofollow"
         return response
 
     @app.api_route("/api/health", methods=["GET", "HEAD"])
