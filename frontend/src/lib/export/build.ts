@@ -1,5 +1,6 @@
+import { m } from '../paraglide/messages.js'
 import type { Collection, Entry, Item, Movement, Photo } from '../types'
-import { entryDisplayTitle, formatSequence } from '../types'
+import { entryExportTitle, formatSequence } from '../types'
 import { writeCsv } from './csv'
 import { assignPaths } from './paths'
 import { createZip, type ZipMember } from './zip'
@@ -296,7 +297,7 @@ export async function buildExport(
     (a, b) => a.created_at.localeCompare(b.created_at) || a.id.localeCompare(b.id),
   )
   if (opts.scope === 'selected' && collections.length === 0) {
-    throw new Error('A selected-scope export must contain at least one collection')
+    throw new Error(m.core_export_selection_empty())
   }
   const collectionIds = new Set(collections.map((c) => c.id))
   const entries = input.entries
@@ -310,8 +311,7 @@ export async function buildExport(
   const firstEntryIndex = new Map<string, number>()
   for (const [index, entry] of entries.entries()) {
     if (!firstEntryIndex.has(entry.item_id)) firstEntryIndex.set(entry.item_id, index)
-    if (!itemMap.has(entry.item_id))
-      throw new Error(`Item ${entry.item_id} is missing from the export snapshot.`)
+    if (!itemMap.has(entry.item_id)) throw new Error(m.core_export_item_missing({ itemId: entry.item_id }))
   }
   const photos = input.photos
     .filter((p) => entries.some((e) => e.item_id === p.item_id))
@@ -365,8 +365,7 @@ export async function buildExport(
     photoData.set(photo.id, blob)
     opts.onProgress?.(photoData.size, exportPhotos.length)
   }
-  if (mismatches.length)
-    throw new Error(`Original photo verification failed for photo ids: ${mismatches.join(', ')}`)
+  if (mismatches.length) throw new Error(m.core_export_verify_failed({ photoIds: mismatches.join(', ') }))
   const activePhotoCounts = new Map<string, number>()
   for (const p of activePhotos) activePhotoCounts.set(p.item_id, (activePhotoCounts.get(p.item_id) ?? 0) + 1)
   const trashPhotoCounts = new Map<string, number>()
@@ -395,7 +394,7 @@ export async function buildExport(
       sequence_number: e.sequence_number,
       sequence_label: formatSequence(e.sequence_number),
       title: itemMap.get(e.item_id)?.title ?? '',
-      display_title: entryDisplayTitle({ ...e, title: itemMap.get(e.item_id)?.title ?? '' }),
+      display_title: entryExportTitle({ ...e, title: itemMap.get(e.item_id)?.title ?? '' }),
       quantity: e.quantity,
       unit: e.unit,
       count_detail: e.count_detail,

@@ -1,0 +1,20 @@
+[
+  "src/app",
+  "src/App.svelte",
+  "src/components/camera",
+  "src/components/collection",
+  "src/components/entry",
+  "src/components/gallery",
+  "src/components/sync",
+  "src/components/ui",
+  "src/components/viewer",
+  "src/routes/collections",
+  "src/routes/detail",
+  "src/routes/diagnostics",
+  "src/routes/entries",
+  "src/routes/join",
+  "src/routes/login",
+  "src/routes/server",
+  "src/routes/settings",
+  "src/routes/starred"
+]

@@ -1,3 +1,6 @@
+import { m } from '../paraglide/messages.js'
+import { getLocale } from '../paraglide/runtime.js'
+
 /**
  * `needs_tap`: the share sheet refused to open because the tap that started the export is too old.
  * Browsers (iOS Safari in particular) only allow `navigator.share` within a few seconds of a user
@@ -24,7 +27,8 @@ export async function deliverExport(
           return downloadExport(blob, filename)
         return 'needs_tap'
       }
-      throw error
+      if (getLocale() === 'en') throw error
+      throw new Error(m.core_export_share_failed(), { cause: error })
     }
   }
   return downloadExport(blob, filename)

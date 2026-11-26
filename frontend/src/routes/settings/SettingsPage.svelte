@@ -1,4 +1,5 @@
 <script lang="ts">
+  import LanguagePicker from '../../components/i18n/LanguagePicker.svelte'
   import { onMount } from 'svelte'
   import { repo } from '$lib/db'
   import { SETTING_KEYS } from '$lib/types'
@@ -97,6 +98,7 @@
 <svelte:head><title>Settings — Kufang Capture</title></svelte:head>
 <section class="page settings-page">
   <div class="page-heading"><h1>Settings</h1></div>
+  <section class="settings-card"><LanguagePicker inline /></section>
   <section class="settings-card" aria-labelledby="account-heading">
     <h2 id="account-heading">Account &amp; sync</h2>
     {#if $accountAccess.kind === 'blocked'}

@@ -1,13 +1,8 @@
+import { m } from '../paraglide/messages.js'
 import { repo } from '../db'
+import { getLocale } from '../paraglide/runtime.js'
 import type { AuthClient, PeopleClient, ServerClient } from './api'
-import {
-  AccountRequestError,
-  accountGate,
-  accountUnavailable,
-  requestHeaders,
-  responseCode,
-  sessionChangeKey,
-} from './binding'
+import { AccountRequestError, accountGate, requestHeaders, responseCode, sessionChangeKey } from './binding'
 
 const publishSession = (type: 'authenticated' | 'signed-out') => {
   if (typeof window === 'undefined') return
@@ -20,13 +15,19 @@ const publishSession = (type: 'authenticated' | 'signed-out') => {
   }
 }
 
-const peopleErrors: Record<string, string> = {
-  owner_required: 'Sign in as the owner to manage People.',
-  person_not_found: 'This person could not be found. Reopen People to refresh the list.',
-  name_taken: 'Someone already has that name.',
-  invalid_name: 'Enter a name with 1 to 40 characters.',
-  person_disabled: 'Enable this person before making a sign-in code.',
-}
+const peopleErrors = new Map<string, () => string>([
+  ['owner_required', m.core_people_owner_required],
+  ['person_not_found', m.core_people_not_found],
+  ['name_taken', m.core_people_name_taken],
+  ['invalid_name', m.core_people_invalid_name],
+  ['person_disabled', m.core_people_person_disabled],
+])
+
+const serverErrors = new Map<string, () => string>([
+  ['collection_not_found', m.core_collection_not_found],
+  ['confirmation_name_mismatch', m.core_confirmation_name_mismatch],
+  ['csrf_failed', m.core_request_verification_failed],
+])
 
 export function createClients(fetcher: typeof fetch): {
   authClient: AuthClient
@@ -50,22 +51,18 @@ export function createClients(fetcher: typeof fetch): {
         body: JSON.stringify(body),
       })
     } catch {
-      throw new Error("Couldn't reach the server. Check your connection and try again.")
+      throw new Error(m.core_connection_retry())
     }
     if (response.status === 401)
-      throw new Error(
-        kind === 'login'
-          ? 'Password is incorrect.'
-          : 'This code is invalid, expired or already used. Ask for a new code.',
-      )
+      throw new Error(kind === 'login' ? m.core_sign_in_bad_password() : m.core_sign_in_bad_join_code())
     if (response.status === 429) {
       const wait = Number(response.headers.get('Retry-After') ?? '60')
       const minutes = Math.max(1, Math.ceil(wait / 60))
-      throw new Error(`Too many attempts. Try again in ${minutes} ${minutes === 1 ? 'minute' : 'minutes'}.`)
+      throw new Error(m.core_sign_in_rate_limit({ count: minutes }))
     }
     if (response.status === 503 && (await responseCode(response)) === 'account_unavailable')
-      throw new AccountRequestError(accountUnavailable)
-    if (!response.ok) throw new Error(`Sign-in failed (${response.status}). Try again.`)
+      throw new AccountRequestError(m.core_account_unavailable())
+    if (!response.ok) throw new Error(m.core_sign_in_request_failed({ status: response.status }))
     accountGate.reset()
     try {
       const access = await accountGate.check(fetcher)
@@ -82,7 +79,7 @@ export function createClients(fetcher: typeof fetch): {
     })
     if (!response.ok) {
       const code = await responseCode(response)
-      throw new Error((code && peopleErrors[code]) || 'Could not update People. Try again.')
+      throw new Error((code && peopleErrors.get(code)?.()) || m.core_people_update_failed())
     }
     return response.json()
   }
@@ -90,8 +87,11 @@ export function createClients(fetcher: typeof fetch): {
   async function serverRequest(url: string, init?: RequestInit) {
     const response = await accountGate.request(fetcher, url, init)
     if (!response.ok) {
-      const data = (await response.json().catch(() => null)) as { message?: string } | null
-      throw new Error(data?.message ?? `Request failed (${response.status}).`)
+      const data = (await response.json().catch(() => null)) as { detail?: string; message?: string } | null
+      const fallback = m.core_request_failed({ status: response.status })
+      if (getLocale() === 'en') throw new Error(data?.message ?? fallback)
+      const translate = data?.detail ? serverErrors.get(data.detail) : undefined
+      throw new Error(translate?.() ?? fallback)
     }
     return response
   }
@@ -101,15 +101,15 @@ export function createClients(fetcher: typeof fetch): {
       session: async () => {
         const response = await requestAuth('/api/auth/session')
         if (response.status === 503 && (await responseCode(response)) === 'account_unavailable')
-          throw new AccountRequestError(accountUnavailable)
-        if (!response.ok) throw new Error(`Session request failed (${response.status}).`)
+          throw new AccountRequestError(m.core_account_unavailable())
+        if (!response.ok) throw new Error(m.core_session_request_failed({ status: response.status }))
         return response.json()
       },
       login: (password) => signIn('login', { password }),
       join: (code) => signIn('join', { code }),
       logout: async () => {
         const response = await requestAuth('/api/auth/logout', { method: 'POST' })
-        if (!response.ok) throw new Error('Could not sign out.')
+        if (!response.ok) throw new Error(m.core_sign_out_failed())
         accountGate.reset(true)
         publishSession('signed-out')
       },

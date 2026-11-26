@@ -1,3 +1,4 @@
+import { m } from '../paraglide/messages.js'
 import Dexie, { liveQuery } from 'dexie'
 import { createId } from '../ids'
 import {
@@ -31,16 +32,17 @@ import type { Watchable } from '../repo'
 import type { SyncConflict, SyncEngine, SyncStatus } from './api'
 import {
   AccountGate,
+  AccountRequestError,
   accountGate,
   accountHeaders,
   accountMismatch,
-  accountUnavailable,
   photoUploadRetryKey as storageRetryKey,
   requestHeaders,
   responseCode,
   sessionChangeKey,
   syncLeaseKey as leaseKey,
 } from './binding'
+import { displaySyncError, storedSyncLocale } from './errors'
 export { authClient, createClients, peopleClient, serverClient } from './clients'
 
 type FetchLike = typeof fetch
@@ -63,9 +65,6 @@ type BatchResult = {
 }
 type SyncLease = { owner: Id; expiresAt: number; webLock?: boolean }
 const leaseDuration = 30_000
-const updateRequired = 'Update the app to keep syncing.'
-const privatePlacementMessage =
-  'Shared item details and photos stay on this device because the item is in a Local Only collection.'
 
 function isAcknowledgedEntryEdit(row: OutboxItem, record?: { server_revision: number | null }) {
   return (
@@ -101,9 +100,9 @@ export interface SyncEngineOptions {
   intervalMs?: number
 }
 
-function userError(error: unknown): string {
-  if (error instanceof TypeError) return "Couldn't reach the server. Changes will retry when you're online."
-  return error instanceof Error ? error.message : 'Sync failed. Please try again.'
+function syncErrorText(error: unknown): string {
+  if (error instanceof TypeError) return m.core_sync_network_failed({}, storedSyncLocale)
+  return error instanceof Error ? error.message : m.core_sync_failed({}, storedSyncLocale)
 }
 
 /** The engine plus the backoff-respecting cycle that timers use (exposed for tests). */
@@ -246,14 +245,16 @@ export function createSyncEngine(options: SyncEngineOptions = {}): SyncEngineWit
     }
     const pendingMutations = Object.values(per).reduce((sum, item) => sum + item.pending_mutations, 0)
     const pendingPhotos = Object.values(per).reduce((sum, item) => sum + item.pending_uploads, 0)
+    const storedUploadError = photos.find(
+      (photo) => photo.upload_state === 'error' && photo.upload_error,
+    )?.upload_error
     statusValue = {
       ...emptyStatus(),
       last_error:
         lastError ??
-        (hasRemoval ? SERVER_REMOVED_MESSAGE : null) ??
-        (hasPrivatePlacement ? privatePlacementMessage : null) ??
-        photos.find((photo) => photo.upload_state === 'error' && photo.upload_error)?.upload_error ??
-        null,
+        (hasRemoval ? m.core_sync_removed() : null) ??
+        (hasPrivatePlacement ? m.core_sync_private_placement() : null) ??
+        (storedUploadError ? displaySyncError(storedUploadError) : null),
       pending_mutations: pendingMutations,
       pending_uploads: pendingPhotos,
       pending_upload_bytes: Object.values(per).reduce((sum, item) => sum + item.pending_upload_bytes, 0),
@@ -270,7 +271,7 @@ export function createSyncEngine(options: SyncEngineOptions = {}): SyncEngineWit
     return true
   }).subscribe()
 
-  const storageLow = 'Server storage is low'
+  const storageLow = m.core_server_space_low({}, storedSyncLocale)
   const storedUploadRetryAt = async () => Number((await db.settings.get(storageRetryKey))?.value ?? 0)
   const readLease = async () => (await db.settings.get(leaseKey))?.value as SyncLease | undefined
 
@@ -278,7 +279,7 @@ export function createSyncEngine(options: SyncEngineOptions = {}): SyncEngineWit
     const lease = await readLease()
     if (lease && lease.owner === owner && lease.expiresAt > now().getTime()) return
     controller.current?.abort()
-    throw new DOMException('The sync lease expired.', 'AbortError')
+    throw new DOMException(m.core_sync_lease_expired(), 'AbortError')
   }
 
   // Start the request while the IndexedDB snapshot is held. Await the network
@@ -294,7 +295,7 @@ export function createSyncEngine(options: SyncEngineOptions = {}): SyncEngineWit
   function dataHeaders(headers?: HeadersInit) {
     const access = gate.current
     if (!cycleAccount || access.kind !== 'ready' || access.user.id !== cycleAccount)
-      throw new DOMException('The account changed.', 'AbortError')
+      throw new DOMException(m.core_account_session_changed(), 'AbortError')
     return accountHeaders(cycleAccount, headers)
   }
 
@@ -317,7 +318,7 @@ export function createSyncEngine(options: SyncEngineOptions = {}): SyncEngineWit
       if (code === 'client_outdated') {
         clientOutdated = true
         rerun = false
-        lastError = updateRequired
+        lastError = m.core_sync_update_required()
         phase = 'error'
         return true
       }
@@ -329,7 +330,7 @@ export function createSyncEngine(options: SyncEngineOptions = {}): SyncEngineWit
     if (response.status === 503 && (head || (await responseCode(response)) === 'account_unavailable')) {
       signal.throwIfAborted()
       gate.unavailable()
-      lastError = accountUnavailable
+      lastError = m.core_account_unavailable()
       phase = 'error'
       return true
     }
@@ -346,7 +347,7 @@ export function createSyncEngine(options: SyncEngineOptions = {}): SyncEngineWit
       gate.reset(true)
     } else if (code === 507) {
       uploadRetryAt = now().getTime() + 300_000
-      lastError = storageLow
+      lastError = m.core_server_space_low()
       await db.transaction('rw', db.settings, async () => {
         await assertLease()
         await db.settings.put({ key: storageRetryKey, value: uploadRetryAt })
@@ -546,18 +547,21 @@ export function createSyncEngine(options: SyncEngineOptions = {}): SyncEngineWit
       }
       const response = await request.response
       if (await haltOnResponse(response, signal)) {
-        await releaseClaims(clientOutdated ? updateRequired : undefined)
+        await releaseClaims(clientOutdated ? m.core_sync_update_required({}, storedSyncLocale) : undefined)
         return false
       }
       if (!response.ok)
-        throw Object.assign(new Error(`Sync request failed (${response.status}).`), {
-          status: response.status,
-        })
+        throw Object.assign(
+          new Error(m.core_sync_request_failed({ status: response.status }, storedSyncLocale)),
+          {
+            status: response.status,
+          },
+        )
       const data = (await response.json()) as { results: BatchResult[] }
       const results = new Map(data.results.map((result) => [result.id, result]))
       for (const item of selected) {
         const result = results.get(item.id)
-        if (!result) throw new Error('The server did not acknowledge every change.')
+        if (!result) throw new Error(m.core_sync_ack_incomplete({}, storedSyncLocale))
         await applyResult(item, result)
       }
       return true
@@ -579,12 +583,12 @@ export function createSyncEngine(options: SyncEngineOptions = {}): SyncEngineWit
             in_flight: false,
             attempts,
             next_attempt_at: new Date(now().getTime() + delay).toISOString(),
-            last_error: userError(error),
+            last_error: syncErrorText(error),
           })
         }
       })
       if (!interrupted) {
-        lastError = userError(error)
+        lastError = displaySyncError(syncErrorText(error))
         phase = 'error'
       }
       return false
@@ -735,7 +739,8 @@ export function createSyncEngine(options: SyncEngineOptions = {}): SyncEngineWit
         if (outcome.status === 'conflict' && outcome.code === 'field_conflict' && record) {
           const fields = outcome.conflicting_fields ?? []
           const serverRecord: ServerRecord = outcome.record ?? { id: item.entity_id }
-          if (outcome.server_revision === null) throw new Error('The conflict has no server revision.')
+          if (outcome.server_revision === null)
+            throw new Error(m.core_sync_conflict_without_revision({}, storedSyncLocale))
           const conflict: SyncConflict = {
             id: createId(),
             collection_id: item.collection_id,
@@ -849,8 +854,8 @@ export function createSyncEngine(options: SyncEngineOptions = {}): SyncEngineWit
         }
         const message =
           outcome.code === 'sequence_taken' && current.preserve_sequence
-            ? 'This entry’s original sequence number is in use on the server.'
-            : (outcome.message ?? 'The server rejected this change.')
+            ? 'This entry’s original sequence number is in use on the server.' // i18n-ignore: persisted outbox error.
+            : (outcome.message ?? 'The server rejected this change.') // i18n-ignore: persisted outbox error.
         await db.outbox.put({
           ...current,
           in_flight: false,
@@ -947,7 +952,7 @@ export function createSyncEngine(options: SyncEngineOptions = {}): SyncEngineWit
         upload_next_attempt_at: new Date(retryAt).toISOString(),
         upload_error: message,
       })
-      lastError ??= message
+      lastError ??= displaySyncError(message)
     }
     try {
       const head = await sendPhoto('original', {
@@ -963,9 +968,10 @@ export function createSyncEngine(options: SyncEngineOptions = {}): SyncEngineWit
         await markUploaded()
         return true
       }
-      if (!head.ok && head.status !== 404) throw new Error(`Photo check failed (${head.status}).`)
+      if (!head.ok && head.status !== 404)
+        throw new Error(m.core_sync_check_photo_failed({ status: head.status }, storedSyncLocale))
       const blob = await readPhotoBlob(photo.id, options.repoDbName)
-      if (!blob) throw new Error('The original photo is missing from this device.')
+      if (!blob) throw new Error(m.core_sync_original_missing({}, storedSyncLocale))
       const put = await sendPhoto('original', {
         method: 'PUT',
         headers: requestHeaders('PUT', {
@@ -979,10 +985,10 @@ export function createSyncEngine(options: SyncEngineOptions = {}): SyncEngineWit
         if (put.status === 507) await markFailed(storageLow, uploadRetryAt, photo.upload_attempts ?? 0)
         return false
       }
-      if (!put.ok) throw new Error(`Photo upload failed (${put.status}).`)
+      if (!put.ok) throw new Error(m.core_sync_upload_failed({ status: put.status }, storedSyncLocale))
       const result = (await put.json()) as { sha256: string; byte_size: number; server_storage_key: string }
       if (result.sha256 !== photo.sha256 || result.byte_size !== photo.byte_size)
-        throw new Error('The uploaded photo did not match its local checksum.')
+        throw new Error(m.core_sync_checksum_mismatch({}, storedSyncLocale))
       await markUploaded(result.server_storage_key)
       if (!blob.thumbnail || signal.aborted) return true
       try {
@@ -1000,7 +1006,7 @@ export function createSyncEngine(options: SyncEngineOptions = {}): SyncEngineWit
       if (signal.aborted || (error instanceof DOMException && error.name === 'AbortError')) return false
       const attempts = (photo.upload_attempts ?? 0) + 1
       const delay = Math.min(300_000, 2_000 * 2 ** Math.min(attempts - 1, 8))
-      await markFailed(userError(error), now().getTime() + delay, attempts)
+      await markFailed(syncErrorText(error), now().getTime() + delay, attempts)
       // A transport failure can affect the whole queue. A per-photo error lets other photos proceed.
       return !(error instanceof TypeError)
     } finally {
@@ -1027,7 +1033,8 @@ export function createSyncEngine(options: SyncEngineOptions = {}): SyncEngineWit
         signal,
       })
       if (await haltOnResponse(response, signal)) return false
-      if (!response.ok) throw new Error(`Changes request failed (${response.status}).`)
+      if (!response.ok)
+        throw new Error(m.core_sync_changes_request_failed({ status: response.status }, storedSyncLocale))
       const page = (await response.json()) as {
         changes: Array<{
           seq: number
@@ -1359,7 +1366,7 @@ export function createSyncEngine(options: SyncEngineOptions = {}): SyncEngineWit
     cycleAccount = access.user.id
     uploadRetryAt = await storedUploadRetryAt()
     signal.throwIfAborted()
-    lastError = uploadRetryAt > now().getTime() ? storageLow : null
+    lastError = uploadRetryAt > now().getTime() ? m.core_server_space_low() : null
     if (needsRepair || reclaimed) {
       await db.transaction(
         'rw',
@@ -1464,7 +1471,8 @@ export function createSyncEngine(options: SyncEngineOptions = {}): SyncEngineWit
           !showBlocked() &&
           !(error instanceof DOMException && error.name === 'AbortError')
         ) {
-          lastError = userError(error)
+          lastError =
+            error instanceof AccountRequestError ? error.message : displaySyncError(syncErrorText(error))
           phase = 'error'
         }
       } finally {

@@ -1,3 +1,4 @@
+import { paraglideVitePlugin } from '@inlang/paraglide-js'
 import { svelte } from '@sveltejs/vite-plugin-svelte'
 import tailwindcss from '@tailwindcss/vite'
 import { fileURLToPath } from 'node:url'
@@ -13,6 +14,13 @@ export default defineConfig({
   },
   plugins: [
     tailwindcss(),
+    paraglideVitePlugin({
+      project: './project.inlang',
+      outdir: './src/lib/paraglide',
+      strategy: ['globalVariable', 'baseLocale'],
+      outputStructure: 'message-modules',
+      emitTsDeclarations: true,
+    }),
     svelte(),
     VitePWA({
       registerType: 'prompt',
@@ -53,7 +61,7 @@ export default defineConfig({
     // Use Svelte's client runtime (not the SSR entry) for component tests.
     server: { deps: { inline: [/svelte/] } },
     setupFiles: ['./src/test/setup.ts'],
-    include: ['src/**/*.test.ts'],
+    include: ['src/**/*.test.ts', 'scripts/check-i18n.test.mjs'],
     restoreMocks: true,
   },
 })

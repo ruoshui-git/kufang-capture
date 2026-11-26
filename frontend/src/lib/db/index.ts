@@ -1,3 +1,4 @@
+import { m } from '../paraglide/messages.js'
 import Dexie, { liveQuery, type Table } from 'dexie'
 import type {
   Repo,
@@ -613,7 +614,7 @@ export function createRepo(options: RepoOptions = {}): Repo {
   }
   const saveEntry = async (entry: Entry, patch: Record<string, unknown>, op: OutboxOp = 'upsert') => {
     const collection = await db.collections.get(entry.collection_id)
-    if (!collection) throw new Error('Collection not found')
+    if (!collection) throw new Error(m.core_collection_not_found())
     const at = stamp()
     const saved = {
       ...entry,
@@ -792,7 +793,7 @@ export function createRepo(options: RepoOptions = {}): Repo {
     part?: { quantity: string },
   ): Promise<import('../repo').MoveResult> => {
     const target = await db.collections.get(targetId)
-    if (!target) throw new Error('Collection not found')
+    if (!target) throw new Error(m.core_collection_not_found())
     const created: EntryView[] = []
     const restored: EntryView[] = []
     const merged_into_existing: EntryView[] = []
@@ -803,26 +804,24 @@ export function createRepo(options: RepoOptions = {}): Repo {
     const movementIds: Id[] = []
     for (const sourceId of sourceIds) {
       const source = await db.entries.get(sourceId)
-      if (part && !source) throw new Error('Source entry not found.')
-      if (part && source?.deleted_at !== null) throw new Error('Source entry must be active.')
-      if (part && source?.collection_id === targetId)
-        throw new Error('Source entry is already in the target collection.')
+      if (part && !source) throw new Error(m.core_source_entry_missing())
+      if (part && source?.deleted_at !== null) throw new Error(m.core_source_entry_inactive())
+      if (part && source?.collection_id === targetId) throw new Error(m.core_source_entry_already_present())
       if (!source || source.deleted_at !== null || source.collection_id === targetId) continue
       const sourceCollection = await db.collections.get(source.collection_id)
       if (!sourceCollection || sourceCollection.storage_mode !== target.storage_mode)
-        throw new Error('Collections must use the same storage mode to share items.')
+        throw new Error(m.core_share_same_storage_mode())
       let movedQuantity = source.quantity
       let remainder: string | undefined
       if (part) {
         const validDecimal = (value: string | null): value is string =>
           value !== null && /^\d+(?:\.\d+)?$/.test(value)
         if (!validDecimal(source.quantity) || addDecimals(source.quantity, '-0') === '0')
-          throw new Error('Source quantity must be a recorded positive decimal.')
+          throw new Error(m.core_source_quantity_missing())
         if (!validDecimal(part.quantity) || !/[1-9]/.test(part.quantity))
-          throw new Error('Amount must be a valid positive decimal.')
+          throw new Error(m.core_amount_positive())
         remainder = addDecimals(source.quantity, `-${part.quantity}`)
-        if (remainder.startsWith('-') || remainder === '0')
-          throw new Error('Amount must be greater than zero and less than the source quantity.')
+        if (remainder.startsWith('-') || remainder === '0') throw new Error(m.core_amount_less_than_source())
         movedQuantity = part.quantity
       }
       const candidates = await db.entries
@@ -1260,7 +1259,7 @@ export function createRepo(options: RepoOptions = {}): Repo {
     updateCollection: async (id, patch) =>
       db.transaction('rw', db.collections, db.outbox, async () => {
         const current = await db.collections.get(id)
-        if (!current) throw new Error('Collection not found')
+        if (!current) throw new Error(m.core_collection_not_found())
         const at = stamp()
         const cleanPatch = {
           ...patch,
@@ -1279,7 +1278,7 @@ export function createRepo(options: RepoOptions = {}): Repo {
     archiveCollection: async (id) => {
       await db.transaction('rw', db.collections, db.outbox, async () => {
         const current = await db.collections.get(id)
-        if (!current) throw new Error('Collection not found')
+        if (!current) throw new Error(m.core_collection_not_found())
         const at = stamp()
         const saved = {
           ...current,
@@ -1296,7 +1295,7 @@ export function createRepo(options: RepoOptions = {}): Repo {
     unarchiveCollection: async (id) => {
       await db.transaction('rw', db.collections, db.outbox, async () => {
         const current = await db.collections.get(id)
-        if (!current) throw new Error('Collection not found')
+        if (!current) throw new Error(m.core_collection_not_found())
         const at = stamp()
         const saved = {
           ...current,
@@ -1319,7 +1318,7 @@ export function createRepo(options: RepoOptions = {}): Repo {
       }),
     checkClearCollection: async (id): Promise<ClearCheck> => {
       const collection = await db.collections.get(id)
-      if (!collection) throw new Error('Collection not found')
+      if (!collection) throw new Error(m.core_collection_not_found())
       const entries = await db.entries.where('collection_id').equals(id).toArray()
       const itemIds = [...new Set(entries.map((entry) => entry.item_id))]
       const photos = await db.photos.where('item_id').anyOf(itemIds).toArray()
@@ -1352,8 +1351,8 @@ export function createRepo(options: RepoOptions = {}): Repo {
           ? photos.filter((photo) => ['pending', 'uploading', 'error'].includes(photo.upload_state)).length
           : 0
       const reasons: string[] = []
-      if (unexported) reasons.push('Export the collection after its latest change before clearing it.')
-      if (pending) reasons.push(`${pending} photo${pending === 1 ? '' : 's'} still need upload.`)
+      if (unexported) reasons.push(m.core_clear_export_required())
+      if (pending) reasons.push(m.core_clear_upload_required({ count: pending }))
       return {
         allowed: reasons.length === 0,
         reasons,
@@ -1369,8 +1368,8 @@ export function createRepo(options: RepoOptions = {}): Repo {
         [db.collections, db.items, db.entries, db.photos, db.movements, db.photoBlobs, db.outbox],
         async () => {
           const collection = await db.collections.get(id)
-          if (!collection) throw new Error('Collection not found')
-          if (confirmName !== collection.name) throw new Error('Collection name confirmation did not match.')
+          if (!collection) throw new Error(m.core_collection_not_found())
+          if (confirmName !== collection.name) throw new Error(m.core_confirmation_name_mismatch())
           const entries = await db.entries.where('collection_id').equals(id).toArray()
           const itemIds = [...new Set(entries.map((entry) => entry.item_id))]
           const photos = await db.photos.where('item_id').anyOf(itemIds).toArray()
@@ -1392,8 +1391,8 @@ export function createRepo(options: RepoOptions = {}): Repo {
               : 0
           if (unexported || pending) {
             const reasons = [
-              ...(unexported ? ['Export the collection after its latest change before clearing it.'] : []),
-              ...(pending ? [`${pending} photo${pending === 1 ? '' : 's'} still need upload.`] : []),
+              ...(unexported ? [m.core_clear_export_required()] : []),
+              ...(pending ? [m.core_clear_upload_required({ count: pending })] : []),
             ]
             throw new Error(reasons.join(' '))
           }
@@ -1567,7 +1566,7 @@ export function createRepo(options: RepoOptions = {}): Repo {
         [db.collections, db.items, db.entries, db.photos, db.outbox, db.conflicts],
         async () => {
           const collection = await db.collections.get(collectionId)
-          if (!collection) throw new Error('Collection not found')
+          if (!collection) throw new Error(m.core_collection_not_found())
           const at = stamp()
           const unit = init.unit ?? ''
           const id = createId()
@@ -1623,7 +1622,7 @@ export function createRepo(options: RepoOptions = {}): Repo {
     updateEntry: async (id, patch) =>
       db.transaction('rw', db.collections, db.items, db.entries, db.outbox, async () => {
         const entry = await db.entries.get(id)
-        if (!entry) throw new Error('Entry not found')
+        if (!entry) throw new Error(m.core_entry_not_found())
         const itemPatch = Object.fromEntries(
           ITEM_FIELDS.flatMap((field) => (field in patch ? [[field, patch[field]]] : [])),
         )
@@ -1635,7 +1634,7 @@ export function createRepo(options: RepoOptions = {}): Repo {
         if (Object.keys(itemPatch).length) {
           const item = await db.items.get(entry.item_id)
           const collection = await db.collections.get(entry.collection_id)
-          if (!item || !collection) throw new Error('Item not found')
+          if (!item || !collection) throw new Error(m.core_item_not_found())
           const updated: Item = {
             ...item,
             ...itemPatch,
@@ -1769,7 +1768,7 @@ export function createRepo(options: RepoOptions = {}): Repo {
       }) as Watchable<import('../types').StarredRow[]>,
     checkStorageMode: async (id, mode) => {
       const collection = await db.collections.get(id)
-      if (!collection) throw new Error('Collection not found')
+      if (!collection) throw new Error(m.core_collection_not_found())
       if (collection.storage_mode === mode) return { allowed: true, blockers: [] }
       const ownEntries = await db.entries.where('collection_id').equals(id).toArray()
       const ownItems = new Set(ownEntries.map((entry) => entry.item_id))
@@ -1936,7 +1935,7 @@ export function createRepo(options: RepoOptions = {}): Repo {
         [db.collections, db.entries, db.items, db.photos, db.outbox, db.conflicts, db.settings],
         async () => {
           const target = await db.collections.get(targetId)
-          if (!target) throw new Error('Collection not found')
+          if (!target) throw new Error(m.core_collection_not_found())
           const sources = await Promise.all(sourceIds.map((sourceId) => db.entries.get(sourceId)))
           const created: EntryView[] = []
           const restored: EntryView[] = []
@@ -1945,7 +1944,7 @@ export function createRepo(options: RepoOptions = {}): Repo {
             if (!source) continue
             const sourceCollection = await db.collections.get(source.collection_id)
             if (!sourceCollection || sourceCollection.storage_mode !== target.storage_mode)
-              throw new Error('Collections must use the same storage mode to share items.')
+              throw new Error(m.core_share_same_storage_mode())
             const current = await db.entries
               .where('[collection_id+item_id]')
               .equals([targetId, source.item_id])
@@ -2024,18 +2023,16 @@ export function createRepo(options: RepoOptions = {}): Repo {
         async () => {
           for (const [id, revision] of Object.entries(undo.moved_revisions.entries))
             if ((await db.entries.get(id))?.revision !== revision)
-              throw new Error("This move can't be undone because the entry changed since.")
+              throw new Error(m.core_move_entry_changed())
           for (const [id, revision] of Object.entries(undo.moved_revisions.items))
-            if ((await db.items.get(id))?.revision !== revision)
-              throw new Error("This move can't be undone because the entry changed since.")
+            if ((await db.items.get(id))?.revision !== revision) throw new Error(m.core_move_entry_changed())
           for (const [id, revision] of Object.entries(undo.moved_revisions.collections))
             if ((await db.collections.get(id))?.revision !== revision)
-              throw new Error("This move can't be undone because the entry changed since.")
+              throw new Error(m.core_move_entry_changed())
           const at = stamp()
           for (const id of undo.movement_ids) {
             const movement = await db.movements.get(id)
-            if (!movement || movement.undone_at !== null)
-              throw new Error("This move can't be undone because its history changed since.")
+            if (!movement || movement.undone_at !== null) throw new Error(m.core_move_history_changed())
             const undone = { ...movement, undone_at: at, updated_at: at, revision: movement.revision + 1 }
             await db.movements.put(undone)
             await enqueueMovement(undone)
@@ -2134,10 +2131,10 @@ export function createRepo(options: RepoOptions = {}): Repo {
         async () => {
           const first = sourceIds.map((id) => id).find(Boolean)
           const source = first ? await db.entries.get(first) : undefined
-          if (!source) throw new Error('Select at least one active entry')
+          if (!source) throw new Error(m.core_select_active_entry())
           const sourceCollection = await db.collections.get(source.collection_id)
-          if (!sourceCollection) throw new Error('Collection not found')
-          if (!input.name.trim()) throw new Error('Collection name is required')
+          if (!sourceCollection) throw new Error(m.core_collection_not_found())
+          if (!input.name.trim()) throw new Error(m.core_collection_name_required())
           const at = stamp()
           const collection: Collection = {
             id: createId(),
@@ -2169,12 +2166,12 @@ export function createRepo(options: RepoOptions = {}): Repo {
         [db.collections, db.entries, db.items, db.photos, db.movements, db.outbox, db.conflicts, db.settings],
         async () => {
           const target = await db.collections.get(targetId)
-          if (!target) throw new Error('Collection not found')
+          if (!target) throw new Error(m.core_collection_not_found())
           const sources = await Promise.all(sourceCollectionIds.map((id) => db.collections.get(id)))
           if (sources.some((source) => !source || source.id === targetId))
-            throw new Error('Source collections must exist and cannot be the target.')
+            throw new Error(m.core_source_collections_invalid())
           if (sources.some((source) => source!.storage_mode !== target.storage_mode))
-            throw new Error('Collections must use the same storage mode to share items.')
+            throw new Error(m.core_share_same_storage_mode())
           const entryIds: Id[] = []
           for (const source of sources) {
             const entries = await db.entries.where('collection_id').equals(source!.id).toArray()
@@ -2223,10 +2220,10 @@ export function createRepo(options: RepoOptions = {}): Repo {
           // Read inside the transaction so rapid concurrent captures get distinct
           // sort orders and exactly one cover, using the current storage mode.
           const entry = await db.entries.get(entryId)
-          if (!entry) throw new Error('Entry not found')
+          if (!entry) throw new Error(m.core_entry_not_found())
           const parent = await db.items.get(entry.item_id)
           const collection = await db.collections.get(entry.collection_id)
-          if (!collection) throw new Error('Collection not found')
+          if (!collection) throw new Error(m.core_collection_not_found())
           // A pull may still be bringing in the item for this placement. Keep the
           // original now and let the outbox wait for the parent before sending it.
           const removed = entry.removed_on_server || parent?.removed_on_server || collection.removed_on_server
@@ -2336,9 +2333,9 @@ export function createRepo(options: RepoOptions = {}): Repo {
     updatePhoto: async (id, patch) =>
       db.transaction('rw', db.photos, db.entries, db.collections, db.outbox, async () => {
         const photo = await db.photos.get(id)
-        if (!photo) throw new Error('Photo not found')
+        if (!photo) throw new Error(m.core_photo_not_found())
         const { collection } = await itemContext(photo.item_id)
-        if (!collection) throw new Error('Collection not found')
+        if (!collection) throw new Error(m.core_collection_not_found())
         const saved = {
           ...photo,
           ...patch,
@@ -2354,9 +2351,9 @@ export function createRepo(options: RepoOptions = {}): Repo {
     setCoverPhoto: async (id) =>
       db.transaction('rw', db.photos, db.entries, db.collections, db.outbox, async () => {
         const photo = await db.photos.get(id)
-        if (!photo || photo.deleted_at) throw new Error('Photo not found')
+        if (!photo || photo.deleted_at) throw new Error(m.core_photo_not_found())
         const { collection } = await itemContext(photo.item_id)
-        if (!collection) throw new Error('Collection not found')
+        if (!collection) throw new Error(m.core_collection_not_found())
         const rows = await db.photos.where('item_id').equals(photo.item_id).toArray()
         for (const current of rows) {
           const cover = current.id === id
@@ -2378,16 +2375,16 @@ export function createRepo(options: RepoOptions = {}): Repo {
     reorderPhotos: async (entryId, orderedIds) =>
       db.transaction('rw', db.photos, db.entries, db.collections, db.outbox, async () => {
         const entry = await db.entries.get(entryId)
-        if (!entry) throw new Error('Entry not found')
+        if (!entry) throw new Error(m.core_entry_not_found())
         const collection = await db.collections.get(entry.collection_id)
-        if (!collection) throw new Error('Collection not found')
+        if (!collection) throw new Error(m.core_collection_not_found())
         const rows = await db.photos.where('item_id').equals(entry.item_id).toArray()
         if (
           orderedIds.length !== rows.length ||
           new Set(orderedIds).size !== rows.length ||
           orderedIds.some((id) => !rows.some((row) => row.id === id))
         )
-          throw new Error('Photo order must include every photo exactly once.')
+          throw new Error(m.core_photo_order_invalid())
         for (const [index, id] of orderedIds.entries()) {
           const photo = rows.find((row) => row.id === id)!
           if (photo.sort_order !== index) {
@@ -2479,16 +2476,13 @@ export function createRepo(options: RepoOptions = {}): Repo {
         [db.collections, db.entries, db.items, db.photos, db.movements, db.outbox],
         async () => {
           const collection = await db.collections.get(id)
-          if (!collection) throw new Error('Collection not found')
+          if (!collection) throw new Error(m.core_collection_not_found())
           if (collection.storage_mode === mode) return
           const at = stamp()
           if (mode === 'synced' && !opts.consentToUploadExisting)
-            throw new Error('Consent is required before uploading existing data.')
+            throw new Error(m.core_sync_consent_required())
           const modeCheck = await repo.checkStorageMode(id, mode)
-          if (!modeCheck.allowed)
-            throw new Error(
-              'Storage mode cannot change while items are shared with collections in another mode.',
-            )
+          if (!modeCheck.allowed) throw new Error(m.core_shared_storage_mode_change())
           const entries = await db.entries.where('collection_id').equals(id).toArray()
           const itemIds = [...new Set(entries.map((entry) => entry.item_id))]
           const photos = await db.photos.where('item_id').anyOf(itemIds).toArray()

@@ -1,3 +1,4 @@
+import { m } from '../paraglide/messages.js'
 // Device export: builds a portable ZIP from IndexedDB and hands it to the share
 // sheet / download. Originals stored on this device are used as is, so the export
 // works offline. An original that is only on the server (captured on another
@@ -5,7 +6,7 @@
 // collections set to sync: Local Only data never causes a request.
 import { repo as defaultRepo } from '../db'
 import type { Repo } from '../repo'
-import { AccountRequestError, accountSignIn, fetchAccountPhoto } from '../sync/binding'
+import { AccountRequestError, fetchAccountPhoto } from '../sync/binding'
 import type { Id, Photo } from '../types'
 import { buildExport, type Manifest } from './build'
 import { deliverExport, type ExportDelivery } from './deliver'
@@ -30,17 +31,12 @@ export const fetchServerOriginal: FetchOriginal = async (photoId) => {
     response = await fetchAccountPhoto(photoId, 'original')
   } catch (cause) {
     if (cause instanceof AccountRequestError) {
-      if (cause.message === accountSignIn) throw new Error('Sign in to include photos stored on the server.')
+      if (cause.code === 'sign_in') throw new Error(m.core_export_sign_in_required())
       throw cause
     }
-    throw new Error(
-      `Photo ${photoId} is only on the server and couldn't be downloaded. Check your connection, or use Server exports.`,
-    )
+    throw new Error(m.core_export_photo_unreachable({ photoId }))
   }
-  if (!response.ok)
-    throw new Error(
-      `Photo ${photoId} is only on the server and couldn't be downloaded (HTTP ${response.status}). Try again, or use Server exports.`,
-    )
+  if (!response.ok) throw new Error(m.core_export_photo_download_failed({ photoId, status: response.status }))
   return response.blob()
 }
 
@@ -53,7 +49,7 @@ export async function exportFromDevice(
   const deliver = deps.deliver ?? deliverExport
   const exportedAt = (deps.now?.() ?? new Date()).toISOString()
   const data = await repo.readForExport(scope)
-  if (!data.collections.length) throw new Error('Nothing to export: the collection was not found.')
+  if (!data.collections.length) throw new Error(m.core_export_collection_missing())
   const fetchOriginal = deps.fetchOriginal ?? fetchServerOriginal
   // An item can be in several collections, all of one storage mode; fetch only when none is Local Only.
   const localOnlyCollections = new Set(
@@ -73,7 +69,7 @@ export async function exportFromDevice(
         // buildExport verifies size, SHA-256 and CRC-32, so server bytes are checked like local ones.
         if (photo?.upload_state === 'uploaded' && !localOnlyItems.has(photo.item_id))
           return fetchOriginal(photoId)
-        throw new Error(`Original photo ${photoId} is missing on this device.`)
+        throw new Error(m.core_export_original_missing({ photoId }))
       },
     },
     {

@@ -1,3 +1,7 @@
+import { m } from '../paraglide/messages.js'
+import { getLocale } from '../paraglide/runtime.js'
+
+class CameraOpenError extends Error {}
 export type CameraCapabilities = MediaTrackCapabilities & {
   zoom?: number | { min: number; max: number; step?: number }
   torch?: boolean
@@ -20,7 +24,7 @@ export function stopCamera(stream?: MediaStream | null) {
 }
 
 export async function openCamera(deviceId?: string): Promise<MediaStream> {
-  if (!navigator.mediaDevices?.getUserMedia) throw new Error('Camera access is not supported here.')
+  if (!navigator.mediaDevices?.getUserMedia) throw new CameraOpenError(m.core_camera_unsupported())
   const sizes = [
     { width: 4032, height: 3024 },
     { width: 1920, height: 1080 },
@@ -45,7 +49,7 @@ export async function openCamera(deviceId?: string): Promise<MediaStream> {
         throw error
     }
   }
-  throw lastError ?? new Error('Could not open a camera.')
+  throw lastError ?? new CameraOpenError(m.core_camera_open_failed())
 }
 
 export function readCapabilities(track: MediaStreamTrack): CameraCapabilities {
@@ -80,7 +84,7 @@ export async function captureFrame(
       canvas.width = width
       canvas.height = height
       const context = canvas.getContext('2d')
-      if (!context) throw new Error('Could not prepare the digital crop.')
+      if (!context) throw new Error(m.core_camera_crop_failed())
       context.drawImage(
         bitmap,
         (bitmap.width - width) / 2,
@@ -101,14 +105,14 @@ export async function captureFrame(
   const settings = track.getSettings()
   const sourceWidth = settings.width || video.videoWidth
   const sourceHeight = settings.height || video.videoHeight
-  if (!sourceWidth || !sourceHeight) throw new Error('The camera preview is not ready yet.')
+  if (!sourceWidth || !sourceHeight) throw new Error(m.core_camera_preview_unready())
   const cropWidth = Math.max(1, Math.round(sourceWidth / digitalCrop))
   const cropHeight = Math.max(1, Math.round(sourceHeight / digitalCrop))
   const canvas = document.createElement('canvas')
   canvas.width = cropWidth
   canvas.height = cropHeight
   const context = canvas.getContext('2d')
-  if (!context) throw new Error('Could not prepare the camera frame.')
+  if (!context) throw new Error(m.core_camera_frame_failed())
   context.drawImage(
     video,
     (video.videoWidth - cropWidth) / 2,
@@ -126,7 +130,7 @@ export async function captureFrame(
 function canvasBlob(canvas: HTMLCanvasElement) {
   return new Promise<Blob>((resolve, reject) => {
     canvas.toBlob(
-      (blob) => (blob ? resolve(blob) : reject(new Error('Could not encode the camera frame.'))),
+      (blob) => (blob ? resolve(blob) : reject(new Error(m.core_camera_encode_failed()))),
       'image/jpeg',
       0.92,
     )
@@ -134,9 +138,9 @@ function canvasBlob(canvas: HTMLCanvasElement) {
 }
 
 export function cameraPermissionMessage(error: unknown) {
-  if (error instanceof DOMException && error.name === 'NotAllowedError')
-    return 'Allow camera access in Settings → Safari → Camera, then tap to resume.'
-  if (error instanceof DOMException && error.name === 'NotFoundError')
-    return 'No camera was found. Try the system camera instead.'
-  return error instanceof Error ? error.message : 'Could not start the camera.'
+  if (error instanceof DOMException && error.name === 'NotAllowedError') return m.core_camera_permission()
+  if (error instanceof DOMException && error.name === 'NotFoundError') return m.core_camera_not_found()
+  if (error instanceof CameraOpenError || (getLocale() === 'en' && error instanceof Error))
+    return error.message
+  return m.core_camera_start_failed()
 }

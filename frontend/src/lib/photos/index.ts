@@ -1,3 +1,5 @@
+import { m } from '../paraglide/messages.js'
+import { getLocale } from '../paraglide/runtime.js'
 import type { PhotoBlob } from '../types'
 import { accountGate, fetchAccountPhoto, photoAccount } from '../sync/binding'
 
@@ -35,7 +37,7 @@ export const defaultImageProcessor: ImageProcessor = async (blob) => {
         height: Math.max(1, Math.round(height * scale)),
       })
   const context = canvas.getContext('2d')
-  if (!context) throw new Error('Could not create thumbnail canvas')
+  if (!context) throw new Error(m.core_thumbnail_canvas_failed())
   context.drawImage(source, 0, 0, canvas.width, canvas.height)
   const thumbnail = isOffscreen
     ? await (canvas as OffscreenCanvas).convertToBlob({ type: 'image/jpeg', quality: 0.82 })
@@ -54,7 +56,7 @@ function loadImage(blob: Blob): Promise<HTMLImageElement> {
     }
     image.onerror = () => {
       URL.revokeObjectURL(url)
-      reject(new Error('Could not decode image'))
+      reject(new Error(m.core_photo_decode_failed()))
     }
     image.src = url
   })
@@ -63,7 +65,7 @@ function loadImage(blob: Blob): Promise<HTMLImageElement> {
 function canvasBlob(canvas: HTMLCanvasElement): Promise<Blob> {
   return new Promise((resolve, reject) =>
     canvas.toBlob(
-      (blob) => (blob ? resolve(blob) : reject(new Error('Could not encode thumbnail'))),
+      (blob) => (blob ? resolve(blob) : reject(new Error(m.core_thumbnail_encode_failed()))),
       'image/jpeg',
       0.82,
     ),
@@ -107,7 +109,8 @@ export function readBlob(blob: Blob): Promise<ArrayBuffer> {
   return new Promise((resolve, reject) => {
     const reader = new FileReader()
     reader.onload = () => resolve(reader.result as ArrayBuffer)
-    reader.onerror = () => reject(reader.error ?? new Error('Could not read blob'))
+    reader.onerror = () =>
+      reject((getLocale() === 'en' && reader.error) || new Error(m.core_photo_read_failed()))
     reader.readAsArrayBuffer(blob)
   })
 }

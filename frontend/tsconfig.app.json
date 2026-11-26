@@ -17,5 +17,6 @@
       "$lib/*": ["./src/lib/*"]
     }
   },
+  "exclude": ["src/lib/paraglide"],
   "include": ["src/**/*.ts", "src/**/*.js", "src/**/*.svelte"]
 }

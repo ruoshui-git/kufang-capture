@@ -1,4 +1,5 @@
 <script lang="ts">
+  import LanguagePicker from '../../components/i18n/LanguagePicker.svelte'
   import { onMount } from 'svelte'
   import { navigate } from '../../app/router.svelte'
   import Button from '../../components/ui/Button.svelte'
@@ -63,4 +64,11 @@
     <p>This link is missing a valid sign-in code. Ask for a new link or enter your code.</p>
     {#if !inApp}<a href="/login?mode=code">Enter code</a>{/if}
   {/if}
+  <LanguagePicker
+    disabled={busy || !loaded}
+    beforeReload={() => {
+      // The join page removes the fragment after reading it. Restore it for this reload only.
+      if (code) history.replaceState(history.state, '', location.pathname + location.search + '#' + code)
+    }}
+  />
 </section>

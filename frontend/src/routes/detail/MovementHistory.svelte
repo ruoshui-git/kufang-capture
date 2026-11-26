@@ -1,11 +1,12 @@
 <script lang="ts">
+  import { getLocale } from '$lib/paraglide/runtime.js'
   import type { Id, Movement } from '$lib/types'
   import { formatSequence } from '$lib/types'
   import Button from '../../components/ui/Button.svelte'
 
   let { entryId, movements }: { entryId: Id; movements: Movement[] } = $props()
   let showUndone = $state(false)
-  const dateFormat = new Intl.DateTimeFormat(undefined, { month: 'short', day: 'numeric' })
+  const dateFormat = new Intl.DateTimeFormat(getLocale(), { month: 'short', day: 'numeric' })
   const hasUndone = $derived(movements.some((movement) => movement.undone_at !== null))
   const visible = $derived(movements.filter((movement) => showUndone || !movement.undone_at))
 

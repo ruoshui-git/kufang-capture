@@ -1,3 +1,4 @@
+import { m } from '../paraglide/messages.js'
 import { repo } from '../db'
 
 const units = ['pieces', 'boxes', 'packs', '']
@@ -34,7 +35,7 @@ async function createSamplePhoto(entryIndex: number, photoIndex: number) {
   canvas.width = 64
   canvas.height = 48
   const context = canvas.getContext('2d')
-  if (!context) throw new Error('Canvas is unavailable for generating test data.')
+  if (!context) throw new Error(m.core_sample_canvas_failed())
 
   context.fillStyle = `hsl(${(entryIndex * 31 + photoIndex * 73) % 360} 55% 65%)`
   context.fillRect(0, 0, canvas.width, canvas.height)
@@ -43,7 +44,7 @@ async function createSamplePhoto(entryIndex: number, photoIndex: number) {
   context.fillText(`${entryIndex + 1}:${photoIndex + 1}`, 4, 26)
   const blob = await new Promise<Blob>((resolve, reject) =>
     canvas.toBlob(
-      (value) => (value ? resolve(value) : reject(new Error('Could not generate a sample photo.'))),
+      (value) => (value ? resolve(value) : reject(new Error(m.core_sample_photo_failed()))),
       'image/jpeg',
       0.55,
     ),

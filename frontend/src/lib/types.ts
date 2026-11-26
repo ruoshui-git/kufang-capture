@@ -1,3 +1,5 @@
+import { m } from './paraglide/messages.js'
+
 // Shared domain contract for Kufang Capture. Owned by the orchestrator; agents
 // propose changes instead of editing it. Field names are snake_case so that the
 // IndexedDB records, the REST API (docs/api.md) and the export CSV/JSON
@@ -306,5 +308,12 @@ export function formatSequence(n: number): string {
 }
 
 export function entryDisplayTitle(e: Pick<EntryView, 'title' | 'sequence_number'>): string {
-  return e.title.trim() || `Entry ${formatSequence(e.sequence_number)}`
+  return e.title.trim() || m.core_entry_untitled({ sequence: formatSequence(e.sequence_number) })
+}
+
+/** The portable export format uses English labels in every locale. */
+export function entryExportTitle(e: Pick<EntryView, 'title' | 'sequence_number'>): string {
+  return (
+    e.title.trim() || m.core_entry_untitled({ sequence: formatSequence(e.sequence_number) }, { locale: 'en' })
+  )
 }

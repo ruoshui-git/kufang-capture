@@ -22,3 +22,7 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+
+# Generated translations and inlang state
+/src/lib/paraglide/
+/project.inlang/cache/

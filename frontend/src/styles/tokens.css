@@ -27,8 +27,10 @@
   --color-qr-modules: #000;
   --color-viewer-text: #f5f7f8;
   --color-viewer-muted: #aab3ba;
-  --font-display: 'Barlow Condensed', system-ui, sans-serif;
-  --font-body: -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Segoe UI', system-ui, sans-serif;
+  --font-cjk: 'PingFang SC', 'Hiragino Sans GB', 'Noto Sans CJK SC', 'Noto Sans SC', 'Microsoft YaHei';
+  --font-display: 'Barlow Condensed', system-ui, var(--font-cjk), sans-serif;
+  --font-body:
+    -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Segoe UI', system-ui, var(--font-cjk), sans-serif;
   --text-xs: 12px;
   --text-sm: 13px;
   --text-md: 15px;

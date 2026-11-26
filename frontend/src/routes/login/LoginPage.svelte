@@ -1,4 +1,5 @@
 <script lang="ts">
+  import LanguagePicker from '../../components/i18n/LanguagePicker.svelte'
   import { navigate } from '../../app/router.svelte'
   import Button from '../../components/ui/Button.svelte'
   import { accountGate } from '$lib/sync/binding'
@@ -97,4 +98,5 @@
     </Button>
     <a href="/settings">Back to Settings</a>
   </div>
+  <LanguagePicker disabled={busy || !!password || !!code} />
 </section>

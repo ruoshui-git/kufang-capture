@@ -1,4 +1,6 @@
+import { m } from '../paraglide/messages.js'
 import Dexie from 'dexie'
+import '../i18n/locale'
 import { derived, get, writable } from 'svelte/store'
 import { getCaptureDb } from '../db'
 import { SETTING_KEYS, type Setting } from '../types'
@@ -15,12 +17,17 @@ export type AccountAccess =
   | { kind: 'ready'; user: SessionUser }
   | { kind: 'blocked'; name: string; user: SessionUser | null; canSwitch: boolean }
 
-export const accountUnavailable = 'This account is temporarily unavailable. Try again later.'
-export const accountSignIn = 'Your session has ended. Sign in to sync.'
-export const accountMismatch = (name: string) =>
-  `This device belongs to ${name}. Sign in as ${name}, or use another browser profile.`
+export const accountUnavailable = m.core_account_unavailable()
+export const accountMismatch = (name: string) => m.core_account_mismatch({ name })
 
-export class AccountRequestError extends Error {}
+export class AccountRequestError extends Error {
+  constructor(
+    message: string,
+    readonly code?: 'sign_in',
+  ) {
+    super(message)
+  }
+}
 
 export function accountHeaders(id: string, init?: HeadersInit) {
   const headers = new Headers(init)
@@ -93,21 +100,21 @@ export class AccountGate {
       signal,
     })
     signal?.throwIfAborted()
-    if (this.generation !== generation) throw new DOMException('The account changed.', 'AbortError')
+    if (this.generation !== generation) throw new DOMException(m.core_account_session_changed(), 'AbortError')
     if (response.status === 503 && (await responseCode(response)) === 'account_unavailable') {
       this.unavailable()
-      throw new AccountRequestError(accountUnavailable)
+      throw new AccountRequestError(m.core_account_unavailable())
     }
     if (response.status === 401) return this.update({ kind: 'signed_out' })
-    if (!response.ok) throw new Error(`Session request failed (${response.status}).`)
+    if (!response.ok) throw new Error(m.core_session_request_failed({ status: response.status }))
     const session: Session = await response.json()
     signal?.throwIfAborted()
-    if (this.generation !== generation) throw new DOMException('The account changed.', 'AbortError')
+    if (this.generation !== generation) throw new DOMException(m.core_account_session_changed(), 'AbortError')
     if (!session.authenticated) return this.update({ kind: 'signed_out' })
-    if (!session.user?.id) throw new AccountRequestError('Could not verify the signed-in account.')
+    if (!session.user?.id) throw new AccountRequestError(m.core_account_verify_failed())
     const access = await this.bind(session.user, allowSwitch, signal, generation)
     signal?.throwIfAborted()
-    if (this.generation !== generation) throw new DOMException('The account changed.', 'AbortError')
+    if (this.generation !== generation) throw new DOMException(m.core_account_session_changed(), 'AbortError')
     return this.update(access)
   }
 
@@ -124,7 +131,8 @@ export class AccountGate {
       const [id, name] = await db.settings.bulkGet([accountIdKey, accountNameKey])
       const ensureCurrent = () => {
         signal?.throwIfAborted()
-        if (this.generation !== generation) throw new DOMException('The account changed.', 'AbortError')
+        if (this.generation !== generation)
+          throw new DOMException(m.core_account_session_changed(), 'AbortError')
       }
       ensureCurrent()
       if (id?.value === user.id) {
@@ -138,7 +146,7 @@ export class AccountGate {
       if (id || (hasSyncedData && !user.is_owner)) {
         const blocked = {
           kind: 'blocked' as const,
-          name: String(name?.value ?? 'Owner'),
+          name: String(name?.value ?? m.core_account_owner()),
           user,
           canSwitch: !hasSyncedData,
         }
@@ -146,7 +154,7 @@ export class AccountGate {
         const lease = (await db.settings.get(syncLeaseKey))?.value as { expiresAt: number } | undefined
         ensureCurrent()
         if (lease && lease.expiresAt > Date.now())
-          throw new AccountRequestError('Sync is finishing. Try switching again in a moment.')
+          throw new AccountRequestError(m.core_account_sync_finishing())
       }
       const settings: Setting[] = [
         { key: accountIdKey, value: user.id },
@@ -178,8 +186,9 @@ export class AccountGate {
 
   requireReady(access = this.current): SessionUser {
     if (access.kind === 'ready') return access.user
-    if (access.kind === 'unavailable') throw new AccountRequestError(accountUnavailable)
-    throw new AccountRequestError(access.kind === 'blocked' ? accountMismatch(access.name) : accountSignIn)
+    if (access.kind === 'unavailable') throw new AccountRequestError(m.core_account_unavailable())
+    if (access.kind === 'blocked') throw new AccountRequestError(accountMismatch(access.name))
+    throw new AccountRequestError(m.core_account_sign_in(), 'sign_in')
   }
 
   async request(fetcher: typeof fetch, url: string, init: RequestInit = {}, photoId?: string) {
@@ -188,7 +197,7 @@ export class AccountGate {
     const generation = this.generation
     const send = () => {
       if (this.generation !== generation || this.requireReady().id !== user.id)
-        throw new AccountRequestError('The account changed. Try again.')
+        throw new AccountRequestError(m.core_account_changed_retry())
       return fetcher(url, {
         ...init,
         credentials: 'same-origin',
@@ -203,7 +212,7 @@ export class AccountGate {
     // Start the fetch under a read snapshot so edits cannot change the binding or make a photo Local Only first.
     const request = await db.transaction('r', tables, async () => {
       if ((await db.settings.get(accountIdKey))?.value !== user.id)
-        throw new AccountRequestError('The account changed. Try again.')
+        throw new AccountRequestError(m.core_account_changed_retry())
       if (photoId !== undefined) {
         const photo = await db.photos.get(photoId)
         const entries = photo ? await db.entries.where('item_id').equals(photo.item_id).toArray() : []
@@ -212,7 +221,7 @@ export class AccountGate {
           !collections.some((collection) => collection?.storage_mode === 'synced') ||
           collections.some((collection) => collection?.storage_mode === 'local_only')
         )
-          throw new AccountRequestError('The original is only available on this device.')
+          throw new AccountRequestError(m.core_account_local_photo())
       }
       const response = Dexie.ignoreTransaction(async () => send())
       void response.catch(() => {})
@@ -227,14 +236,14 @@ export class AccountGate {
       throw new AccountRequestError(accountMismatch(user.name))
     }
     if (this.generation !== generation || this.requireReady().id !== user.id)
-      throw new AccountRequestError('The account changed. Try again.')
+      throw new AccountRequestError(m.core_account_changed_retry())
     if (response.status === 503 && (await responseCode(response)) === 'account_unavailable') {
       this.unavailable()
-      throw new AccountRequestError(accountUnavailable)
+      throw new AccountRequestError(m.core_account_unavailable())
     }
     if (response.status === 401) {
       this.reset(true)
-      throw new AccountRequestError(accountSignIn)
+      throw new AccountRequestError(m.core_account_sign_in(), 'sign_in')
     }
     return response
   }
