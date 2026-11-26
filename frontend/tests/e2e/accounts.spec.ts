@@ -158,7 +158,7 @@ test('pairs a helper, isolates rooms and photos, and refuses to switch a device 
         'POST /api/sync/batch',
         'GET /api/sync/changes',
         expect.stringMatching(/^HEAD \/api\/photos\/.+\/original$/),
-        expect.stringMatching(/^PUT \/api\/photos\/.+\/original$/),
+        expect.stringMatching(/^PATCH \/api\/photos\/.+\/original$/),
       ]),
     )
 

@@ -34,7 +34,8 @@ for (const locale of ['en', 'zh-CN'] as const) {
     const held = new Promise<void>((resolve) => (release = resolve))
     let uploadStarted = false
     await page.route('**/api/photos/*/original', async (route) => {
-      if (route.request().method() !== 'PUT') return route.continue()
+      const method = route.request().method()
+      if (method !== 'PUT' && method !== 'PATCH') return route.continue()
       uploadStarted = true
       // Continue the browser's request with its Blob body. WebKit's route.fetch loses that body.
       await held
@@ -61,7 +62,8 @@ for (const locale of ['en', 'zh-CN'] as const) {
         })
       }
       const acknowledgement = page.waitForResponse(
-        (response) => response.url().endsWith('/original') && response.request().method() === 'PUT',
+        (response) =>
+          response.url().endsWith('/original') && ['PUT', 'PATCH'].includes(response.request().method()),
       )
       release()
       expect((await acknowledgement).status()).toBe(201)

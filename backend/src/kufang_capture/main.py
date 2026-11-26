@@ -23,7 +23,14 @@ from .auth import (
 from .db import connect, single_writer
 from .exports import build_export
 from .people import people_router
-from .photos import get_photo, head_original, upload_original, upload_thumbnail
+from .photos import (
+    get_photo,
+    head_original,
+    patch_original,
+    remove_partial_uploads,
+    upload_original,
+    upload_thumbnail,
+)
 from .settings import Settings, get_settings
 from .sync import apply_batch, now, pull_changes
 
@@ -199,6 +206,16 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         )
         return JSONResponse(response, status_code=200 if existing and existing[0] else 201)
 
+    @app.patch("/api/photos/{photo_id}/original", status_code=201)
+    async def photo_original_patch(photo_id: str, request: Request):
+        return await patch_original(
+            request,
+            request.state.data_dir,
+            config.max_photo_bytes,
+            config.min_free_bytes,
+            partial(authorize, request),
+        )
+
     @app.head("/api/photos/{photo_id}/original")
     def photo_original_head(photo_id: str, request: Request):
         return Response(status_code=200, headers=head_original(request.state.data_dir, photo_id))
@@ -279,6 +296,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 )
             ]
             db.execute("DELETE FROM collections WHERE id=?", (collection_id,))
+            purged_photo_ids = []
             for item_id in orphan_items:
                 media_files.extend(
                     r[0]
@@ -288,6 +306,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     )
                 )
                 photo_ids = [r[0] for r in db.execute("SELECT id FROM photos WHERE item_id=?", (item_id,))]
+                purged_photo_ids.extend(photo_ids)
                 media_files.extend(f"media/thumbnails/{pid[:2]}/{pid}" for pid in photo_ids)
                 for photo_id in photo_ids:
                     db.execute("DELETE FROM photos WHERE id=?", (photo_id,))
@@ -309,6 +328,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             db.commit()
             for key in media_files:
                 (data_dir / key).unlink(missing_ok=True)
+            for photo_id in purged_photo_ids:
+                remove_partial_uploads(data_dir, photo_id)
         return Response(status_code=204)
 
     def export_response(data_dir: Path, collection_id: str | None, include_trash: bool):

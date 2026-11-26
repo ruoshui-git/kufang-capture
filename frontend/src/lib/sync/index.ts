@@ -72,6 +72,13 @@ type BatchResult = {
 }
 type SyncLease = { owner: Id; expiresAt: number; webLock?: boolean }
 const leaseDuration = 30_000
+const photoChunkSize = 1024 * 1024
+
+function photoUploadOffset(header: string | null, size: number) {
+  if (header === null || !/^\d+$/.test(header)) return
+  const offset = Number(header)
+  if (Number.isSafeInteger(offset) && offset <= size) return offset
+}
 
 function isAcknowledgedEntryEdit(row: OutboxItem, record?: { server_revision: number | null }) {
   return (
@@ -979,9 +986,12 @@ export function createSyncEngine(options: SyncEngineOptions = {}): SyncEngineWit
           .filter((photo) => photo.upload_state === 'uploading')
           .modify(patch)
       })
-    const sendPhoto = async (kind: 'original' | 'thumbnail', headers?: HeadersInit, body?: Blob) => {
-      const showProgress = kind === 'original' && !!body
-      if (showProgress) await refreshStatus()
+    const sendPhoto = async (
+      kind: 'original' | 'thumbnail',
+      upload?: { method: 'PUT' | 'PATCH'; headers: HeadersInit; body: Blob; offset?: number; total?: number },
+    ) => {
+      const showProgress = kind === 'original' && !!upload
+      if (showProgress && !uploadProgress) await refreshStatus()
       const request = await db.transaction(
         'r',
         [db.photos, db.items, db.entries, db.collections, db.settings],
@@ -994,8 +1004,8 @@ export function createSyncEngine(options: SyncEngineOptions = {}): SyncEngineWit
             collectionIds,
             ...startRequest(() => {
               const endpoint = `${url}/${kind}`
-              const scopedHeaders = dataHeaders(headers)
-              if (!body)
+              const scopedHeaders = dataHeaders(upload?.headers)
+              if (!upload)
                 return fetcher(endpoint, {
                   method: 'HEAD',
                   cache: 'no-store',
@@ -1003,15 +1013,18 @@ export function createSyncEngine(options: SyncEngineOptions = {}): SyncEngineWit
                   headers: scopedHeaders,
                   signal,
                 })
+              const offset = upload.offset ?? 0
+              const total = upload.total ?? upload.body.size
+              let sentBytes = offset
               const report = (sent: number) => {
-                const sentBytes = Math.min(body.size, Math.max(uploadProgress?.sent_bytes ?? 0, sent))
-                const percent = body.size ? Math.floor((sentBytes / body.size) * 100) : 0
+                sentBytes = Math.max(sentBytes, offset + Math.min(upload.body.size, sent))
+                const percent = total ? Math.floor((sentBytes / total) * 100) : 0
                 const changed = uploadProgress?.percent !== percent
                 uploadProgress = {
                   photo_id: photoId,
                   collection_ids: collectionIds,
                   sent_bytes: sentBytes,
-                  total_bytes: body.size,
+                  total_bytes: total,
                   percent,
                 }
                 if (changed) publishStatus()
@@ -1019,9 +1032,10 @@ export function createSyncEngine(options: SyncEngineOptions = {}): SyncEngineWit
               if (showProgress) report(0)
               return uploadBlob(
                 xhrFactory(),
+                upload.method,
                 endpoint,
                 scopedHeaders,
-                body,
+                upload.body,
                 signal,
                 timeouts,
                 showProgress ? report : undefined,
@@ -1030,15 +1044,12 @@ export function createSyncEngine(options: SyncEngineOptions = {}): SyncEngineWit
           }
         },
       )
-      if (request) {
-        try {
-          return { response: await request.response, collectionIds: request.collectionIds }
-        } finally {
-          if (showProgress) {
-            uploadProgress = null
-            publishStatus()
-          }
-        }
+      if (request) return { response: await request.response, collectionIds: request.collectionIds }
+    }
+    const clearProgress = () => {
+      if (uploadProgress) {
+        uploadProgress = null
+        publishStatus()
       }
     }
     const markUploaded = (serverKey?: string) =>
@@ -1074,22 +1085,59 @@ export function createSyncEngine(options: SyncEngineOptions = {}): SyncEngineWit
         throw new Error(m.core_sync_check_photo_failed({ status: head.status }, storedSyncLocale))
       const blob = await readPhotoBlob(photo.id, options.repoDbName)
       if (!blob) throw new Error(m.core_sync_original_missing({}, storedSyncLocale))
-      const original = await sendPhoto(
-        'original',
-        requestHeaders('PUT', {
-          'Content-Type': photo.mime_type,
+      const uploadFailed = (status: number) =>
+        new Error(m.core_sync_upload_failed({ status }, storedSyncLocale))
+      const size = blob.original.size
+      const resumeHeader = head.status === 404 ? head.headers.get('Upload-Offset') : null
+      let offset = photoUploadOffset(resumeHeader, size)
+      if (resumeHeader !== null && offset === undefined) throw uploadFailed(head.status)
+      // Offset recoveries are capped per attempt, so a server cannot keep one photo uploading forever.
+      let mismatches = 0
+      let original
+      while (true) {
+        const method = offset === undefined ? 'PUT' : 'PATCH'
+        const end = Math.min((offset ?? 0) + photoChunkSize, size)
+        const headers = requestHeaders(method, {
+          'Content-Type': method === 'PUT' ? photo.mime_type : 'application/offset+octet-stream',
           'X-Content-SHA256': photo.sha256,
-        }),
-        blob.original,
-      )
-      if (!original) return true
-      const put = original.response
-      if (await haltOnResponse(put, signal)) {
-        if (put.status === 507) await markFailed(storageLow, uploadRetryAt, photo.upload_attempts ?? 0)
-        return false
+        })
+        if (offset !== undefined) headers.set('Upload-Offset', String(offset))
+        original = await sendPhoto('original', {
+          method,
+          headers,
+          body: offset === undefined ? blob.original : blob.original.slice(offset, end),
+          offset,
+          total: size,
+        })
+        if (!original) return true
+        const response = original.response
+        if (await haltOnResponse(response, signal)) {
+          if (response.status === 507) await markFailed(storageLow, uploadRetryAt, photo.upload_attempts ?? 0)
+          return false
+        }
+        if (offset !== undefined && response.status === 204) {
+          const next = photoUploadOffset(response.headers.get('Upload-Offset'), size)
+          if (next === undefined || next <= offset || next > end) throw uploadFailed(response.status)
+          offset = next
+          continue
+        }
+        if (
+          offset !== undefined &&
+          response.status === 409 &&
+          (await responseCode(response)) === 'upload_offset_mismatch'
+        ) {
+          offset = photoUploadOffset(response.headers.get('Upload-Offset'), size)
+          if (offset === undefined || ++mismatches >= 3) throw uploadFailed(response.status)
+          continue
+        }
+        if (response.status !== 200 && response.status !== 201) throw uploadFailed(response.status)
+        break
       }
-      if (!put.ok) throw new Error(m.core_sync_upload_failed({ status: put.status }, storedSyncLocale))
-      const result = (await put.json()) as { sha256: string; byte_size: number; server_storage_key: string }
+      const result = (await original.response.json()) as {
+        sha256: string
+        byte_size: number
+        server_storage_key: string
+      }
       if (result.sha256 !== photo.sha256 || result.byte_size !== photo.byte_size)
         throw new Error(m.core_sync_checksum_mismatch({}, storedSyncLocale))
       if ((await markUploaded(result.server_storage_key)) > 0) {
@@ -1097,13 +1145,14 @@ export function createSyncEngine(options: SyncEngineOptions = {}): SyncEngineWit
         for (const id of original.collectionIds)
           uploadedByCollection.set(id, (uploadedByCollection.get(id) ?? 0) + 1)
       }
+      clearProgress()
       if (!blob.thumbnail || signal.aborted) return true
       try {
-        const thumb = await sendPhoto(
-          'thumbnail',
-          requestHeaders('PUT', { 'Content-Type': 'image/jpeg' }),
-          blob.thumbnail,
-        )
+        const thumb = await sendPhoto('thumbnail', {
+          method: 'PUT',
+          headers: requestHeaders('PUT', { 'Content-Type': 'image/jpeg' }),
+          body: blob.thumbnail,
+        })
         if (thumb && (await haltOnResponse(thumb.response, signal))) return false
       } catch (error) {
         // Thumbnails are optional and are not retried; the server serves the original in their place.
@@ -1121,6 +1170,7 @@ export function createSyncEngine(options: SyncEngineOptions = {}): SyncEngineWit
       // A transport failure can affect the whole queue. A per-photo error lets other photos proceed.
       return !(error instanceof TypeError)
     } finally {
+      clearProgress()
       await updateClaim({ upload_state: photo.upload_state })
     }
   }

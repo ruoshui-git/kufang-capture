@@ -254,6 +254,7 @@ def apply_batch(
 ) -> tuple[list[dict[str, Any]], int]:
     results = []
     media_to_delete: list[str] = []
+    partials_to_delete: list[str] = []
     with single_writer(), connect(data_dir) as db:
         authorize()
         if expected_revisions is not None:
@@ -287,6 +288,7 @@ def apply_batch(
                         db.commit()
                     continue
                 purge_paths = []
+                purge_photo_ids = []
                 if mutation.get("op") == "purge":
                     entity = mutation.get("entity")
                     entity_id = mutation.get("entity_id")
@@ -297,6 +299,7 @@ def apply_batch(
                         if media and media[0]:
                             purge_paths.append(media[0])
                         purge_paths.append(f"media/thumbnails/{entity_id[:2]}/{entity_id}")
+                        purge_photo_ids.append(entity_id)
                     elif entity == "entry":
                         parent = db.execute("SELECT item_id FROM entries WHERE id=?", (entity_id,)).fetchone()
                         if (
@@ -305,23 +308,19 @@ def apply_batch(
                                 "SELECT 1 FROM entries WHERE item_id=? AND id<>?", (parent[0], entity_id)
                             ).fetchone()
                         ):
-                            purge_paths.extend(
-                                row[0]
-                                for row in db.execute(
-                                    "SELECT storage_key FROM photos WHERE item_id=? "
-                                    "AND storage_key IS NOT NULL",
-                                    (parent[0],),
-                                )
-                            )
-                            purge_paths.extend(
-                                f"media/thumbnails/{row[0][:2]}/{row[0]}"
-                                for row in db.execute("SELECT id FROM photos WHERE item_id=?", (parent[0],))
-                            )
+                            for photo_id, storage_key in db.execute(
+                                "SELECT id, storage_key FROM photos WHERE item_id=?", (parent[0],)
+                            ):
+                                if storage_key:
+                                    purge_paths.append(storage_key)
+                                purge_paths.append(f"media/thumbnails/{photo_id[:2]}/{photo_id}")
+                                purge_photo_ids.append(photo_id)
                 result = _apply_one(db, mutation)
                 if expected_revisions is not None and result["status"] != "applied":
                     raise ValueError(f"Guarded batch rejected {mutation['entity_id']}: {result}")
                 if result["status"] == "applied":
                     media_to_delete.extend(purge_paths)
+                    partials_to_delete.extend(purge_photo_ids)
                 db.execute(
                     "INSERT INTO applied_mutations(mutation_id,result_json,applied_at) VALUES(?,?,?)",
                     (mutation["id"], json.dumps(result), now()),
@@ -337,6 +336,11 @@ def apply_batch(
         cursor = db.execute("SELECT COALESCE(MAX(seq),0) FROM changes").fetchone()[0]
         for storage_key in media_to_delete:
             (Path(data_dir) / storage_key).unlink(missing_ok=True)
+        if partials_to_delete:
+            from .photos import remove_partial_uploads
+
+            for photo_id in partials_to_delete:
+                remove_partial_uploads(data_dir, photo_id)
     return results, cursor
 
 

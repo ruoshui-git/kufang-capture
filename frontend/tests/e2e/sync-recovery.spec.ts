@@ -29,7 +29,8 @@ test('resumes original uploads after closing and reopening a persistent browser 
   let uploadStartedResolve!: () => void
   const uploadStarted = new Promise<void>((resolve) => (uploadStartedResolve = resolve))
   await page.route('**/api/photos/*/original', async (route) => {
-    if (route.request().method() !== 'PUT') {
+    const method = route.request().method()
+    if (method !== 'PUT' && method !== 'PATCH') {
       await route.continue()
       return
     }
@@ -151,7 +152,8 @@ test('low free space pauses original upload while synced metadata remains availa
       await addPhoto(page, row, `low-storage-${Date.now()}`)
       let storageMessage: string | undefined
       await page.route('**/api/photos/*/original', async (route) => {
-        if (route.request().method() !== 'PUT') {
+        const method = route.request().method()
+        if (method !== 'PUT' && method !== 'PATCH') {
           await route.continue()
           return
         }

@@ -114,8 +114,8 @@ describe('foreground sync privacy and consent', () => {
       return response(200)
     }) as unknown as typeof fetch
     const engine = createSyncEngine({ repoDbName: name, fetch: fetcher })
-    vi.spyOn(transport, 'uploadBlob').mockImplementation((_xhr, url, headers, blob, signal) =>
-      fetcher(url, { method: 'PUT', headers, body: blob, signal }),
+    vi.spyOn(transport, 'uploadBlob').mockImplementation((_xhr, method, url, headers, blob, signal) =>
+      fetcher(url, { method, headers, body: blob, signal }),
     )
     await engine.syncNow()
 

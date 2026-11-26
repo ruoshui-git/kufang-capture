@@ -47,6 +47,7 @@ export function withRequestTimeout(fetcher: typeof fetch, timeoutMs: number): ty
 
 export function uploadBlob(
   xhr: XMLHttpRequest,
+  method: 'PUT' | 'PATCH',
   url: string,
   headers: Headers,
   blob: Blob,
@@ -104,7 +105,7 @@ export function uploadBlob(
       }
     }
     try {
-      xhr.open('PUT', url)
+      xhr.open(method, url)
       headers.forEach((value, name) => xhr.setRequestHeader(name, value))
       signal.addEventListener('abort', onAbort, { once: true })
       arm(timeouts.uploadStallMs)

@@ -47,8 +47,12 @@ class MemoryServer {
   mutationResults = new Map<Id, Record<string, unknown>>()
   changes: Change[] = []
   stored = new Map<Id, { sha256: string; byte_size: number; key: string }>()
+  originals = new Map<Id, Blob>()
+  partials = new Map<Id, { sha256: string; body: Blob }>()
   collectionsWithModes = new Map<Id, 'local_only' | 'synced'>()
   pulls = 0
+
+  constructor(private resumable = false) {}
 
   key(entity: OutboxEntity, id: Id) {
     return `${entity}:${id}`
@@ -102,32 +106,65 @@ class MemoryServer {
       const photoId = decodeURIComponent(photoMatch[1]!)
       const kind = photoMatch[2]
       const record = this.records.get(this.key('photo', photoId))
+      const partial = this.partials.get(photoId)
+      const currentPartial = partial?.sha256 === record?.sha256 ? partial?.body : undefined
+      const offsetHeaders = (offset: number) => ({ 'Upload-Offset': String(offset) })
       if (method === 'HEAD' && kind === 'original') {
         const stored = this.stored.get(photoId)
         return stored
           ? new Response(null, { status: 200, headers: { ETag: stored.sha256 } })
-          : new Response(null, { status: 404 })
+          : new Response(null, {
+              status: 404,
+              headers: this.resumable ? offsetHeaders(currentPartial?.size ?? 0) : undefined,
+            })
       }
-      if (method === 'PUT' && kind === 'original') {
+      if ((method === 'PUT' || (method === 'PATCH' && this.resumable)) && kind === 'original') {
         if (this.storageLow)
           return new Response(JSON.stringify({ detail: 'server_storage_low' }), { status: 507 })
         if (!record) return new Response(null, { status: 409 })
-        const blob = init.body as Blob
-        const digest = await sha256(blob)
-        const expectedHeader = new Headers(init.headers).get('X-Content-SHA256')
-        if (expectedHeader !== record.sha256 || digest !== expectedHeader || blob.size !== record.byte_size)
-          return new Response(JSON.stringify({ detail: 'checksum_mismatch' }), { status: 422 })
-        if (!this.stored.has(photoId))
-          this.stored.set(photoId, { sha256: digest, byte_size: blob.size, key: `media/${photoId}` })
-        const stored = this.stored.get(photoId)!
+        let blob = init.body as Blob
+        const headers = new Headers(init.headers)
+        const expectedHeader = headers.get('X-Content-SHA256')
+        const checksumMismatch = () => Response.json({ detail: 'checksum_mismatch' }, { status: 422 })
+        if (expectedHeader !== record.sha256) return checksumMismatch()
+        let stored = this.stored.get(photoId)
+        const status = method === 'PATCH' && stored ? 200 : 201
+        if (method === 'PATCH' && !stored) {
+          const offset = currentPartial?.size ?? 0
+          if (headers.get('Upload-Offset') !== String(offset)) {
+            return Response.json(
+              { detail: 'upload_offset_mismatch', offset },
+              { status: 409, headers: offsetHeaders(offset) },
+            )
+          }
+          if (blob.size > 1024 * 1024) return Response.json({ detail: 'chunk_too_large' }, { status: 413 })
+          if (currentPartial) blob = new NodeBlob([currentPartial, blob])
+          if (blob.size < Number(record.byte_size)) {
+            this.partials.set(photoId, { sha256: expectedHeader!, body: blob })
+            return new Response(null, { status: 204, headers: offsetHeaders(blob.size) })
+          }
+        }
+        if (status !== 200) {
+          const digest = await sha256(blob)
+          if (digest !== expectedHeader || blob.size !== record.byte_size) {
+            if (method === 'PATCH') this.partials.delete(photoId)
+            return checksumMismatch()
+          }
+          if (!stored) {
+            stored = { sha256: digest, byte_size: blob.size, key: `media/${photoId}` }
+            this.stored.set(photoId, stored)
+            this.originals.set(photoId, blob)
+          }
+        }
+        this.partials.delete(photoId)
         return new Response(
           JSON.stringify({
             photo_id: photoId,
-            sha256: this.mismatchUpload ? 'bad-hash' : stored.sha256,
-            byte_size: this.mismatchUpload ? stored.byte_size + 1 : stored.byte_size,
-            server_storage_key: stored.key,
+            sha256: this.mismatchUpload ? 'bad-hash' : stored!.sha256,
+            byte_size: this.mismatchUpload ? stored!.byte_size + 1 : stored!.byte_size,
+            server_storage_key: stored!.key,
           }),
-          { status: 201 },
+          { status },
         )
       }
       if (method === 'PUT' && kind === 'thumbnail') return new Response(null, { status: 201 })
@@ -396,12 +433,19 @@ async function syncedEntry(server: MemoryServer) {
   return { name, repo, collection, entry, engine, db: getCaptureDb(name) }
 }
 
-async function addPhoto(repo: ReturnType<typeof makeRepo>, entryId: Id) {
-  return (
-    await repo.addPhotos(entryId, [
-      { blob: new NodeBlob(['photo-bytes'], { type: 'image/jpeg' }) as Blob, source: 'photo_library' },
-    ])
-  )[0]!
+async function addPhoto(
+  repo: ReturnType<typeof makeRepo>,
+  entryId: Id,
+  blob = new NodeBlob(['photo-bytes'], { type: 'image/jpeg' }),
+) {
+  return (await repo.addPhotos(entryId, [{ blob, source: 'photo_library' }]))[0]!
+}
+
+const mib = 1024 * 1024
+
+function largeOriginal() {
+  const data = Uint8Array.from({ length: 2.5 * mib }, (_, index) => (index * 31 + (index >>> 17)) & 255)
+  return new NodeBlob([data], { type: 'image/jpeg' })
 }
 
 async function waitFor(predicate: () => Promise<boolean>, message = 'Timed out waiting for sync') {
@@ -1528,6 +1572,199 @@ describe('sync acceptance against an in-memory API server', () => {
     ).toHaveLength(2)
     expect(server.stored.size).toBe(1)
     await fixture.db.delete()
+  })
+
+  it('resumes an exact 2.5 MiB original after an interrupted PATCH and reports whole-photo progress', async () => {
+    const server = new MemoryServer(true)
+    const { name, repo, entry, db } = await syncedEntry(server)
+    const blob = largeOriginal()
+    const photo = await addPhoto(repo, entry.id, blob)
+    const finalPatch = deferred<TestUpload>()
+    const patches: TestUpload[] = []
+    const partialBytes = 128 * 1024
+    let retrying = false
+    const engine = makeEngine(name, server, {
+      xhrFactory: xhrFactory((xhr) => {
+        if (xhr.method === 'PATCH') {
+          patches.push(xhr)
+          xhr.upload.onprogress?.({ loaded: 64 * 1024 })
+          if (patches.length === 2) {
+            void xhr.reply(async (input, init) => {
+              const response = await server.fetch(input, { ...init, body: xhr.body.slice(0, partialBytes) })
+              expect(response.status).toBe(204)
+              throw new TypeError('Interrupted after a portion of the body reached the server')
+            })
+            return
+          }
+          if (retrying && Number(xhr.headers.get('Upload-Offset')) + xhr.body.size === blob.size) {
+            finalPatch.resolve(xhr)
+            return
+          }
+        }
+        void xhr.reply(server.fetch)
+      }),
+    })
+    const progress: Array<PhotoUploadProgress | null> = []
+    engine.status.subscribe((status) => progress.push(status.upload_progress))
+    await engine.runScheduledCycle()
+    expect(patches.map((xhr) => xhr.headers.get('Upload-Offset'))).toEqual(['0', String(mib)])
+    expect(server.partials.get(photo.id)?.body.size).toBe(mib + partialBytes)
+    expect(await db.photos.get(photo.id)).toMatchObject({ upload_state: 'error', upload_attempts: 1 })
+    expect(server.stored.has(photo.id)).toBe(false)
+    await engine.runScheduledCycle()
+    expect(patches).toHaveLength(2)
+
+    fixedNow.value = new Date(clock().getTime() + 2_000)
+    retrying = true
+    const progressBeforeRetry = progress.length
+    const retry = engine.runScheduledCycle()
+    const last = await finalPatch.promise
+    const resumedAt = mib + partialBytes
+    expect(patches.map((xhr) => Number(xhr.headers.get('Upload-Offset')))).toEqual([
+      0,
+      mib,
+      resumedAt,
+      resumedAt + mib,
+    ])
+    expect(patches.map((xhr) => xhr.body.size)).toEqual([mib, mib, mib, blob.size - resumedAt - mib])
+    expect(patches[2]?.headers.get('X-Capture-Account')).toBe('owner')
+    expect(patches[2]?.headers.get('X-Capture-Request')).toBe('1')
+    const originalRequests = server.requests.filter(({ url }) => url.endsWith('/original'))
+    expect(originalRequests.map(({ method }) => method)).toEqual(['HEAD', 'PATCH', 'PATCH', 'HEAD', 'PATCH'])
+    expect(progress.slice(progressBeforeRetry).find(Boolean)).toMatchObject({
+      sent_bytes: resumedAt,
+      total_bytes: blob.size,
+      percent: 45,
+    })
+    last.upload.onload?.()
+    expect(progress.at(-1)).toMatchObject({ sent_bytes: blob.size, total_bytes: blob.size, percent: 100 })
+    expect(await db.photos.get(photo.id)).toMatchObject({ upload_state: 'uploading' })
+    expect((await waitForStatus(engine, () => true)).pending_uploads).toBe(1)
+    expect(server.stored.has(photo.id)).toBe(false)
+    await last.reply(server.fetch)
+    await retry
+    expect(await db.photos.get(photo.id)).toMatchObject({ upload_state: 'uploaded', upload_attempts: 0 })
+    expect((await waitForStatus(engine, () => true)).pending_uploads).toBe(0)
+    expect(await server.originals.get(photo.id)!.arrayBuffer()).toEqual(await blob.arrayBuffer())
+    expect(progress.at(-1)).toBeNull()
+    await db.delete()
+  })
+
+  it('sends a 2.5 MiB original in three PATCH requests', async () => {
+    const server = new MemoryServer(true)
+    const { repo, engine, db, entry } = await syncedEntry(server)
+    const blob = largeOriginal()
+    const photo = await addPhoto(repo, entry.id, blob)
+    await engine.runScheduledCycle()
+    const originals = server.requests.filter(({ url }) => url.endsWith('/original'))
+    expect(originals.map(({ method, body }) => [method, (body as Blob | undefined)?.size])).toEqual([
+      ['HEAD', undefined],
+      ['PATCH', mib],
+      ['PATCH', mib],
+      ['PATCH', mib / 2],
+    ])
+    expect(await server.originals.get(photo.id)!.arrayBuffer()).toEqual(await blob.arrayBuffer())
+    expect(await db.photos.get(photo.id)).toMatchObject({ upload_state: 'uploaded' })
+    await db.delete()
+  })
+
+  it.each([false, true])('handles PATCH offset mismatches (persistent: %s)', async (persistent) => {
+    const server = new MemoryServer(true)
+    const { repo, name, db, entry } = await syncedEntry(server)
+    const photo = await addPhoto(repo, entry.id)
+    const offsets: string[] = []
+    const fetch = server.fetch
+    server.fetch = async (input, init) => {
+      if (init?.method === 'PATCH') {
+        offsets.push(new Headers(init.headers).get('Upload-Offset')!)
+        if (offsets.length === 1) {
+          server.partials.set(photo.id, { sha256: photo.sha256, body: (init.body as Blob).slice(0, 5) })
+        } else if (persistent) {
+          server.partials.delete(photo.id)
+          return Response.json(
+            { detail: 'upload_offset_mismatch', offset: 0 },
+            { status: 409, headers: { 'Upload-Offset': '0' } },
+          )
+        }
+      }
+      return fetch(input, init)
+    }
+    const engine = makeEngine(name, server)
+    await engine.runScheduledCycle()
+    if (persistent) {
+      expect(offsets).toEqual(['0', '5', '0'])
+      expect(await db.photos.get(photo.id)).toMatchObject({
+        upload_state: 'error',
+        upload_attempts: 1,
+        upload_next_attempt_at: new Date(clock().getTime() + 2_000).toISOString(),
+      })
+      await engine.runScheduledCycle()
+      expect(offsets).toHaveLength(3)
+    } else {
+      expect(offsets).toEqual(['0', '5'])
+      expect(await db.photos.get(photo.id)).toMatchObject({ upload_state: 'uploaded' })
+      expect(await server.originals.get(photo.id)?.text()).toBe('photo-bytes')
+    }
+    await db.delete()
+  })
+
+  it('caps offset recoveries per attempt even when progress responses come in between', async () => {
+    const server = new MemoryServer(true)
+    const { repo, name, db, entry } = await syncedEntry(server)
+    const photo = await addPhoto(repo, entry.id, largeOriginal())
+    let patches = 0
+    const fetch = server.fetch
+    server.fetch = async (input, init) => {
+      if (init?.method !== 'PATCH') return fetch(input, init)
+      patches++
+      // A misbehaving server acknowledges a slice, then reports that it lost everything again.
+      if (patches % 2 === 1) {
+        const offset = Number(new Headers(init.headers).get('Upload-Offset'))
+        const next = String(offset + (init.body as Blob).size)
+        return new Response(null, { status: 204, headers: { 'Upload-Offset': next } })
+      }
+      return Response.json(
+        { detail: 'upload_offset_mismatch', offset: 0 },
+        { status: 409, headers: { 'Upload-Offset': '0' } },
+      )
+    }
+    await makeEngine(name, server).runScheduledCycle()
+    expect(patches).toBe(6)
+    expect(await db.photos.get(photo.id)).toMatchObject({ upload_state: 'error', upload_attempts: 1 })
+    await db.delete()
+  })
+
+  it('falls back to a single PUT when an older server omits Upload-Offset', async () => {
+    const server = new MemoryServer()
+    const { repo, engine, db, entry } = await syncedEntry(server)
+    const photo = await addPhoto(repo, entry.id)
+    await engine.runScheduledCycle()
+    const originals = server.requests.filter(({ url }) => url.endsWith('/original'))
+    expect(originals.map(({ method }) => method)).toEqual(['HEAD', 'PUT'])
+    expect(await (originals[1]!.body as Blob).text()).toBe('photo-bytes')
+    expect(await db.photos.get(photo.id)).toMatchObject({ upload_state: 'uploaded' })
+    await db.delete()
+  })
+
+  it('rechecks Local Only before sending the next PATCH', async () => {
+    const server = new MemoryServer(true)
+    const { repo, name, db, entry, collection } = await syncedEntry(server)
+    const photo = await addPhoto(repo, entry.id, largeOriginal())
+    const fetch = server.fetch
+    server.fetch = async (input, init) => {
+      const response = await fetch(input, init)
+      if (init?.method === 'PATCH' && response.status === 204) {
+        await repo.setStorageMode(collection.id, 'local_only', { consentToUploadExisting: false })
+      }
+      return response
+    }
+    await makeEngine(name, server).runScheduledCycle()
+    expect(server.requests.filter(({ method }) => method === 'PATCH')).toHaveLength(1)
+    expect(await db.photos.get(photo.id)).toMatchObject({
+      upload_state: 'not_needed',
+      sync_state: 'local_only',
+    })
+    await db.delete()
   })
 
   it('records a checksum mismatch as an upload error and schedules exponential retry', async () => {

@@ -136,7 +136,8 @@ A removal or purge keeps the affected records and originals on the device if it 
 | Method | Path | Notes |
 |---|---|---|
 | PUT | `/api/photos/{id}/original` | Raw body; see below |
-| HEAD | `/api/photos/{id}/original` | `200` with `ETag` = sha256 when stored and verified, `404` otherwise. Used to resume after the app is killed. |
+| HEAD | `/api/photos/{id}/original` | `200` with `ETag` = sha256, `Content-Type` and `Content-Length` for a stored original. `404` with `Upload-Offset` for a missing original. |
+| PATCH | `/api/photos/{id}/original` | Append up to 1 MiB to a partial original at the server's current offset. |
 | PUT | `/api/photos/{id}/thumbnail` | Optional client JPEG, PNG or WebP of at most 1 MiB. A new upload replaces the thumbnail |
 | GET | `/api/photos/{id}/original`, `/thumbnail` | Session and account binding required as above. Response includes `ETag`. If a thumbnail is missing, its URL serves the stored original when available. |
 | HEAD | `/api/photos/{id}/thumbnail` | Same status and headers as thumbnail GET, with an empty body. |
@@ -147,11 +148,26 @@ A removal or purge keeps the affected records and originals on the device if it 
 - `X-Content-SHA256`: lowercase hex
 - `X-Capture-Request: 1`
 
-The photo's metadata must already be synced: otherwise `409 photo_metadata_missing`. The header hash must equal the metadata `sha256`: otherwise `422 checksum_mismatch`.
+Both original upload methods require synced photo metadata (`409 photo_metadata_missing`), a header hash matching the metadata `sha256` (`422 checksum_mismatch`), and a metadata size at or below `MAX_PHOTO_BYTES` (`413 photo_too_large`). If free disk space is below `MIN_FREE_BYTES`, the server answers `507 server_storage_low` before reading the body.
 
-The server streams the body to a temp file in the media volume while computing SHA-256, CRC-32 and the size. Bodies over `MAX_PHOTO_BYTES` get `413`. The server verifies all three against the metadata, fsyncs, and renames the file atomically to `media/originals/<id[0:2]>/<id>`. Original and thumbnail uploads recheck metadata under the writer lock before installing the file. If the metadata was removed while the upload streamed, the server discards the temp file and answers `409 photo_metadata_missing`.
+`PUT` streams a full original to a temporary file while computing SHA-256, CRC-32 and the size. Bodies over `MAX_PHOTO_BYTES` get `413 photo_too_large`.
 
-The response is `201` (or `200` if it was already stored with the same hash), with `{ "photo_id", "sha256", "byte_size", "server_storage_key" }`. Only then does the client mark the photo `uploaded` (shown as "Backed up"). If free disk space is below `MIN_FREE_BYTES`, the server answers `507 server_storage_low` before reading the body.
+For resumable upload, start with `HEAD`. On a `404`, `Upload-Offset` is the number of bytes held for this photo's current SHA-256, or `0` when no valid partial exists. A `404` without this header indicates an older server and the client sends a full `PUT`.
+
+`PATCH …/original` sends the next bytes with these headers:
+
+- `Upload-Offset` is the non-negative integer position in the whole original. A missing or invalid value returns `422 invalid_upload_offset`.
+- `X-Content-SHA256` is the lowercase hex hash of the whole original.
+- `Content-Type` is `application/offset+octet-stream`. Other values return `415 unsupported_chunk_type`.
+- `X-Capture-Request: 1` and `X-Capture-Account` follow the standard request and account binding rules.
+
+An offset mismatch returns `409 {"detail":"upload_offset_mismatch","offset":<n>}` with `Upload-Offset: <n>` and appends no bytes. A body over 1 MiB returns `413 chunk_too_large`. Bytes beyond the metadata size discard the partial and return `422 checksum_mismatch`. The server appends as it reads the stream and fsyncs the received bytes, including when the client disconnects mid-body. A newer PATCH takes over the partial and prevents the older request from appending further. An intermediate response is `204` with `Upload-Offset` set to the new size. If a disconnect left all bytes on disk, an empty PATCH at that offset triggers verification.
+
+When the file is complete, the server verifies its size, SHA-256 and CRC-32 against metadata. Failure returns `422 checksum_mismatch` and discards the temporary file. Uploads recheck metadata under the writer lock before installing any original or thumbnail. If metadata was removed while the file streamed, installation returns `409 photo_metadata_missing`. For a verified original the server fsyncs the file, renames it atomically to `media/originals/<id[0:2]>/<id>`, fsyncs the directory, and records the upload and photo change.
+
+Both methods return `201` for a new install or `200` for an intact stored original, with `{ "photo_id", "sha256", "byte_size", "server_storage_key" }`. The client marks the photo `uploaded` (shown as “Backed up”) after checking this acknowledgment or finding the matching hash on a stored-original `HEAD`.
+
+Partials live in the account's `media/tmp/partial/` as `<photo-id>.<sha256>`. Uploads remove stale hashes for the same photo and discard partials older than seven days during PATCH cleanup. A successful PUT or PATCH, or a photo purge, removes any partial for that photo. Exports, People counts and Agent API reads treat partials as missing originals.
 
 ## Collections (desktop export and server-copy removal)
 
