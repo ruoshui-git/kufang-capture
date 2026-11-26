@@ -456,6 +456,10 @@ test('localizes import search, source steps, shared placements, and bulk move', 
 })
 
 test('localizes fast camera controls, save states and permission recovery', async ({ page }, info) => {
+  test.skip(
+    info.project.name === 'iphone-webkit',
+    'Playwright WebKit exposes no mediaDevices to stub; the same copy is covered on Chromium',
+  )
   await page.addInitScript(() => {
     if (!navigator.mediaDevices) return
     Object.defineProperty(globalThis, 'ImageCapture', { configurable: true, value: undefined })

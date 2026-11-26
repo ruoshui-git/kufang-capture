@@ -3,6 +3,9 @@ import { join } from 'node:path'
 import { expectNoEnglish, useChinese } from './helpers/i18n'
 import { api, loginContext } from './helpers/sync'
 
+// Mocked API routes must reach the page; WebKit does not route service-worker fetches.
+test.use({ serviceWorkers: 'block' })
+
 const fakeCode = '1234-5678'
 const signIn = '登录'
 const close = '关闭'
@@ -163,7 +166,8 @@ test('translates Settings, device export errors, and account availability', asyn
 }, info) => {
   await page.addInitScript(() => {
     let persisted = false
-    Object.defineProperties(navigator.storage, {
+    // WebKit ignores an own-property override on navigator.storage; patch the prototype.
+    Object.defineProperties(StorageManager.prototype, {
       persisted: { value: async () => persisted },
       persist: {
         value: async () => {

@@ -419,59 +419,64 @@ test('offline-ready and interrupted-camera notifications and page not found', as
   await expect(page.getByRole('heading', { name: '清点单', exact: true })).toBeVisible()
 })
 
-test('shows account and sync errors, offline changes, and both remaining creation notifications', async ({
-  page,
-  context,
-}) => {
-  let session: 'unavailable' | 'ready' | 'mismatch' = 'unavailable'
-  await page.route('**/api/auth/session', async (route) => {
-    if (session === 'unavailable') {
-      await route.fulfill({ status: 503, json: { code: 'account_unavailable' } })
-      return
-    }
-    await route.fulfill({
-      json: {
-        authenticated: true,
-        expires_at: null,
-        user: {
-          id: session === 'ready' ? 'fixture-owner' : 'fixture-other',
-          name: '测试账号',
-          is_owner: true,
+test.describe('with mocked API routes', () => {
+  // Mocked API routes must reach the page; WebKit does not route service-worker fetches.
+  test.use({ serviceWorkers: 'block' })
+
+  test('shows account and sync errors, offline changes, and both remaining creation notifications', async ({
+    page,
+    context,
+  }) => {
+    let session: 'unavailable' | 'ready' | 'mismatch' = 'unavailable'
+    await page.route('**/api/auth/session', async (route) => {
+      if (session === 'unavailable') {
+        await route.fulfill({ status: 503, json: { code: 'account_unavailable' } })
+        return
+      }
+      await route.fulfill({
+        json: {
+          authenticated: true,
+          expires_at: null,
+          user: {
+            id: session === 'ready' ? 'fixture-owner' : 'fixture-other',
+            name: '测试账号',
+            is_owner: true,
+          },
         },
-      },
+      })
     })
+    await page.route('**/api/sync/**', (route) => route.fulfill({ status: 500, json: {} }))
+
+    await page.goto('/')
+    await expect(appStatus(page)).toContainText('此账号暂时不可用')
+    await checkChinese(page, statusCopy(page))
+    await createCollection(page, syncRoom, '', true)
+    await checkToast(page, '已创建，联网后将同步。')
+
+    session = 'ready'
+    await page.goto('/')
+    await expect(appStatus(page)).toContainText('同步出错。')
+    await checkChinese(page, statusCopy(page))
+    const navigation = page.locator('.rail-account')
+    if (await navigation.isVisible()) {
+      await expect(navigation.getByRole('link', { name: '服务器导出' })).toBeVisible()
+      await checkChinese(page, navigation)
+    }
+    await createCollection(page, room, '', true)
+    await checkToast(page, '已创建，将自动同步。')
+    await context.setOffline(true)
+    await expect(appStatus(page)).toContainText('已保存到本设备，联网后将同步。')
+    await checkChinese(page, statusCopy(page))
+    await context.setOffline(false)
+
+    session = 'mismatch'
+    await page.goto('/')
+    await expect(appStatus(page)).toContainText('此设备已绑定到 测试账号')
+    await checkChinese(page, appStatus(page))
+    await appStatus(page).getByRole('link', { name: '账号' }).click()
+    await expect(appStatus(page)).toContainText('同步受阻')
+    await checkChinese(page, appStatus(page))
   })
-  await page.route('**/api/sync/**', (route) => route.fulfill({ status: 500, json: {} }))
-
-  await page.goto('/')
-  await expect(appStatus(page)).toContainText('此账号暂时不可用')
-  await checkChinese(page, statusCopy(page))
-  await createCollection(page, syncRoom, '', true)
-  await checkToast(page, '已创建，联网后将同步。')
-
-  session = 'ready'
-  await page.goto('/')
-  await expect(appStatus(page)).toContainText('同步出错。')
-  await checkChinese(page, statusCopy(page))
-  const navigation = page.locator('.rail-account')
-  if (await navigation.isVisible()) {
-    await expect(navigation.getByRole('link', { name: '服务器导出' })).toBeVisible()
-    await checkChinese(page, navigation)
-  }
-  await createCollection(page, room, '', true)
-  await checkToast(page, '已创建，将自动同步。')
-  await context.setOffline(true)
-  await expect(appStatus(page)).toContainText('已保存到本设备，联网后将同步。')
-  await checkChinese(page, statusCopy(page))
-  await context.setOffline(false)
-
-  session = 'mismatch'
-  await page.goto('/')
-  await expect(appStatus(page)).toContainText('此设备已绑定到 测试账号')
-  await checkChinese(page, appStatus(page))
-  await appStatus(page).getByRole('link', { name: '账号' }).click()
-  await expect(appStatus(page)).toContainText('同步受阻')
-  await checkChinese(page, appStatus(page))
 })
 
 test('paginates entries and keeps units as entered', async ({ page }) => {
