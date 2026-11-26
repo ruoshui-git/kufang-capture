@@ -416,8 +416,9 @@ test('translates server export loading, empty, populated, and download states', 
 test('translates diagnostics summary and controls while the report stays English', async ({ page }, info) => {
   await page.addInitScript(() => {
     let allowCamera = false
-    Object.defineProperties(navigator.mediaDevices, {
+    const camera = {
       getUserMedia: {
+        configurable: true,
         get: () => {
           if (allowCamera) return undefined
           return async () => {
@@ -426,8 +427,11 @@ test('translates diagnostics summary and controls while the report stays English
           }
         },
       },
-      enumerateDevices: { value: async () => [] },
-    })
+      enumerateDevices: { configurable: true, value: async () => [] },
+    }
+    // WebKit can resolve these through the prototype, so replace them there too.
+    Object.defineProperties(MediaDevices.prototype, camera)
+    Object.defineProperties(navigator.mediaDevices, camera)
     let copied = false
     Object.defineProperty(navigator.clipboard, 'writeText', {
       value: async (value: string) => {
