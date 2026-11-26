@@ -378,3 +378,36 @@ describe('v4 to v5 migration', () => {
     await db.delete()
   })
 })
+
+it('rewinds a schema 2 pull cursor once and keeps its outbox and conflicts', async () => {
+  const name = 'capture-v5-cursor-' + crypto.randomUUID()
+  const old = new Dexie(name)
+  old.version(5).stores({
+    settings: 'key',
+    outbox: 'id, [entity+entity_id]',
+    conflicts: 'id, collection_id, [entity+entity_id], created_at',
+  })
+  const mutation = {
+    id: 'pending-note',
+    entity: 'entry',
+    entity_id: 'entry-1',
+    fields: { entry_notes: 'local' },
+  }
+  const conflict = { id: 'conflicting-note', entity: 'entry', entity_id: 'entry-1', fields: ['entry_notes'] }
+  await old.table('settings').put({ key: 'sync_cursor', value: 142 })
+  await old.table('outbox').put(mutation)
+  await old.table('conflicts').put(conflict)
+  old.close()
+
+  const upgraded = getCaptureDb(name)
+  expect((await upgraded.settings.get('sync_cursor'))?.value).toBe(0)
+  expect((await upgraded.settings.get('sync_schema2_cursor'))?.value).toBe(142)
+  expect(await upgraded.outbox.toArray()).toEqual([mutation])
+  expect(await upgraded.conflicts.toArray()).toEqual([conflict])
+  expect(await upgraded.movements.count()).toBe(0)
+  await upgraded.settings.put({ key: 'sync_cursor', value: 160 })
+  upgraded.close()
+  const reopened = getCaptureDb(name)
+  expect((await reopened.settings.get('sync_cursor'))?.value).toBe(160)
+  await reopened.delete()
+})

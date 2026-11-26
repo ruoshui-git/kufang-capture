@@ -232,6 +232,60 @@ class VerifyExportTests(unittest.TestCase):
     def test_good_v3_archive(self) -> None:
         self.assertEqual(verify_export.verify(self.write_archive(v3_archive_files())), [])
 
+    def test_v4_movements_allow_purged_endpoints_and_preserve_decimal_text(self) -> None:
+        files = v3_archive_files()
+        manifest_path = "capture-export/manifest.json"
+        manifest = json.loads(files[manifest_path])
+        manifest["format_version"] = 4
+        stamp = "2026-11-08T07:00:00.000Z"
+        row = dict(
+            movement_id="01KAVC1P9Z4WY6JRQXN3W645T0",
+            item_id="I1",
+            from_entry_id=None,
+            to_entry_id="E1",
+            from_collection_id="purged",
+            to_collection_id="C1",
+            from_sequence=32,
+            to_sequence=1,
+            from_name="Earlier room",
+            to_name="Room",
+            quantity="2.50",
+            unit="boxes",
+            count_detail="",
+            target_before_quantity=None,
+            kind="part",
+            moved_at=stamp,
+            undone_at=stamp,
+            source="app",
+            legacy_text="",
+            created_at=stamp,
+            updated_at=stamp,
+            revision=2,
+        )
+
+        def install_movement_rows() -> None:
+            for ext, payload in (
+                ("csv", csv_bytes(verify_export.MOVEMENTS, [row])),
+                ("json", json.dumps([row]).encode()),
+            ):
+                path = f"movements.{ext}"
+                files[f"capture-export/{path}"] = payload
+            manifest["files"] = [
+                {"path": path.removeprefix("capture-export/"), "byte_size": len(data),
+                 "sha256": hashlib.sha256(data).hexdigest()}
+                for path, data in files.items() if path != manifest_path
+            ]
+            manifest["counts"]["movements"] = 1
+            files[manifest_path] = json.dumps(manifest).encode()
+
+        install_movement_rows()
+        self.assertEqual(verify_export.verify(self.write_archive(files)), [])
+        row.update(quantity=2.5, item_id="not-exported")
+        install_movement_rows()
+        problems = verify_export.verify(self.write_archive(files))
+        self.assertTrue(any("quantity must be a raw decimal string" in problem for problem in problems))
+        self.assertTrue(any("item_id is not exported" in problem for problem in problems))
+
     def test_v3_case_insensitive_duplicate_path_is_reported(self) -> None:
         files = v3_archive_files()
         rows = json.loads(files["capture-export/photos.json"])

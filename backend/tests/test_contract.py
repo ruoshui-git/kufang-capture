@@ -902,11 +902,12 @@ def test_export_shared_and_trash_item_sets(tmp_path):
         trash_entries = json.loads(archive.read("capture-export/trash/entries.json"))
         active_photos = json.loads(archive.read("capture-export/photos.json"))
         trash_photos = json.loads(archive.read("capture-export/trash/photos.json"))
-    assert manifest["format_version"] == 3
+    assert manifest["format_version"] == 4
     assert manifest["counts"] == {
         "collections": 2,
         "items": 1,
         "entries": 1,
+        "movements": 0,
         "photos": 1,
         "photo_bytes": 1,
         "trash_entries": 2,

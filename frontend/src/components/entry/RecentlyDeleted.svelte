@@ -20,14 +20,21 @@
 
 <section class="trash" aria-label="Recently Deleted">
   <h2>Deleted entries</h2>
-  {#each rows as row (row.entry.id)}<div class="trash-row">
-      <span
-        >{formatSequence(row.entry.sequence_number)} — {row.entry.title ||
-          'Untitled entry'}{#if row.entry.entry_notes.match(/^Moved to .+$/m)}<small
-            >{row.entry.entry_notes.match(/^Moved to .+$/m)?.[0]}</small
-          >{/if}</span
-      ><button onclick={() => void repo.restoreEntry(row.entry.id)}>Restore</button>
-    </div>{/each}
+  {#each rows as row (row.entry.id)}
+    {@const target = row.movement_summary?.to}
+    {@const legacy = target ? null : row.entry.entry_notes.match(/^Moved to .+$/m)}
+    <div class="trash-row">
+      <span>
+        {formatSequence(row.entry.sequence_number)} — {row.entry.title || 'Untitled entry'}
+        <small
+          >{#if target}Moved to "{target.name}" {formatSequence(
+              target.sequence,
+            )}{:else if legacy}{legacy[0]}{/if}</small
+        >
+      </span>
+      <button onclick={() => void repo.restoreEntry(row.entry.id)}>Restore</button>
+    </div>
+  {/each}
   <h2>Deleted photos</h2>
   {#each photos as photo (photo.id)}<div class="trash-row">
       <span
@@ -64,9 +71,17 @@
     color: var(--color-ballpoint);
     padding: var(--space-2) var(--space-4);
   }
+  .trash-row > span {
+    min-width: 0;
+  }
   .trash-row small {
     display: block;
     margin-top: var(--space-2);
+    min-height: calc(var(--text-sm) * var(--leading-body));
+    font-size: var(--text-sm);
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
     color: var(--color-muted);
   }
 </style>

@@ -1,13 +1,16 @@
-# Export format (version 3)
+# Export format (version 4)
 
 The device exporter (`frontend/src/lib/export/`) and the server exporter (`backend/`) **must produce the same layout**. `tools/verify-export.py` validates any export. Changes to this file need a format_version bump.
 
 **Version 2 (shared items).** An item can appear in several collections, each time as its own entry with its own number and count. Photos belong to the item. Compared with version 1, `entries` gains `item_id`, and `photos` replaces `entry_id,collection_id` with `item_id`, stored under `photos/<item_id>/`. Data created before version 2 has `item_id = entry_id`, so its photo paths are unchanged. `tools/verify-export.py` still accepts version 1 archives.
 
-**Version 3 (readable paths).** Photo files are stored under folders named after the collection and the entry, e.g. `photos/Temple 2 A04/0042 Red lantern/01.jpg`, instead of `photos/<item_id>/<photo_id>.jpg`. Folder names are derived from the **current** names at export time, so renaming a collection or an entry only changes the paths of later exports. IDs stay the stable keys: every CSV/JSON row still carries `collection_id`, `entry_id`, `item_id` and `photo_id`, and the only references to paths are inside the same archive (`photos.path`, `entries.photo_dir`). New columns: `collections.folder`, `entries.entry_notes`, `entries.starred_at`, `entries.photo_dir`. `tools/verify-export.py` accepts versions 1, 2 and 3.
+**Version 3 (readable paths).** Photo files are stored under folders named after the collection and the entry, e.g. `photos/Temple 2 A04/0042 Red lantern/01.jpg`, instead of `photos/<item_id>/<photo_id>.jpg`. Folder names are derived from the **current** names at export time, so renaming a collection or an entry only changes the paths of later exports. IDs stay the stable keys: every CSV/JSON row still carries `collection_id`, `entry_id`, `item_id` and `photo_id`, and the only references to paths are inside the same archive (`photos.path`, `entries.photo_dir`). New columns: `collections.folder`, `entries.entry_notes`, `entries.starred_at`, `entries.photo_dir`.
+
+**Version 4 (movement history).** The archive adds `movements.csv` and `movements.json` and
+`manifest.counts.movements`. The verifier also accepts versions 1 through 3.
 
 A server export contains collections and photo originals for the signed-in account. Account
-records, sessions and join codes stay out of the archive. The version 3 layout applies to both
+records, sessions and join codes stay out of the archive. The version 4 layout applies to both
 owner and helper exports.
 
 ## Archive
@@ -20,6 +23,7 @@ owner and helper exports.
 capture-export/
   manifest.json
   collections.csv   collections.json
+  movements.csv     movements.json
   entries.csv       entries.json
   photos.csv        photos.json
   photos/<collection dir>/<entry dir>/<NN>.<ext>
@@ -46,6 +50,7 @@ capture-export/
 
 ## Ordering
 
+- Movements by movement ID.
 - Collections by `created_at`, then `id`.
 - Entries by collection order, then `sequence_number`.
 - Photos by the order of their item's first entry, then `sort_order`, then `captured_at`.
@@ -84,6 +89,14 @@ UTF-8 with a BOM, CRLF line endings, RFC 4180 quoting (a field is quoted when it
 
 The trash CSVs use the same columns. Their paths begin with `trash/photos/`.
 
+### movements.csv
+
+`movement_id,item_id,from_entry_id,to_entry_id,from_collection_id,to_collection_id,from_sequence,to_sequence,from_name,to_name,quantity,unit,count_detail,target_before_quantity,kind,moved_at,undone_at,source,legacy_text,created_at,updated_at,revision`
+
+The root movement tables contain the full history of each item represented by an exported entry, including items represented only in trash when requested. A movement can refer to a room or entry outside the export. Historical endpoint names and sequence numbers are stored with the movement. A purged endpoint does not remove its history.
+
+Quantities are raw decimal strings or null. `move`, `part`, `merge`, `split` are the supported kinds. `undone_at` marks an undone movement. `source` is `app` for app actions and `text` for verified legacy notes. `legacy_text` preserves the paired source lines for a text-derived movement.
+
 ## JSON files
 
 Each JSON file is an array of objects with the same keys as its CSV, using real JSON types: numbers, booleans, and `null` for null. The JSON files are the lossless form.
@@ -93,7 +106,7 @@ Each JSON file is an array of objects with the same keys as its CSV, using real 
 ```json
 {
   "format": "kufang-capture-export",
-  "format_version": 3,
+  "format_version": 4,
   "exported_at": "2026-11-08T07:00:00.000Z",
   "source": "device",
   "app_version": "0.1.0+<git-sha>",
@@ -101,7 +114,7 @@ Each JSON file is an array of objects with the same keys as its CSV, using real 
   "include_trash": false,
   "collections": [{ "id": "01J...", "name": "Temple 2 / A04", "storage_mode": "local_only" }],
   "counts": {
-    "collections": 1, "items": 15, "entries": 15, "photos": 42, "photo_bytes": 123456789,
+    "collections": 1, "items": 15, "entries": 15, "movements": 3, "photos": 42, "photo_bytes": 123456789,
     "trash_entries": 0, "trash_photos": 0
   },
   "quantity_by_unit": [
@@ -113,7 +126,7 @@ Each JSON file is an array of objects with the same keys as its CSV, using real 
 ```
 
 - `source` is `device` or `server`. `scope` is `all` or `selected`.
-- `counts.items` is the number of distinct `item_id` values among active entries; `counts.photos` counts distinct active photos.
+- `counts.items` is the number of distinct `item_id` values among active entries; `counts.photos` counts distinct active photos. `counts.movements` counts rows in the root movement tables.
 - `missing_originals` is always `[]` for device exports. For server exports it lists `{photo_id, path}` for any photo whose original has not been uploaded yet. Those photos still appear in `photos.csv`, but their files are absent.
 - `files` lists every archive member except `manifest.json`, CSV/JSON and photos alike, with its SHA-256.
 - `quantity_by_unit` sums active entries per collection and per normalized unit (trimmed, case-folded; the displayed unit is the most recent spelling). Units are never combined with each other.

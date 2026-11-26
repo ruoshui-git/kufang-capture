@@ -1,4 +1,4 @@
-import type { Collection, Entry, Item, Photo } from '../types'
+import type { Collection, Entry, Item, Movement, Photo } from '../types'
 import { entryDisplayTitle, formatSequence } from '../types'
 import { writeCsv } from './csv'
 import { assignPaths } from './paths'
@@ -9,11 +9,12 @@ export interface ExportInput {
   entries: Entry[]
   items: Item[]
   photos: Photo[]
+  movements: Movement[]
   getOriginal(photoId: string): Promise<Blob>
 }
 export interface Manifest {
   format: 'kufang-capture-export'
-  format_version: 3
+  format_version: 4
   exported_at: string
   source: 'device'
   app_version: string
@@ -23,6 +24,7 @@ export interface Manifest {
   counts: {
     collections: number
     items: number
+    movements: number
     entries: number
     photos: number
     photo_bytes: number
@@ -100,6 +102,31 @@ const photoHeaders = [
   'created_at',
   'deleted_at',
 ]
+
+const movementFields = [
+  'item_id',
+  'from_entry_id',
+  'to_entry_id',
+  'from_collection_id',
+  'to_collection_id',
+  'from_sequence',
+  'to_sequence',
+  'from_name',
+  'to_name',
+  'quantity',
+  'unit',
+  'count_detail',
+  'target_before_quantity',
+  'kind',
+  'moved_at',
+  'undone_at',
+  'source',
+  'legacy_text',
+  'created_at',
+  'updated_at',
+  'revision',
+] satisfies Array<keyof Movement>
+const movementHeaders = ['movement_id', ...movementFields]
 
 function hex(bytes: Uint8Array): string {
   return [...bytes].map((x) => x.toString(16).padStart(2, '0')).join('')
@@ -300,6 +327,14 @@ export async function buildExport(
   const activePhotos = photos.filter((p) => p.deleted_at === null && activeItemIds.has(p.item_id))
   const trashEntries = entries.filter((e) => e.deleted_at !== null)
   const trashPhotos = photos.filter((p) => !activeItemIds.has(p.item_id) || p.deleted_at !== null)
+  const exportedItemIds = opts.includeTrash ? new Set(entries.map((e) => e.item_id)) : activeItemIds
+  const movementRows = input.movements
+    .filter((movement) => exportedItemIds.has(movement.item_id))
+    .sort((a, b) => a.id.localeCompare(b.id))
+    .map((movement) => ({
+      movement_id: movement.id,
+      ...Object.fromEntries(movementFields.map((field) => [field, movement[field]])),
+    }))
   const exportPhotos = opts.includeTrash ? [...activePhotos, ...trashPhotos] : activePhotos
   const extensions = new Map(exportPhotos.map((p) => [p.id, extension(p)]))
   const activePaths = assignPaths(
@@ -441,6 +476,8 @@ export async function buildExport(
   // Manifest must be first; calculate member hashes before assembling it.
   await add('collections.csv', cCsv)
   await add('collections.json', cJson)
+  await add('movements.csv', writeCsv(movementHeaders, movementRows))
+  await add('movements.json', jsonBytes(movementRows))
   const activeEntryRows = entryRows(activeEntries, activePhotoCounts),
     activePhotoRows = makePhotoRows(activePhotos, '')
   await addSet('', activeEntryRows, activePhotoRows, activePhotos)
@@ -468,7 +505,7 @@ export async function buildExport(
   }
   const manifest: Manifest = {
     format: 'kufang-capture-export',
-    format_version: 3,
+    format_version: 4,
     exported_at: opts.exportedAt,
     source: opts.source,
     app_version: opts.appVersion,
@@ -477,7 +514,8 @@ export async function buildExport(
     collections: collections.map((c) => ({ id: c.id, name: c.name, storage_mode: c.storage_mode })),
     counts: {
       collections: collections.length,
-      items: new Set(activeEntries.map((e) => e.item_id)).size,
+      items: activeItemIds.size,
+      movements: movementRows.length,
       entries: activeEntries.length,
       photos: activePhotos.length,
       photo_bytes: activePhotos.reduce((sum, p) => sum + p.byte_size, 0),

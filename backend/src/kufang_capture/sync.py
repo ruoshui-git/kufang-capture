@@ -8,7 +8,13 @@ from typing import Any
 
 from .db import connect, single_writer
 
-TABLES = {"collection": "collections", "item": "items", "entry": "entries", "photo": "photos"}
+TABLES = {
+    "collection": "collections",
+    "item": "items",
+    "entry": "entries",
+    "photo": "photos",
+    "movement": "movements",
+}
 COLLECTION_FIELDS = {
     "name": (str, 200),
     "folder": (str, 200),
@@ -51,7 +57,28 @@ PHOTO_FIELDS = {
     "is_cover": (bool, None),
     "deleted_at": ("nullable_timestamp", None),
 }
+MOVEMENT_CREATE_FIELDS = {
+    "item_id": ("id", None),
+    "from_entry_id": ("nullable_id", None),
+    "to_entry_id": ("nullable_id", None),
+    "from_collection_id": ("nullable_id", None),
+    "to_collection_id": ("nullable_id", None),
+    "from_sequence": ("positive_int", None),
+    "to_sequence": ("positive_int", None),
+    "from_name": (str, 200),
+    "to_name": (str, 200),
+    "quantity": ("quantity", None),
+    "unit": (str, 40),
+    "count_detail": (str, 20_000),
+    "target_before_quantity": ("quantity", None),
+    "kind": ("enum", {"move", "part", "merge", "split"}),
+    "moved_at": ("timestamp", None),
+    "undone_at": ("nullable_timestamp", None),
+    "source": ("enum", {"app", "text"}),
+    "legacy_text": (str, 40_001),
+}
 CREATE_FIELDS = {
+    "movement": {"id", "created_at", "updated_at", *MOVEMENT_CREATE_FIELDS},
     "collection": {
         "id",
         "name",
@@ -129,10 +156,12 @@ MUTABLE_FIELDS = {
     "item": ITEM_FIELDS,
     "entry": ENTRY_FIELDS,
     "photo": PHOTO_FIELDS,
+    "movement": {"undone_at": MOVEMENT_CREATE_FIELDS["undone_at"]},
 }
 QUANTITY_RE = re.compile(r"^-?\d+(\.\d+)?$")
 SHA_RE = re.compile(r"^[0-9a-f]{64}$")
 ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
+ULID_RE = re.compile(r"^[0-7][0-9A-HJKMNP-TV-Z]{25}$")
 
 
 def now() -> str:
@@ -157,6 +186,10 @@ def _valid(field: str, value: Any, rule: tuple[Any, Any]) -> bool:
         return isinstance(value, str) and len(value) <= extra
     if kind == "enum":
         return isinstance(value, str) and value in extra
+    if kind in {"id", "nullable_id"}:
+        return (kind == "nullable_id" and value is None) or (
+            isinstance(value, str) and ID_RE.fullmatch(value) is not None
+        )
     if kind == "nullable_string":
         return value is None or (isinstance(value, str) and len(value) <= extra)
     if kind == "nullable_int":
@@ -212,14 +245,33 @@ def _reject(code: str, message: str, mutation: dict[str, Any]) -> dict[str, Any]
 
 
 def apply_batch(
-    data_dir: Path, mutations: list[dict[str, Any]], authorize: Callable[[], None]
+    data_dir: Path,
+    mutations: list[dict[str, Any]],
+    authorize: Callable[[], None],
+    *,
+    schema: int = 3,
+    expected_revisions: dict[str, dict[str, int]] | None = None,
 ) -> tuple[list[dict[str, Any]], int]:
     results = []
     media_to_delete: list[str] = []
     with single_writer(), connect(data_dir) as db:
         authorize()
-        for mutation in mutations:
+        if expected_revisions is not None:
             db.execute("BEGIN IMMEDIATE")
+            for entity, records in expected_revisions.items():
+                for record_id, revision in records.items():
+                    row = db.execute(
+                        f"SELECT revision FROM {TABLES[entity]} WHERE id=?", (record_id,)
+                    ).fetchone()
+                    if row is None or row[0] != revision:
+                        db.rollback()
+                        raise StaleRevision(entity, record_id)
+        for mutation in mutations:
+            if schema == 2 and mutation.get("entity") == "movement":
+                results.append(_reject("invalid_field", "Movements require sync schema 3", mutation))
+                continue
+            if expected_revisions is None:
+                db.execute("BEGIN IMMEDIATE")
             try:
                 prior = db.execute(
                     "SELECT result_json FROM applied_mutations WHERE mutation_id=?", (mutation.get("id"),)
@@ -231,7 +283,8 @@ def apply_batch(
                     else:
                         result["duplicate"] = True
                     results.append(result)
-                    db.commit()
+                    if expected_revisions is None:
+                        db.commit()
                     continue
                 purge_paths = []
                 if mutation.get("op") == "purge":
@@ -265,6 +318,8 @@ def apply_batch(
                                 for row in db.execute("SELECT id FROM photos WHERE item_id=?", (parent[0],))
                             )
                 result = _apply_one(db, mutation)
+                if expected_revisions is not None and result["status"] != "applied":
+                    raise ValueError(f"Guarded batch rejected {mutation['entity_id']}: {result}")
                 if result["status"] == "applied":
                     media_to_delete.extend(purge_paths)
                 db.execute(
@@ -272,14 +327,23 @@ def apply_batch(
                     (mutation["id"], json.dumps(result), now()),
                 )
                 results.append(result)
-                db.commit()
+                if expected_revisions is None:
+                    db.commit()
             except Exception:
                 db.rollback()
                 raise
+        if expected_revisions is not None:
+            db.commit()
         cursor = db.execute("SELECT COALESCE(MAX(seq),0) FROM changes").fetchone()[0]
         for storage_key in media_to_delete:
             (Path(data_dir) / storage_key).unlink(missing_ok=True)
     return results, cursor
+
+
+class StaleRevision(ValueError):
+    def __init__(self, entity: str, record_id: str):
+        super().__init__(f"{entity} {record_id} changed")
+        self.record_id = record_id
 
 
 def _apply_one(db: sqlite3.Connection, m: dict[str, Any]) -> dict[str, Any]:
@@ -289,6 +353,8 @@ def _apply_one(db: sqlite3.Connection, m: dict[str, Any]) -> dict[str, Any]:
         return _reject("invalid_field", "Mutation shape is invalid", m)
     if entity == "item" and op != "upsert":
         return _reject("invalid_field", "Items only support upsert", m)
+    if entity == "movement" and (op != "upsert" or not ULID_RE.fullmatch(entity_id)):
+        return _reject("invalid_field", "Movements require a ULID and only support upsert", m)
     if (
         not isinstance(m.get("id"), str)
         or ID_RE.fullmatch(m["id"]) is None
@@ -307,8 +373,8 @@ def _apply_one(db: sqlite3.Connection, m: dict[str, Any]) -> dict[str, Any]:
         collection_id = entity_id
     elif entity == "entry":
         collection_id = fields.get("collection_id", collection_id)
-    elif entity in {"item", "photo"}:
-        # Items and photos are shared across collections; their changes carry no collection.
+    elif entity in {"item", "photo", "movement"}:
+        # Item-level records are shared across collections.
         collection_id = ""
     if (
         entity == "entry"
@@ -336,6 +402,12 @@ def _apply_one(db: sqlite3.Connection, m: dict[str, Any]) -> dict[str, Any]:
                 db.execute("DELETE FROM photos WHERE item_id=?", (item_id,))
                 for photo_id in photo_ids:
                     _log_change(db, "photo", photo_id, "", "purged")
+                movement_ids = [
+                    r[0] for r in db.execute("SELECT id FROM movements WHERE item_id=?", (item_id,))
+                ]
+                db.execute("DELETE FROM movements WHERE item_id=?", (item_id,))
+                for movement_id in movement_ids:
+                    _log_change(db, "movement", movement_id, "", "purged")
                 db.execute("DELETE FROM items WHERE id=?", (item_id,))
                 _log_change(db, "item", item_id, "", "purged")
         elif entity == "photo":
@@ -385,7 +457,15 @@ def _apply_one(db: sqlite3.Connection, m: dict[str, Any]) -> dict[str, Any]:
                 return _reject(
                     "item_already_in_collection", "Item already has an entry in this collection", m
                 )
-        if entity == "photo":
+        if entity == "movement":
+            fields.setdefault("legacy_text", "")
+            fields.setdefault("undone_at", None)
+            for key, rule in MOVEMENT_CREATE_FIELDS.items():
+                if key not in fields or not _valid(key, fields[key], rule):
+                    return _reject("invalid_field", f"Invalid {key}", m)
+            if fields["source"] == "app" and fields["legacy_text"]:
+                return _reject("invalid_field", "App movements cannot have legacy text", m)
+        if entity in {"photo", "movement"}:
             item_id = fields.get("item_id")
             if not item_id or not db.execute("SELECT 1 FROM items WHERE id=?", (item_id,)).fetchone():
                 return _reject("missing_parent", "Item does not exist", m)
@@ -442,6 +522,20 @@ def _apply_one(db: sqlite3.Connection, m: dict[str, Any]) -> dict[str, Any]:
 
     if entity == "item" or entity == "photo":
         collection_id = ""
+    if entity == "movement":
+        if not db.execute("SELECT 1 FROM items WHERE id=?", (current["item_id"],)).fetchone():
+            return _reject("missing_parent", "Item does not exist", m)
+        if any(
+            key in fields and fields[key] != current[key]
+            for key in MOVEMENT_CREATE_FIELDS
+            if key != "undone_at"
+        ):
+            return _reject("invalid_field", "Movement details are immutable", m)
+        if (
+            current["undone_at"] is not None
+            and fields.get("undone_at", current["undone_at"]) != current["undone_at"]
+        ):
+            return _reject("invalid_field", "Movement is already undone", m)
     if op in {"delete", "restore"}:
         if entity not in {"entry", "photo"}:
             return _reject("invalid_field", "This entity does not support deletion", m)
@@ -502,8 +596,9 @@ def _log_change(db: sqlite3.Connection, entity: str, entity_id: str, collection_
     )
 
 
-def pull_changes(data_dir, cursor: int, limit: int) -> dict[str, Any]:
+def pull_changes(data_dir, cursor: int, limit: int, schema: int = 3) -> dict[str, Any]:
     with connect(data_dir) as db:
+        db.execute("BEGIN")
         latest = db.execute("SELECT COALESCE(MAX(seq),0) FROM changes").fetchone()[0]
         rows = db.execute(
             "SELECT * FROM changes WHERE seq>? ORDER BY seq LIMIT ?", (cursor, limit + 1)
@@ -512,6 +607,8 @@ def pull_changes(data_dir, cursor: int, limit: int) -> dict[str, Any]:
         rows = rows[:limit]
         changes = []
         for change in rows:
+            if schema == 2 and change["entity"] == "movement":
+                continue
             item = {"seq": change["seq"], "entity": change["entity"], "id": change["entity_id"]}
             if change["kind"] in {"purged", "removed"}:
                 item[change["kind"]] = True

@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onMount } from 'svelte'
   import { repo } from '$lib/db'
-  import type { EntryView, Id, Photo } from '$lib/types'
+  import type { EntryView, Id, Movement, Photo } from '$lib/types'
   import { SETTING_KEYS, formatSequence } from '$lib/types'
   import type { EntryPatch, EntrySort } from '$lib/repo'
   import { pickPhotos, type CaptureMode } from '$lib/camera'
@@ -12,6 +12,7 @@
   import CameraSheet from '../../components/camera/CameraSheet.svelte'
   import PhotoGrid from '../../components/gallery/PhotoGrid.svelte'
   import PhotoViewer from '../../components/viewer/PhotoViewer.svelte'
+  import MovementHistory from './MovementHistory.svelte'
   import MoveToSheet from '../../components/entry/MoveToSheet.svelte'
 
   type EditableKey =
@@ -30,6 +31,22 @@
   }: { collectionId: Id; entryId: Id; variant?: 'page' | 'panel' } = $props()
 
   let entry = $state<EntryView | undefined>()
+  let movements = $state<Movement[]>([])
+  const itemId = $derived(entry?.item_id)
+  $effect(() => {
+    movements = []
+    if (!itemId) return
+    const subscription = repo.watchMovements(itemId).subscribe((rows) => (movements = rows))
+    return typeof subscription === 'function' ? subscription : () => subscription.unsubscribe()
+  })
+  const lastPlacementChange = $derived(
+    movements.findLast(
+      (row) =>
+        !row.undone_at &&
+        (row.to_entry_id === entryId || (row.from_entry_id === entryId && row.kind !== 'part')),
+    ),
+  )
+  const movedAway = $derived(lastPlacementChange?.from_entry_id === entryId ? lastPlacementChange : undefined)
   let draft = $state<Partial<Record<EditableKey, string>>>({})
   let dirty = $state(new Set<EditableKey>())
   let savingCount = $state(0)
@@ -275,20 +292,38 @@
         >{entry.starred_at ? '★ Starred' : '☆ Star entry'}</button
       >
       {#if !entry.deleted_at}<Button variant="quiet" onclick={() => (moveOpen = true)}>Move to…</Button>{/if}
-      {#if entry.deleted_at && entry.shared_with.length}
-        {@const moved = entry.entry_notes.match(/^Moved to "(.+)" (#[0-9]+)$/m)}
-        {@const placement =
-          entry.shared_with.find(
-            (item) =>
-              moved && item.collection_name === moved[1] && formatSequence(item.sequence_number) === moved[2],
-          ) ?? entry.shared_with[0]}
-        {#if placement}<div class="deleted-notice" role="status">
-            {#if moved}Moved to "{placement.collection_name}" as {formatSequence(
+      {#if entry.deleted_at}
+        {@const legacy = lastPlacementChange
+          ? null
+          : entry.entry_notes.match(/^Moved to "(.+)" (#[0-9]+)\r?$/m)}
+        {@const placed = entry.shared_with.find((item) =>
+          movedAway
+            ? item.entry_id === movedAway.to_entry_id
+            : legacy &&
+              item.collection_name === legacy[1] &&
+              formatSequence(item.sequence_number) === legacy[2],
+        )}
+        {@const placement = placed ?? (movedAway || legacy ? undefined : entry.shared_with[0])}
+        <div
+          class="deleted-notice moved-notice"
+          class:empty-notice={!movedAway && !legacy && !placement}
+          role="status"
+        >
+          <span>
+            {#if movedAway}
+              Moved to "{placed?.collection_name ?? movedAway.to_name}" as {formatSequence(
+                placed?.sequence_number ?? movedAway.to_sequence,
+              )}
+            {:else if legacy}
+              Moved to "{legacy[1]}" as {legacy[2]}
+            {:else if placement}
+              Removed from this collection. Also in "{placement.collection_name}" {formatSequence(
                 placement.sequence_number,
-              )}{:else}Removed from this collection. Also in "{placement.collection_name}" {formatSequence(
-                placement.sequence_number,
-              )}{/if}<a href="/c/{placement.collection_id}/e/{placement.entry_id}">Open</a>
-          </div>{/if}
+              )}
+            {/if}
+          </span>
+          {#if placement}<a href="/c/{placement.collection_id}/e/{placement.entry_id}">Open</a>{/if}
+        </div>
       {/if}
       {#if entry.shared_with.length > 0}<p class="shared-hint">
           Title, notes and photos are shared across {entry.shared_with.length + 1} collections.
@@ -448,6 +483,7 @@
         onclick={() => adjacent.next && navigate(`/c/${collectionId}/e/${adjacent.next}`)}>Next</Button
       ><Button onclick={() => void newEntry()}>+ New Entry</Button>
     </nav>
+    <MovementHistory {entryId} {movements} />
   </section>
 {/if}
 {#if entry}<CameraSheet bind:open={cameraOpen} entryId={entry.id} />{/if}
@@ -617,6 +653,18 @@
     justify-content: space-between;
     gap: var(--space-3);
     margin-top: var(--space-6);
+  }
+  .moved-notice {
+    min-height: var(--size-touch);
+  }
+  .moved-notice span {
+    min-width: 0;
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+  }
+  .empty-notice {
+    visibility: hidden;
   }
   .deleted-notice {
     display: flex;

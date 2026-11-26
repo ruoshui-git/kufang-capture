@@ -11,6 +11,7 @@ import type {
   EntryView,
   Id,
   Item,
+  Movement,
   Photo,
   PhotoBlob,
   StarredRow,
@@ -151,7 +152,7 @@ export interface MoveResult {
   created: EntryView[]
   /** Deleted target entries for the same item that were restored with the source's counts. */
   restored: EntryView[]
-  /** Target entries that already had the item active; the source counts were noted and the item marked needs_review. */
+  /** Target entries that already had the item active. The move history records each distinct count. */
   merged_into_existing: EntryView[]
   undo: MoveUndo
 }
@@ -163,6 +164,7 @@ export interface MoveUndo {
   /** Revisions immediately after the move; used to reject stale undo snapshots. */
   moved_revisions: { entries: Record<Id, number>; items: Record<Id, number>; collections: Record<Id, number> }
   created_entry_ids: Id[]
+  movement_ids: Id[]
 }
 
 export interface StorageEstimate {
@@ -209,6 +211,8 @@ export interface Repo {
   // Entries
   watchEntryRows(collectionId: Id, query: EntryQuery): Watchable<EntryRow[]>
   watchEntry(id: Id): Watchable<EntryView | undefined>
+  /** Item movement history with current room names where available. */
+  watchMovements(itemId: Id): Watchable<Movement[]>
   getEntry(id: Id): Promise<EntryView | undefined>
   /**
    * Allocate the next sequence number and create the entry and its new item (item_id = entry id)
@@ -301,6 +305,7 @@ export interface Repo {
     entries: Entry[]
     items: Item[]
     photos: Photo[]
+    movements: Movement[]
   }>
 
   // Settings and storage

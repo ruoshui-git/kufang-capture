@@ -37,15 +37,30 @@ describe('moving entries', () => {
       quantity: '2.5',
       unit: 'boxes',
       count_detail: '',
-      entry_notes: 'Moved from "A" #0001: 2.5 boxes\nShelf 1',
+      entry_notes: '',
     })
     expect(await repo.getEntry(source.id)).toMatchObject({
       quantity: '7.5',
       count_detail: 'old detail',
       deleted_at: null,
-      entry_notes: 'Shelf 1\nMoved 2.5 boxes to "B" #0001',
+      entry_notes: 'Shelf 1',
+    })
+    const [movement] = await first(repo.watchMovements(source.item_id))
+    expect(movement).toMatchObject({
+      kind: 'part',
+      quantity: '2.5',
+      unit: 'boxes',
+      count_detail: '',
+      undone_at: null,
+      from_entry_id: source.id,
+      to_entry_id: result.created[0]!.id,
+      from_collection_id: sourceCollection.id,
+      to_collection_id: targetCollection.id,
     })
     await repo.undoMove(result.undo)
+    expect(await first(repo.watchMovements(source.item_id))).toEqual([
+      expect.objectContaining({ id: movement!.id, undone_at: expect.any(String) }),
+    ])
     expect(await repo.getEntry(source.id)).toMatchObject({ quantity: '10', entry_notes: 'Shelf 1' })
     expect(await repo.getEntry(result.created[0]!.id)).toMatchObject({ deleted_at: expect.any(String) })
   })
@@ -89,13 +104,13 @@ describe('moving entries', () => {
     const summed = await repo.moveEntryPart(targetCollection.id, source.id, '2.5')
     expect(summed.merged_into_existing[0]).toMatchObject({
       quantity: '4.5',
-      entry_notes: 'Already here: 2 Boxes\nMoved from "A" #0001: 2.5 boxes',
+      entry_notes: '',
     })
     const mismatch = await repo.moveEntryPart(targetCollection.id, second.id, '1')
     expect(mismatch.merged_into_existing[0]).toMatchObject({
       quantity: '4.5',
       review_status: 'needs_review',
-      entry_notes: 'Already here: 2 Boxes\nMoved from "A" #0001: 2.5 boxes\nMoved from "C" #0001: 1 pieces',
+      entry_notes: '',
     })
   })
 
@@ -116,7 +131,7 @@ describe('moving entries', () => {
       id: target.id,
       quantity: '5',
       count_detail: '',
-      entry_notes: 'Moved from "A" #0001: 5 boxes',
+      entry_notes: '',
     })
     await repo.updateEntry(source.id, { entry_notes: 'Edited after partial move' })
     await expect(repo.undoMove(result.undo)).rejects.toThrow('changed since')
@@ -134,9 +149,15 @@ describe('moving entries', () => {
     expect(await db.outbox.where('collection_id').equals(targetCollection.id).count()).toBeGreaterThan(0)
     expect(await repo.getEntry(source.id)).toMatchObject({
       quantity: '7',
-      entry_notes: 'Moved 5 boxes to "B" #0001',
+      entry_notes: '',
     })
     expect(result.created[0]).toMatchObject({ quantity: '5', count_detail: '' })
+    expect((await db.outbox.toArray()).find((row) => row.entity === 'movement')?.fields).toMatchObject({
+      kind: 'part',
+      quantity: '5',
+      from_entry_id: source.id,
+      to_entry_id: result.created[0]!.id,
+    })
     await db.delete()
   })
 
@@ -161,15 +182,24 @@ describe('moving entries', () => {
       quantity: '5',
       unit: 'boxes',
       count_detail: '3 boxes, 24 packs each',
-      entry_notes: 'Moved from "Batch B" #0001: 5 boxes; 3 boxes, 24 packs each\nTop shelf',
+      entry_notes: '',
     })
     expect((await repo.getEntry(source.id))?.deleted_at).not.toBeNull()
-    expect((await repo.getEntry(source.id))?.entry_notes).toBe('Top shelf\nMoved to "Room A" #0001')
+    expect((await repo.getEntry(source.id))?.entry_notes).toBe('Top shelf')
     expect((await repo.getEntry(source.id))?.sequence_number).toBe(1)
     expect((await repo.getCollection(targetCollection.id))?.next_sequence_number).toBe(2)
     expect((await first(repo.watchPhotos(result.created[0]!.id))).map((item) => item.id)).toContain(photo.id)
     const db = getCaptureDb(name)
     expect(await db.outbox.count()).toBe(0)
+    expect(await db.movements.toArray()).toEqual([
+      expect.objectContaining({
+        kind: 'move',
+        quantity: '5',
+        count_detail: '3 boxes, 24 packs each',
+        from_name: 'Batch B',
+        to_name: 'Room A',
+      }),
+    ])
     await db.delete()
   })
 
@@ -190,7 +220,7 @@ describe('moving entries', () => {
       id: target.id,
       sequence_number: target.sequence_number,
       quantity: '9',
-      entry_notes: 'Moved from "Source" #0001: 9 pieces',
+      entry_notes: 'Old note',
     })
     await repo.undoMove(result.undo)
     expect(await repo.getEntry(source.id)).toMatchObject({ deleted_at: null, entry_notes: '' })
@@ -237,10 +267,18 @@ describe('moving entries', () => {
     expect(result.merged_into_existing[0]).toMatchObject({
       quantity: '7.5',
       unit: 'boxes',
-      entry_notes: 'Already here: 2.5 boxes\nMoved from "B" #0001: 5 Boxes; 3 boxes, 24 packs each',
+      entry_notes: '',
       review_status: 'draft',
     })
     expect(result.created).toHaveLength(0)
+    expect(await first(repo.watchMovements(source.item_id))).toEqual([
+      expect.objectContaining({
+        target_before_quantity: '2.5',
+        quantity: '5',
+        unit: 'Boxes',
+        from_name: 'B',
+      }),
+    ])
     await repo.undoMove(result.undo)
     expect(await repo.getEntry(duplicate.created[0]!.id)).toMatchObject({ deleted_at: null })
     expect(await repo.getEntry(targetEntry.id)).toMatchObject({
@@ -263,7 +301,7 @@ describe('moving entries', () => {
     expect(second.merged_into_existing[0]).toMatchObject({
       id: first.created[0]!.id,
       quantity: '8',
-      entry_notes: 'Moved from "A" #0001: 5\nMoved from "C" #0001: 3',
+      entry_notes: '',
       review_status: 'draft',
     })
   })
@@ -279,7 +317,7 @@ describe('moving entries', () => {
     const units = await repo.moveEntries(target.id, [source.id])
     expect(units.merged_into_existing[0]).toMatchObject({
       quantity: '2',
-      entry_notes: 'Already here: 2 boxes\nMoved from "A" #0001: 4 packs',
+      entry_notes: '',
       review_status: 'needs_review',
     })
     const blank = (await repo.importEntries(b.id, [source.id])).created[0]!
@@ -303,6 +341,12 @@ describe('moving entries', () => {
     const split = await repo.splitEntries([two.id], { name: 'Split', folder: 'North' })
     expect(split.collection.storage_mode).toBe('local_only')
     expect(split.result.created[0]?.title).toBe('Two')
+    expect(await first(repo.watchMovements(two.item_id))).toEqual([
+      expect.objectContaining({ kind: 'split' }),
+    ])
+    await repo.undoMove(split.result.undo)
+    expect((await first(repo.watchMovements(two.item_id)))[0]?.undone_at).toEqual(expect.any(String))
+    await repo.splitEntries([two.id], { name: 'Split again' })
     const another = await repo.createCollection({ name: 'Another', storage_mode: 'local_only' })
     const third = await repo.createEntry(another.id, { title: 'Three' })
     const merged = await repo.mergeCollections(target.id, [source.id, another.id])
@@ -311,6 +355,12 @@ describe('moving entries', () => {
     expect((await repo.getCollection(another.id))?.status).toBe('archived')
     expect((await repo.getEntry(one.id))?.sequence_number).toBe(1)
     expect((await repo.getEntry(third.id))?.sequence_number).toBe(1)
+    expect(await first(repo.watchMovements(one.item_id))).toEqual([
+      expect.objectContaining({ kind: 'merge' }),
+    ])
+    await repo.undoMove(merged.undo)
+    expect((await first(repo.watchMovements(one.item_id)))[0]?.undone_at).toEqual(expect.any(String))
+    expect((await repo.getCollection(source.id))?.status).toBe('active')
     const synced = await repo.createCollection({ name: 'Synced', storage_mode: 'synced' })
     const mismatchSource = await repo.createEntry(source.id)
     await expect(repo.moveEntries(synced.id, [mismatchSource.id])).rejects.toThrow('same storage mode')

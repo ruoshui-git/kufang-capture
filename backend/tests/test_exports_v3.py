@@ -136,7 +136,7 @@ def test_server_export_v3_layout_and_columns_match_vectors(tmp_path):
         (sample / "server-v3.zip").write_bytes(archive_path.read_bytes())
     with zipfile.ZipFile(archive_path) as archive:
         manifest = json.loads(archive.read("capture-export/manifest.json"))
-        assert manifest["format_version"] == 3
+        assert manifest["format_version"] == 4
         collections = json.loads(archive.read("capture-export/collections.json"))
         entries = json.loads(archive.read("capture-export/entries.json"))
         photos = json.loads(archive.read("capture-export/photos.json"))

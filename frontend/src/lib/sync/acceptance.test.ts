@@ -330,7 +330,7 @@ afterEach(() => {
 })
 
 describe('sync acceptance against an in-memory API server', () => {
-  it('sends schema 2 and keeps the outbox when the server requires an app update', async () => {
+  it('sends schema 3 and keeps the outbox when the server requires an app update', async () => {
     const server = new MemoryServer()
     const fixture = await syncedEntry(server)
     expect(server.batchRequests[0]?.map((mutation) => mutation.entity)).toEqual([
@@ -346,10 +346,10 @@ describe('sync acceptance against an in-memory API server', () => {
     })
     await fixture.engine.syncNow()
     const batch = server.requests.filter((request) => request.url === '/api/sync/batch').at(-1)!
-    expect(JSON.parse(String(batch.body)).schema).toBe(2)
+    expect(JSON.parse(String(batch.body)).schema).toBe(3)
     expect(
       server.requests.some(
-        (request) => request.url.includes('/api/sync/changes?') && request.url.includes('schema=2'),
+        (request) => request.url.includes('/api/sync/changes?') && request.url.includes('schema=3'),
       ),
     ).toBe(true)
     expect(
@@ -2376,3 +2376,79 @@ async function waitForStatus(
   else subscription.unsubscribe()
   return value!
 }
+
+it('replays movements behind an upgraded cursor without replaying old removals or unknown entities', async () => {
+  const server = new MemoryServer()
+  const { repo, engine, db, collection, entry } = await syncedEntry(server)
+  const target = await repo.createCollection({ name: 'Other', storage_mode: 'synced' })
+  await repo.updateEntry(entry.id, { quantity: '10' })
+  const moved = await repo.moveEntryPart(target.id, entry.id, '2.50')
+  await engine.syncNow()
+  const id = moved.undo.movement_ids[0]!
+  const initial = await db.movements.get(id)
+  expect(initial).toMatchObject({ kind: 'part', quantity: '2.50', sync_state: 'synced' })
+  await db.movements.delete(id)
+  await repo.updateEntry(entry.id, { entry_notes: 'pending note that overlaps old removed record' })
+  const queued = await db.outbox.toArray()
+  const conflict = {
+    id: 'conflict-before-upgrade',
+    collection_id: collection.id,
+    entity: 'entry' as const,
+    entity_id: entry.id,
+    fields: ['entry_notes'],
+    local_values: { entry_notes: 'pending note that overlaps old removed record' },
+    server_values: { entry_notes: 'from server' },
+    server_revision: 1,
+    created_at: clock().toISOString(),
+  }
+  await db.conflicts.add(conflict)
+  const removedSeq = server.changes.at(-1)!.seq + 1
+  server.changes.push({ seq: removedSeq, entity: 'collection', id: collection.id, removed: true })
+  const future = {
+    seq: removedSeq + 1,
+    entity: 'future-type' as OutboxEntity,
+    id: 'future',
+    record: {
+      id: 'future',
+      revision: 1,
+      field_revisions: {},
+    },
+  }
+  server.changes.push(future)
+  await db.settings.put({ key: 'sync_schema2_cursor', value: removedSeq })
+  await db.settings.put({ key: 'sync_cursor', value: 0 })
+
+  await engine.syncNow()
+  expect(server.requests.some(({ url }) => url.includes('cursor=0&') && url.includes('schema=3'))).toBe(true)
+  expect(await db.movements.get(id)).toMatchObject({ kind: 'part', quantity: '2.50', undone_at: null })
+  expect(await db.photos.get('future')).toBeUndefined()
+  expect(await db.outbox.toArray()).toEqual(queued)
+  expect(await db.conflicts.toArray()).toEqual([conflict])
+  expect((await db.collections.get(collection.id))?.removed_on_server).toBeUndefined()
+  expect((await db.settings.get('sync_cursor'))?.value).toBe(future.seq)
+  expect(await db.settings.get('sync_schema2_cursor')).toBeUndefined()
+  const requests = server.requests.length
+  await engine.syncNow()
+  expect(server.requests.slice(requests).some(({ url }) => url.includes('cursor=0&'))).toBe(false)
+  await db.delete()
+})
+
+it('withholds a movement when its historical room becomes Local Only and queues it after consent', async () => {
+  const server = new MemoryServer()
+  const { repo, engine, db, collection, entry } = await syncedEntry(server)
+  const target = await repo.createCollection({ name: 'Other', storage_mode: 'synced' })
+  const moved = await repo.moveEntries(target.id, [entry.id])
+  const id = moved.undo.movement_ids[0]!
+  // Simulate an already-purged source placement while its room and the shared item survive.
+  await db.entries.delete(entry.id)
+  await repo.setStorageMode(collection.id, 'local_only', { consentToUploadExisting: false })
+  expect((await db.movements.get(id))?.sync_state).toBe('local_only')
+  expect(await db.outbox.where('[entity+entity_id]').equals(['movement', id]).count()).toBe(0)
+  await engine.syncNow()
+  expect(server.records.get(server.key('movement', id))).toBeUndefined()
+  await repo.setStorageMode(collection.id, 'synced', { consentToUploadExisting: true })
+  expect(await db.outbox.where('[entity+entity_id]').equals(['movement', id]).count()).toBe(1)
+  await engine.syncNow()
+  expect(server.records.get(server.key('movement', id))).toMatchObject({ id, from_entry_id: entry.id })
+  await db.delete()
+})

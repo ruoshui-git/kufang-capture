@@ -163,25 +163,28 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.post("/api/sync/batch")
     async def sync_batch(request: Request):
         body = await read_object(request, limit=SYNC_BATCH_BYTES)
-        if body.get("schema") != 2:
+        schema = body.get("schema")
+        if type(schema) is not int or schema not in (2, 3):
             return JSONResponse(
-                {"detail": "client_outdated", "message": "This client must upgrade to sync schema 2"},
+                {"detail": "client_outdated", "message": "This client must upgrade to sync schema 3"},
                 status_code=409,
             )
         mutations = body.get("mutations")
         if not isinstance(mutations, list) or len(mutations) > 200:
             raise HTTPException(422, detail="invalid_batch")
-        results, cursor = apply_batch(request.state.data_dir, mutations, partial(authorize, request))
+        results, cursor = apply_batch(
+            request.state.data_dir, mutations, partial(authorize, request), schema=schema
+        )
         return {"results": results, "cursor": cursor}
 
     @app.get("/api/sync/changes")
     def sync_changes(request: Request, cursor: int = 0, limit: int = 500, schema: int | None = None):
-        if schema != 2:
+        if schema not in (2, 3):
             return JSONResponse(
-                {"detail": "client_outdated", "message": "This client must upgrade to sync schema 2"},
+                {"detail": "client_outdated", "message": "This client must upgrade to sync schema 3"},
                 status_code=409,
             )
-        return pull_changes(request.state.data_dir, max(cursor, 0), min(max(limit, 1), 1000))
+        return pull_changes(request.state.data_dir, max(cursor, 0), min(max(limit, 1), 1000), schema=schema)
 
     @app.put("/api/photos/{photo_id}/original", status_code=201)
     async def photo_original_put(photo_id: str, request: Request):

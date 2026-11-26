@@ -22,6 +22,7 @@ def test_migrations_are_recorded_and_idempotent(tmp_path):
             "0003_items.sql",
             "0004_folders_stars.sql",
             "0005_removal_timestamp.sql",
+            "0006_movements.sql",
         }
         assert db.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='meta'").fetchone()
         assert db.execute("PRAGMA foreign_keys").fetchone()[0] == 1

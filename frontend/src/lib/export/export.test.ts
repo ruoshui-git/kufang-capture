@@ -100,6 +100,33 @@ const item = (id: string, title = ''): Item => ({
   sync_state: 'local_only',
 })
 
+const movements = ['I1', 'I3'].map((item_id, index) => ({
+  id: '01KAVC1P9Z4WY6JRQXN3W645T' + String(index),
+  item_id,
+  from_entry_id: 'E1',
+  to_entry_id: 'E3',
+  from_collection_id: 'removed-room',
+  to_collection_id: 'C2',
+  from_sequence: 1,
+  to_sequence: 1,
+  from_name: 'Old room',
+  to_name: 'Other',
+  quantity: '2.50',
+  unit: 'Boxes',
+  count_detail: '',
+  target_before_quantity: null,
+  kind: 'move' as const,
+  moved_at: at,
+  undone_at: null,
+  source: 'app' as const,
+  legacy_text: '',
+  created_at: at,
+  updated_at: at,
+  revision: 1,
+  server_revision: null,
+  sync_state: 'pending' as const,
+}))
+
 async function fixture(includeTrash = false) {
   const secondBytes = Uint8Array.from({ length: 128 }, (_, index) => index)
   const blobs = new Map<string, Blob>([
@@ -132,6 +159,7 @@ async function fixture(includeTrash = false) {
       ],
       items: [item('I1', 'Shared title'), item('I2'), item('I3')],
       photos: allPhotos,
+      movements,
       getOriginal: async (id) => blobs.get(id)!,
     },
     { scope: 'all', includeTrash, exportedAt: at, appVersion: '0.1.0', source: 'device' },
@@ -150,6 +178,8 @@ describe('device export', () => {
       'capture-export/manifest.json',
       'capture-export/collections.csv',
       'capture-export/collections.json',
+      'capture-export/movements.csv',
+      'capture-export/movements.json',
       'capture-export/entries.csv',
       'capture-export/entries.json',
       'capture-export/photos.csv',
@@ -167,6 +197,9 @@ describe('device export', () => {
     expect(entriesCsv).toContain('E2,I2,C1,2,#0002,,Entry #0002,,Boxes,')
     expect(entriesCsv).not.toMatch(/(?<!\r)\n/)
     const entriesJson = JSON.parse(new TextDecoder().decode(files['capture-export/entries.json']))
+    const movementJson = JSON.parse(new TextDecoder().decode(files['capture-export/movements.json']))
+    expect(movementJson).toMatchObject([{ movement_id: movements[0]!.id, quantity: '2.50', unit: 'Boxes' }])
+    expect(movementJson[0]).not.toHaveProperty('sync_state')
     const photosJson = JSON.parse(new TextDecoder().decode(files['capture-export/photos.json']))
     expect(entriesJson.map((row: { entry_id: string }) => row.entry_id)).toEqual(['E1', 'E2', 'E3'])
     expect(entriesJson[0].title).toBe('Shared title')
@@ -176,7 +209,9 @@ describe('device export', () => {
     expect([...files['capture-export/photos/Temple 2 A04/0001 Shared title/01.jpg']!]).toEqual([1, 2, 3])
     expect(files['capture-export/trash/entries.csv']).toBeUndefined()
     const manifest = JSON.parse(new TextDecoder().decode(files['capture-export/manifest.json']))
+    expect(manifest.format_version).toBe(4)
     expect(manifest.counts).toMatchObject({
+      movements: 1,
       collections: 2,
       items: 2,
       entries: 3,
@@ -202,7 +237,7 @@ describe('device export', () => {
     const files = unzipSync(new Uint8Array(await result.blob.arrayBuffer()))
     expect(Object.keys(files)).toContain('capture-export/trash/photos/Other/0003/01.jpg')
     const manifest = JSON.parse(new TextDecoder().decode(files['capture-export/manifest.json']))
-    expect(manifest.counts).toMatchObject({ trash_entries: 2, trash_photos: 1 })
+    expect(manifest.counts).toMatchObject({ movements: 2, trash_entries: 2, trash_photos: 1 })
     const trashEntries = JSON.parse(new TextDecoder().decode(files['capture-export/trash/entries.json']))
     expect(
       trashEntries.map((row: { entry_id: string; photo_count: number }) => [row.entry_id, row.photo_count]),
@@ -229,6 +264,7 @@ describe('device export', () => {
         entries: [entry('E3', 'I1', 'C2', 1), entry('E4', 'I1', 'C2', 2, at), entry('E5', 'I3', 'C2', 3, at)],
         items: [item('I1', 'Shared title'), item('I3')],
         photos: [selectedPhoto],
+        movements,
         getOriginal: async () => new Blob([selectedBytes]),
       },
       { scope: 'selected', includeTrash: false, exportedAt: at, appVersion: '0.1.0', source: 'device' },
@@ -247,6 +283,7 @@ describe('device export', () => {
         entries: [],
         items: [],
         photos: [],
+        movements: [],
         getOriginal: async () => new Blob(),
       },
       { scope: 'selected', includeTrash: false, exportedAt: at, appVersion: '0.1.0', source: 'device' },

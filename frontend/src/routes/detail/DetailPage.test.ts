@@ -233,3 +233,40 @@ describe('entry detail', () => {
     expect(await repo.getAdjacentEntryIds(two.id, 'newest')).toEqual({ prev: three.id, next: one.id })
   })
 })
+
+it('shows a chain and separate arrivals after a return and keeps historical names for cleared rooms', async () => {
+  const room = (name: string) => repo.createCollection({ name, storage_mode: 'local_only' })
+  const a = await room('Room A')
+  const b = await room('Room B')
+  const c = await room('Room C')
+  const d = await room('Room D')
+  const first = await repo.createEntry(a.id, { quantity: '28', unit: 'boxes' })
+  const secondLot = (await repo.importEntries(d.id, [first.id])).created[0]!
+  await repo.updateEntry(secondLot.id, { quantity: '3' })
+  const viaB = (await repo.moveEntries(b.id, [first.id])).created[0]!
+  const nowInC = (await repo.moveEntries(c.id, [viaB.id])).created[0]!
+  await repo.moveEntries(c.id, [secondLot.id])
+  const returned = (await repo.moveEntries(a.id, [nowInC.id])).restored[0]!
+  const back = await repo.moveEntryPart(c.id, returned.id, '5')
+  await repo.undoMove(back.undo)
+  await repo.updateCollection(b.id, { name: 'Room B renamed' })
+  await repo.markExported([d.id])
+  await repo.clearCollection(d.id, 'Room D')
+
+  render(DetailPage, { props: { collectionId: c.id, entryId: nowInC.id } })
+  const history = await screen.findByRole('region', { name: 'History' })
+  await waitFor(() => {
+    expect([...history.querySelectorAll('li')].map((line) => line.textContent?.replace(/\s+/g, ' '))).toEqual(
+      [
+        expect.stringContaining('28 boxes from Room A #0001 → Room B renamed #0001'),
+        expect.stringContaining('28 boxes from Room B renamed #0001'),
+        expect.stringContaining('3 boxes from Room D #0001'),
+        expect.stringContaining('→ 31 boxes to Room A #0001'),
+      ],
+    )
+  })
+  await fireEvent.click(screen.getByRole('button', { name: 'Show undone' }))
+  expect(history.querySelector('li.undone')).toHaveTextContent('5 boxes from Room A #0001')
+  await fireEvent.click(screen.getByRole('button', { name: 'Hide undone' }))
+  expect(history.querySelector('li.undone')).toBeNull()
+})

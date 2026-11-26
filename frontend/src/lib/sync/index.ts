@@ -22,6 +22,8 @@ import {
   type Entry,
   type Id,
   type Item,
+  type Movement,
+  type OutboxEntity,
   type OutboxItem,
   type Photo,
 } from '../types'
@@ -109,6 +111,13 @@ export type SyncEngineWithSchedule = SyncEngine & { runScheduledCycle(): Promise
 
 export function createSyncEngine(options: SyncEngineOptions = {}): SyncEngineWithSchedule {
   const db = getCaptureDb(options.repoDbName)
+  const syncTables = {
+    collection: db.collections,
+    item: db.items,
+    entry: db.entries,
+    photo: db.photos,
+    movement: db.movements,
+  }
   const fetcher = options.fetch ?? fetch
   const gate = options.repoDbName ? new AccountGate(options.repoDbName) : accountGate
   let cycleAccount: Id | undefined
@@ -351,7 +360,7 @@ export function createSyncEngine(options: SyncEngineOptions = {}): SyncEngineWit
     // Commit the claim before sending so a later edit cannot coalesce into this request.
     const selected = await db.transaction(
       'rw',
-      [db.collections, db.items, db.entries, db.photos, db.outbox, db.conflicts, db.settings],
+      [db.collections, db.items, db.entries, db.photos, db.movements, db.outbox, db.conflicts, db.settings],
       async () => {
         await assertLease()
         const rows = await db.outbox.toArray()
@@ -362,6 +371,9 @@ export function createSyncEngine(options: SyncEngineOptions = {}): SyncEngineWit
             .filter((c) => c.storage_mode === 'synced' && !c.removed_on_server)
             .map((c) => [c.id, c]),
         )
+        const localOnlyIds = new Set(
+          collections.filter((c) => c.storage_mode === 'local_only').map((c) => c.id),
+        )
         const syncedItems = await syncedItemIds(db, collections)
         const conflictsByRecord = new Map<string, Set<string>>()
         for (const conflict of await db.conflicts.toArray()) {
@@ -370,7 +382,7 @@ export function createSyncEngine(options: SyncEngineOptions = {}): SyncEngineWit
           for (const field of conflict.fields) fields.add(field)
           conflictsByRecord.set(key, fields)
         }
-        const priority = { collection: 0, item: 1, entry: 2, photo: 3 }
+        const priority = { collection: 0, item: 1, entry: 2, photo: 3, movement: 4 }
         rows.sort((a, b) => priority[a.entity] - priority[b.entity] || compareQueued(a, b))
         const createHeads = new Set<string>()
         const keys = new Set<string>()
@@ -431,6 +443,18 @@ export function createSyncEngine(options: SyncEngineOptions = {}): SyncEngineWit
               continue
             if (typeof itemId !== 'string' && row.op !== 'purge') continue
           }
+          if (row.entity === 'movement') {
+            const movement = await db.movements.get(row.entity_id)
+            if (
+              !movement ||
+              movement.sync_state === 'local_only' ||
+              movement.removed_on_server ||
+              movementRooms(movement).some((id) => localOnlyIds.has(id)) ||
+              !syncedItems.has(movement.item_id) ||
+              !parentReady('item:' + movement.item_id, await db.items.get(movement.item_id), !!missingParent)
+            )
+              continue
+          }
           if (missingParent) {
             await db.outbox.delete(row.id)
             row = { ...newMutationId(row), retried_missing_parent: true }
@@ -459,7 +483,7 @@ export function createSyncEngine(options: SyncEngineOptions = {}): SyncEngineWit
     }
     try {
       const body = JSON.stringify({
-        schema: 2,
+        schema: 3,
         device_id: deviceId?.value ?? 'local-device',
         mutations: selected.map((item) => ({
           id: item.id,
@@ -473,7 +497,7 @@ export function createSyncEngine(options: SyncEngineOptions = {}): SyncEngineWit
       })
       const request = await db.transaction(
         'r',
-        [db.collections, db.entries, db.photos, db.outbox, db.settings],
+        [db.collections, db.entries, db.photos, db.movements, db.outbox, db.settings],
         async () => {
           await assertLease()
           const collections = await db.collections.toArray()
@@ -483,14 +507,20 @@ export function createSyncEngine(options: SyncEngineOptions = {}): SyncEngineWit
           const current = await db.outbox.bulkGet(selected.map((row) => row.id))
           if (current.some((row) => !row?.in_flight || !allowed.has(row.collection_id))) return
           const syncedItems = await syncedItemIds(db, collections)
+          const localOnlyIds = new Set(
+            collections.filter((c) => c.storage_mode === 'local_only').map((c) => c.id),
+          )
           for (const row of selected) {
             if (row.entity === 'collection') continue
-            const record =
-              row.entity === 'entry'
-                ? await db.entries.get(row.entity_id)
-                : row.entity === 'photo'
-                  ? await db.photos.get(row.entity_id)
-                  : undefined
+            const record = row.entity === 'item' ? undefined : await syncTables[row.entity].get(row.entity_id)
+            if (row.entity === 'movement') {
+              if (
+                !record ||
+                record.sync_state === 'local_only' ||
+                movementRooms(record as Movement).some((id) => localOnlyIds.has(id))
+              )
+                return
+            }
             const itemId = row.entity === 'item' ? row.entity_id : (record?.item_id ?? row.fields.item_id)
             if (
               record?.removed_on_server ||
@@ -572,22 +602,27 @@ export function createSyncEngine(options: SyncEngineOptions = {}): SyncEngineWit
         : result
     await db.transaction(
       'rw',
-      [db.collections, db.items, db.entries, db.photos, db.photoBlobs, db.outbox, db.conflicts, db.settings],
+      [
+        db.collections,
+        db.items,
+        db.entries,
+        db.photos,
+        db.movements,
+        db.photoBlobs,
+        db.outbox,
+        db.conflicts,
+        db.settings,
+      ],
       async () => {
         await assertLease()
         const current = await db.outbox.get(item.id)
         if (!current) return
-        const table =
-          item.entity === 'collection'
-            ? db.collections
-            : item.entity === 'item'
-              ? db.items
-              : item.entity === 'entry'
-                ? db.entries
-                : db.photos
+        const table = syncTables[item.entity]
         const record = await table.get(item.entity_id)
         const collection = await db.collections.get(item.collection_id)
-        const localOnly = collection?.storage_mode === 'local_only'
+        const localOnly =
+          collection?.storage_mode === 'local_only' ||
+          (item.entity === 'movement' && record?.sync_state === 'local_only')
         const remaining = (
           await db.outbox.where('[entity+entity_id]').equals([item.entity, item.entity_id]).toArray()
         ).filter((row) => row.id !== item.id)
@@ -973,13 +1008,20 @@ export function createSyncEngine(options: SyncEngineOptions = {}): SyncEngineWit
     }
   }
 
+  function movementRooms(movement: { from_collection_id?: unknown; to_collection_id?: unknown }) {
+    return [movement.from_collection_id, movement.to_collection_id].filter(
+      (id): id is Id => typeof id === 'string',
+    )
+  }
+
   async function pull(signal: AbortSignal) {
     let cursor = await db.settings.get(SETTING_KEYS.syncCursor).then((row) => Number(row?.value ?? 0))
+    const schema2Cursor = Number((await db.settings.get(SETTING_KEYS.syncSchema2Cursor))?.value ?? 0)
     let more = true
     while (more && !signal.aborted) {
       await assertLease()
       signal.throwIfAborted()
-      const response = await fetcher(`/api/sync/changes?cursor=${cursor}&limit=500&schema=2`, {
+      const response = await fetcher(`/api/sync/changes?cursor=${cursor}&limit=500&schema=3`, {
         credentials: 'same-origin',
         headers: dataHeaders(),
         signal,
@@ -989,7 +1031,7 @@ export function createSyncEngine(options: SyncEngineOptions = {}): SyncEngineWit
       const page = (await response.json()) as {
         changes: Array<{
           seq: number
-          entity: 'collection' | 'item' | 'entry' | 'photo'
+          entity: string
           id: Id
           record?: ServerRecord
           purged?: boolean
@@ -1000,13 +1042,19 @@ export function createSyncEngine(options: SyncEngineOptions = {}): SyncEngineWit
       }
       for (const change of page.changes) {
         signal.throwIfAborted()
-        await mergeChange(change)
+        // These rows were already consumed by the old client. Replaying a historical removal
+        // could mark a currently synced record as removed or rewrite its pending mutations.
+        if (change.seq <= schema2Cursor && change.entity !== 'movement') continue
+        if (Object.hasOwn(syncTables, change.entity))
+          await mergeChange({ ...change, entity: change.entity as OutboxEntity })
       }
       cursor = page.cursor
       await db.transaction('rw', db.settings, async () => {
         await assertLease()
         signal.throwIfAborted()
         await db.settings.put({ key: SETTING_KEYS.syncCursor, value: cursor })
+        if (schema2Cursor && (cursor >= schema2Cursor || !page.has_more))
+          await db.settings.delete(SETTING_KEYS.syncSchema2Cursor)
       })
       more = page.has_more
     }
@@ -1016,8 +1064,8 @@ export function createSyncEngine(options: SyncEngineOptions = {}): SyncEngineWit
   /** Run inside the same transaction as the pull merge. Inspect the entire deletion scope
    * before deleting anything, including originals that an orphan-item cascade would remove. */
   async function mergeRemoval(
-    change: { entity: 'collection' | 'item' | 'entry' | 'photo'; id: Id },
-    old: ((Collection | Item | Entry | Photo) & RemoteRemoval) | undefined,
+    change: { entity: OutboxEntity; id: Id },
+    old: ((Collection | Item | Entry | Photo | Movement) & RemoteRemoval) | undefined,
     localPurge = false,
   ) {
     if (change.entity === 'collection' && (old as Collection | undefined)?.storage_mode === 'local_only')
@@ -1122,6 +1170,14 @@ export function createSyncEngine(options: SyncEngineOptions = {}): SyncEngineWit
     if (change.entity === 'item' && linkedEntries.length) return
     await db.entries.bulkDelete([...entryIds])
     await db.items.bulkDelete(itemIds)
+    if (localPurge) {
+      const movements = await db.movements.where('item_id').anyOf(itemIds).primaryKeys()
+      await db.movements.bulkDelete(movements)
+      await db.outbox
+        .where('[entity+entity_id]')
+        .anyOf(movements.map((id) => ['movement', id]))
+        .delete()
+    }
     await db.photos.bulkDelete(photoIds)
     await db.photoBlobs.bulkDelete(photoIds)
     await db.outbox.bulkDelete(rows.map((row) => row.id))
@@ -1129,7 +1185,7 @@ export function createSyncEngine(options: SyncEngineOptions = {}): SyncEngineWit
   }
 
   async function mergeChange(change: {
-    entity: 'collection' | 'item' | 'entry' | 'photo'
+    entity: OutboxEntity
     id: Id
     record?: ServerRecord
     purged?: boolean
@@ -1137,18 +1193,44 @@ export function createSyncEngine(options: SyncEngineOptions = {}): SyncEngineWit
   }) {
     await db.transaction(
       'rw',
-      [db.collections, db.items, db.entries, db.photos, db.photoBlobs, db.outbox, db.conflicts, db.settings],
+      [
+        db.collections,
+        db.items,
+        db.entries,
+        db.photos,
+        db.movements,
+        db.photoBlobs,
+        db.outbox,
+        db.conflicts,
+        db.settings,
+      ],
       async () => {
         await assertLease()
-        const table =
-          change.entity === 'collection'
-            ? db.collections
-            : change.entity === 'item'
-              ? db.items
-              : change.entity === 'entry'
-                ? db.entries
-                : db.photos
+        const table = syncTables[change.entity]
         const old = await table.get(change.id)
+        if (change.entity === 'movement') {
+          if (old?.sync_state === 'local_only') return
+          const roomIds = movementRooms(
+            (old as Movement | undefined) ?? (change.record as Partial<Movement> | undefined) ?? {},
+          )
+          if ((await db.collections.bulkGet(roomIds)).some((room) => room?.storage_mode === 'local_only'))
+            return
+          if (change.purged || change.removed) {
+            const key = [change.entity, change.id]
+            const queued = db.outbox.where('[entity+entity_id]').equals(key)
+            const conflicts = db.conflicts.where('[entity+entity_id]').equals(key)
+            if (
+              old &&
+              (old.server_revision === null || (await queued.count()) || (await conflicts.count()))
+            ) {
+              await db.movements.update(change.id, { removed_on_server: true, sync_state: 'error' })
+              await queued.modify({ in_flight: false, last_error: SERVER_REMOVED_MESSAGE })
+            } else {
+              await db.movements.delete(change.id)
+            }
+            return
+          }
+        }
         if (change.purged || change.removed) {
           await mergeRemoval(change, old)
           return
@@ -1490,19 +1572,13 @@ export function createSyncEngine(options: SyncEngineOptions = {}): SyncEngineWit
   async function resolveConflict(conflictId: Id, choice: 'mine' | 'server') {
     await db.transaction(
       'rw',
-      [db.conflicts, db.collections, db.items, db.entries, db.photos, db.outbox],
+      [db.conflicts, db.collections, db.items, db.entries, db.photos, db.movements, db.outbox],
       async () => {
         const conflict = await db.conflicts.get(conflictId)
         if (!conflict) return
-        const table =
-          conflict.entity === 'collection'
-            ? db.collections
-            : conflict.entity === 'item'
-              ? db.items
-              : conflict.entity === 'entry'
-                ? db.entries
-                : db.photos
-        const record = (await table.get(conflict.entity_id)) as Collection | Item | Entry | Photo | undefined
+        const table = syncTables[conflict.entity]
+        const record = (await table.get(conflict.entity_id)) as
+          ((Collection | Item | Entry | Photo | Movement) & RemoteRemoval) | undefined
         const collection = await db.collections.get(conflict.collection_id)
         if (record) {
           if (choice === 'server') {

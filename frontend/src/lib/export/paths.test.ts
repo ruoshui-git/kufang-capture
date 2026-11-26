@@ -162,7 +162,7 @@ describe('export path vectors', () => {
       }),
     )
     const result = await buildExport(
-      { collections, entries, items, photos, getOriginal: async (id) => originals.get(id)! },
+      { collections, entries, items, photos, movements: [], getOriginal: async (id) => originals.get(id)! },
       { scope: 'all', includeTrash: true, exportedAt: at, appVersion: 'test', source: 'device' },
     )
     if (process.env.W2_EXPORT_SAMPLE === '1') {

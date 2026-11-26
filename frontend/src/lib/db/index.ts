@@ -18,6 +18,7 @@ import type {
   EntryView,
   Id,
   Item,
+  Movement,
   OutboxEntity,
   OutboxItem,
   OutboxOp,
@@ -26,7 +27,7 @@ import type {
   Setting,
   StorageMode,
 } from '../types'
-import { ENTRY_FIELDS, ITEM_FIELDS, byCoverThenNewest, formatSequence } from '../types'
+import { ENTRY_FIELDS, ITEM_FIELDS, SETTING_KEYS, byCoverThenNewest, formatSequence } from '../types'
 import { createId } from '../ids'
 import { addDecimals, isIncomplete, normalizeUnit } from '../summary'
 import { buildImportSearchRows } from '../entries/importSearch'
@@ -85,6 +86,7 @@ class CaptureDb extends Dexie {
   collections!: Table<Collection & RemoteRemoval, Id>
   entries!: Table<Entry & RemoteRemoval, Id>
   photos!: Table<PhotoWithUploadRetry, Id>
+  movements!: Table<Movement & RemoteRemoval, Id>
   photoBlobs!: Table<StoredPhotoBlobRow, Id>
   outbox!: Table<QueuedMutation, Id>
   settings!: Table<Setting, string>
@@ -254,6 +256,15 @@ class CaptureDb extends Dexie {
             row.starred_at ??= null
           })
       })
+    this.version(6)
+      .stores({ movements: 'id, item_id, from_collection_id, to_collection_id' })
+      .upgrade(async (tx) => {
+        const settings = tx.table<Setting>('settings')
+        const previous = await settings.get(SETTING_KEYS.syncCursor)
+        if (previous && Number(previous.value) > 0)
+          await settings.put({ key: SETTING_KEYS.syncSchema2Cursor, value: previous.value })
+        await settings.put({ key: SETTING_KEYS.syncCursor, value: 0 })
+      })
   }
 }
 
@@ -357,7 +368,7 @@ export async function queueMutation(
   db: CaptureDb,
   collection: Collection & RemoteRemoval,
   entity: OutboxEntity,
-  record: (Collection | Item | Entry | Photo) & RemoteRemoval,
+  record: (Collection | Item | Entry | Photo | Movement) & RemoteRemoval,
   op: OutboxOp,
   fields: Record<string, unknown>,
   at: string,
@@ -402,7 +413,7 @@ export async function queueMutation(
 /** Rebuild a create from a complete local record. */
 export function repairMissingCreate(
   row: QueuedMutation,
-  record: (Collection | Item | Entry | Photo) & RemoteRemoval,
+  record: (Collection | Item | Entry | Photo | Movement) & RemoteRemoval,
 ): QueuedMutation {
   return {
     ...row,
@@ -571,10 +582,24 @@ export function createRepo(options: RepoOptions = {}): Repo {
   const enqueue = (
     collection: Collection & RemoteRemoval,
     entity: OutboxEntity,
-    record: (Collection | Item | Entry | Photo) & RemoteRemoval,
+    record: (Collection | Item | Entry | Photo | Movement) & RemoteRemoval,
     op: OutboxOp,
     fields: Record<string, unknown>,
   ) => queueMutation(db, collection, entity, record, op, fields, stamp())
+  const enqueueMovement = async (movement: Movement) => {
+    const { from_collection_id, to_collection_id } = movement
+    const [source, target] = await db.collections.bulkGet([from_collection_id ?? '', to_collection_id ?? ''])
+    if (
+      source?.storage_mode !== 'synced' ||
+      target?.storage_mode !== 'synced' ||
+      source.removed_on_server ||
+      target.removed_on_server
+    )
+      return
+    const updated = { ...movement, sync_state: 'pending' as const }
+    await db.movements.put(updated)
+    await enqueue(target, 'movement', updated, 'upsert', { undone_at: updated.undone_at })
+  }
   const touchCollection = async (collection: Collection & RemoteRemoval, at: string) => {
     const updated = {
       ...collection,
@@ -715,10 +740,58 @@ export function createRepo(options: RepoOptions = {}): Repo {
       }
     })
   }
+  const movementHistory = async (itemIds: Id[]) => {
+    const rows = await db.movements.where('item_id').anyOf(itemIds).toArray()
+    const roomIds = [
+      ...new Set(rows.flatMap((row) => [row.from_collection_id, row.to_collection_id])),
+    ].filter((id): id is Id => id !== null)
+    const entryIds = [...new Set(rows.flatMap((row) => [row.from_entry_id, row.to_entry_id]))].filter(
+      (id): id is Id => id !== null,
+    )
+    const [rooms, entries] = await Promise.all([
+      db.collections.bulkGet(roomIds),
+      db.entries.bulkGet(entryIds),
+    ])
+    const names = new Map(rooms.flatMap((room) => (room ? [[room.id, room.name]] : [])))
+    const sequences = new Map(entries.flatMap((entry) => (entry ? [[entry.id, entry.sequence_number]] : [])))
+    return rows
+      .map((row) => ({
+        ...row,
+        from_name: names.get(row.from_collection_id ?? '') ?? row.from_name,
+        to_name: names.get(row.to_collection_id ?? '') ?? row.to_name,
+        from_sequence: sequences.get(row.from_entry_id ?? '') ?? row.from_sequence,
+        to_sequence: sequences.get(row.to_entry_id ?? '') ?? row.to_sequence,
+      }))
+      .sort((a, b) => Date.parse(a.moved_at) - Date.parse(b.moved_at) || a.id.localeCompare(b.id))
+  }
+  const movementSummaries = async (entries: Entry[]) => {
+    const byItem = new Map<Id, Movement[]>()
+    for (const movement of await movementHistory([...new Set(entries.map(({ item_id }) => item_id))])) {
+      if (movement.undone_at !== null) continue
+      const rows = byItem.get(movement.item_id) ?? []
+      rows.push(movement)
+      byItem.set(movement.item_id, rows)
+    }
+    return entries.map((entry) => {
+      const rows = byItem.get(entry.item_id)
+      if (!rows?.length) return undefined
+      const lastArrival = rows.findLast((row) => row.to_entry_id === entry.id)
+      const lastPlacementChange = rows.findLast(
+        (row) => row.to_entry_id === entry.id || (row.kind !== 'part' && row.from_entry_id === entry.id),
+      )
+      const lastDeparture = lastPlacementChange?.from_entry_id === entry.id ? lastPlacementChange : undefined
+      return {
+        count: rows.length,
+        from: lastArrival?.from_name,
+        to: lastDeparture ? { name: lastDeparture.to_name, sequence: lastDeparture.to_sequence } : undefined,
+      }
+    })
+  }
   const entryView = async (entry: Entry): Promise<EntryView> => (await entryViews([entry]))[0]!
   const moveEntriesInTransaction = async (
     targetId: Id,
     sourceIds: Id[],
+    kind: Movement['kind'],
     part?: { quantity: string },
   ): Promise<import('../repo').MoveResult> => {
     const target = await db.collections.get(targetId)
@@ -730,6 +803,7 @@ export function createRepo(options: RepoOptions = {}): Repo {
     const beforeItems = new Map<Id, Item>()
     const beforeCollections = new Map<Id, Collection>()
     const createdEntryIds: Id[] = []
+    const movementIds: Id[] = []
     for (const sourceId of sourceIds) {
       const source = await db.entries.get(sourceId)
       if (part && !source) throw new Error('Source entry not found.')
@@ -764,20 +838,6 @@ export function createRepo(options: RepoOptions = {}): Repo {
       beforeEntries.set(source.id, source)
       beforeCollections.set(sourceCollection.id, sourceCollection)
       if (!beforeCollections.has(target.id)) beforeCollections.set(target.id, target)
-      const provenance = `Moved from "${sourceCollection.name}" ${formatSequence(source.sequence_number)}`
-      const countText = (entry: Entry) =>
-        [
-          entry.quantity === null || entry.quantity === ''
-            ? entry.unit.trim()
-            : `${entry.quantity}${entry.unit ? ` ${entry.unit}` : ''}`,
-          entry.count_detail.trim(),
-        ]
-          .filter(Boolean)
-          .join('; ')
-      const movedSource = part ? { ...source, quantity: movedQuantity, count_detail: '' } : source
-      const sourceCount = countText(movedSource)
-      const provenanceLine = sourceCount ? `${provenance}: ${sourceCount}` : provenance
-      const entryNotes = [provenanceLine, source.entry_notes.trim()].filter(Boolean).join('\n')
       let movedTarget: Entry
       if (active) {
         beforeEntries.set(active.id, active)
@@ -791,17 +851,11 @@ export function createRepo(options: RepoOptions = {}): Repo {
         const countsDiffer =
           active.quantity !== movedQuantity ||
           active.unit !== source.unit ||
-          active.count_detail !== movedSource.count_detail
-        // Notes list the count from each location. If nothing explains the count already here
-        // (no earlier "Moved from …: count" line), record it first so the lines add up to the total.
-        const activeCount = countText(active)
-        const explained = /^Moved from ".*" #\d+: /m.test(active.entry_notes)
-        const alreadyHere = activeCount && !explained ? `Already here: ${activeCount}` : ''
+          active.count_detail !== (part ? '' : source.count_detail)
         const quantity = canSum ? addDecimals(active.quantity!, movedQuantity!) : active.quantity
         movedTarget = {
           ...active,
           quantity,
-          entry_notes: [active.entry_notes.trim(), alreadyHere, provenanceLine].filter(Boolean).join('\n'),
           updated_at: at,
           revision: active.revision + 1,
           sync_state: target.storage_mode === 'local_only' ? 'local_only' : 'pending',
@@ -809,7 +863,6 @@ export function createRepo(options: RepoOptions = {}): Repo {
         await db.entries.put(movedTarget)
         await enqueue(target, 'entry', movedTarget, 'upsert', {
           quantity: movedTarget.quantity,
-          entry_notes: movedTarget.entry_notes,
         })
         if (!canSum && countsDiffer && activeItem && activeItem.review_status !== 'needs_review') {
           beforeItems.set(activeItem.id, activeItem)
@@ -833,7 +886,6 @@ export function createRepo(options: RepoOptions = {}): Repo {
           unit: source.unit,
           count_detail: part ? '' : source.count_detail,
           starred_at: source.starred_at,
-          entry_notes: entryNotes,
           updated_at: at,
           revision: deleted.revision + 1,
           sync_state: target.storage_mode === 'local_only' ? 'local_only' : 'pending',
@@ -845,7 +897,6 @@ export function createRepo(options: RepoOptions = {}): Repo {
           unit: source.unit,
           count_detail: part ? '' : source.count_detail,
           starred_at: source.starred_at,
-          entry_notes: entryNotes,
         })
         restored.push(await entryView(movedTarget))
       } else {
@@ -857,7 +908,7 @@ export function createRepo(options: RepoOptions = {}): Repo {
           quantity: movedQuantity,
           unit: source.unit,
           count_detail: part ? '' : source.count_detail,
-          entry_notes: entryNotes,
+          entry_notes: '',
           starred_at: source.starred_at,
           deleted_at: null,
           created_at: at,
@@ -872,31 +923,40 @@ export function createRepo(options: RepoOptions = {}): Repo {
         await enqueue(target, 'entry', movedTarget, 'upsert', { ...movedTarget })
         created.push(await entryView(movedTarget))
       }
-      const sourceNotes = part
-        ? [
-            source.entry_notes.trim(),
-            `Moved ${movedQuantity}${source.unit ? ` ${source.unit}` : ''} to "${target.name}" ${formatSequence(movedTarget.sequence_number)}`,
-          ]
-            .filter(Boolean)
-            .join('\n')
-        : [
-            source.entry_notes.trim(),
-            `Moved to "${target.name}" ${formatSequence(movedTarget.sequence_number)}`,
-          ]
-            .filter(Boolean)
-            .join('\n')
       if (part) {
-        await saveEntry(
-          { ...source, quantity: remainder!, entry_notes: sourceNotes },
-          { quantity: remainder!, entry_notes: sourceNotes },
-        )
+        await saveEntry({ ...source, quantity: remainder! }, { quantity: remainder! })
       } else {
-        await saveEntry(
-          { ...source, deleted_at: at, entry_notes: sourceNotes },
-          { deleted_at: at, entry_notes: sourceNotes },
-          'delete',
-        )
+        await saveEntry({ ...source, deleted_at: at }, { deleted_at: at }, 'delete')
       }
+      const movement: Movement = {
+        id: createId(),
+        item_id: source.item_id,
+        from_entry_id: source.id,
+        to_entry_id: movedTarget.id,
+        from_collection_id: sourceCollection.id,
+        to_collection_id: target.id,
+        from_sequence: source.sequence_number,
+        to_sequence: movedTarget.sequence_number,
+        from_name: sourceCollection.name,
+        to_name: target.name,
+        quantity: movedQuantity,
+        unit: source.unit,
+        count_detail: part ? '' : source.count_detail,
+        target_before_quantity: active?.quantity ?? null,
+        kind,
+        moved_at: at,
+        undone_at: null,
+        source: 'app',
+        legacy_text: '',
+        created_at: at,
+        updated_at: at,
+        revision: 1,
+        server_revision: null,
+        sync_state: target.storage_mode === 'local_only' ? 'local_only' : 'pending',
+      }
+      await db.movements.add(movement)
+      await enqueueMovement(movement)
+      movementIds.push(movement.id)
       const updatedTarget: Collection = {
         ...target,
         updated_at: at,
@@ -930,6 +990,7 @@ export function createRepo(options: RepoOptions = {}): Repo {
         collections: [...beforeCollections.values()],
         moved_revisions,
         created_entry_ids: createdEntryIds,
+        movement_ids: movementIds,
       },
     }
   }
@@ -1265,6 +1326,7 @@ export function createRepo(options: RepoOptions = {}): Repo {
       const entries = await db.entries.where('collection_id').equals(id).toArray()
       const itemIds = [...new Set(entries.map((entry) => entry.item_id))]
       const photos = await db.photos.where('item_id').anyOf(itemIds).toArray()
+      const movements = await db.movements.where('item_id').anyOf(itemIds).toArray()
       const allEntries = await db.entries.toArray()
       const sharedItems = new Set(
         entries
@@ -1283,6 +1345,7 @@ export function createRepo(options: RepoOptions = {}): Repo {
           collection.updated_at,
           ...entries.map((item) => item.updated_at),
           ...photos.map((item) => item.updated_at),
+          ...movements.map((item) => item.updated_at),
         ]
           .sort()
           .at(-1) ?? collection.updated_at
@@ -1306,7 +1369,7 @@ export function createRepo(options: RepoOptions = {}): Repo {
     clearCollection: async (id, confirmName) => {
       await db.transaction(
         'rw',
-        [db.collections, db.items, db.entries, db.photos, db.photoBlobs, db.outbox],
+        [db.collections, db.items, db.entries, db.photos, db.movements, db.photoBlobs, db.outbox],
         async () => {
           const collection = await db.collections.get(id)
           if (!collection) throw new Error('Collection not found')
@@ -1314,11 +1377,13 @@ export function createRepo(options: RepoOptions = {}): Repo {
           const entries = await db.entries.where('collection_id').equals(id).toArray()
           const itemIds = [...new Set(entries.map((entry) => entry.item_id))]
           const photos = await db.photos.where('item_id').anyOf(itemIds).toArray()
+          const movements = await db.movements.where('item_id').anyOf(itemIds).toArray()
           const latest =
             [
               collection.updated_at,
               ...entries.map((item) => item.updated_at),
               ...photos.map((item) => item.updated_at),
+              ...movements.map((item) => item.updated_at),
             ]
               .sort()
               .at(-1) ?? collection.updated_at
@@ -1358,10 +1423,16 @@ export function createRepo(options: RepoOptions = {}): Repo {
             const removePhotos = photos.filter((photo) => photo.item_id === itemId).map((photo) => photo.id)
             await db.photoBlobs.bulkDelete(removePhotos)
             await db.photos.bulkDelete(removePhotos)
+            const movementIds = await db.movements.where('item_id').equals(itemId).primaryKeys()
+            await db.movements.bulkDelete(movementIds)
             await db.items.delete(itemId)
             await db.outbox
               .where('[entity+entity_id]')
-              .anyOf([['item', itemId], ...removePhotos.map((photoId) => ['photo', photoId])])
+              .anyOf([
+                ['item', itemId],
+                ...removePhotos.map((photoId) => ['photo', photoId]),
+                ...movementIds.map((id) => ['movement', id]),
+              ])
               .delete()
           }
           await db.outbox.where('collection_id').equals(id).delete()
@@ -1423,9 +1494,12 @@ export function createRepo(options: RepoOptions = {}): Repo {
                 : a.sequence_number - b.sequence_number,
           )
         const term = query.search.trim().toLocaleLowerCase()
-        const views = await entryViews(sortedEntries)
+        const [views, movementSummariesForRows] = await Promise.all([
+          entryViews(sortedEntries),
+          movementSummaries(sortedEntries),
+        ])
         const rows: EntryRow[] = views
-          .map((entry) => {
+          .map((entry, index) => {
             const entryPhotos = activePhotosByItem.get(entry.item_id) ?? []
             const allEntryPhotos = photosByItem.get(entry.item_id) ?? []
             const incomplete = isIncomplete(entry, entryPhotos.length > 0)
@@ -1441,6 +1515,7 @@ export function createRepo(options: RepoOptions = {}): Repo {
             )
             return {
               entry,
+              movement_summary: movementSummariesForRows[index],
               photo_count: entryPhotos.length,
               recent_photos: entryPhotos.sort(byCoverThenNewest).slice(0, 3),
               is_incomplete: incomplete,
@@ -1484,6 +1559,7 @@ export function createRepo(options: RepoOptions = {}): Repo {
         const entry = await db.entries.get(id)
         return entry ? entryView(entry) : undefined
       }) as Watchable<EntryView | undefined>,
+    watchMovements: (itemId) => liveQuery(() => movementHistory([itemId])),
     getEntry: async (id) => {
       const entry = await db.entries.get(id)
       return entry ? entryView(entry) : undefined
@@ -1641,12 +1717,13 @@ export function createRepo(options: RepoOptions = {}): Repo {
         const entries = (await db.entries.toArray())
           .filter((entry) => entry.deleted_at === null && entry.starred_at !== null)
           .sort((a, b) => b.starred_at!.localeCompare(a.starred_at!) || b.sequence_number - a.sequence_number)
-        const [views, collections, photos, outbox, items] = await Promise.all([
+        const [views, collections, photos, outbox, items, summaries] = await Promise.all([
           entryViews(entries),
           db.collections.toArray(),
           db.photos.toArray(),
           db.outbox.toArray(),
           db.items.bulkGet([...new Set(entries.map((entry) => entry.item_id))]),
+          movementSummaries(entries),
         ])
         const collectionById = new Map(collections.map((collection) => [collection.id, collection]))
         const itemById = new Map(items.filter(Boolean).map((item) => [item!.id, item!]))
@@ -1656,13 +1733,14 @@ export function createRepo(options: RepoOptions = {}): Repo {
           list.push(photo)
           photosByItem.set(photo.item_id, list)
         }
-        return views.flatMap((entry) => {
+        return views.flatMap((entry, index) => {
           const collection = collectionById.get(entry.collection_id)
           if (!collection) return []
           const ownPhotos = photosByItem.get(entry.item_id) ?? []
           const active = ownPhotos.filter((photo) => photo.deleted_at === null).sort(byCoverThenNewest)
           const row: EntryRow = {
             entry,
+            movement_summary: summaries[index],
             photo_count: active.length,
             recent_photos: active.slice(0, 3),
             is_incomplete: isIncomplete(entry, active.length > 0),
@@ -1933,19 +2011,19 @@ export function createRepo(options: RepoOptions = {}): Repo {
     moveEntries: async (targetId, sourceIds) =>
       db.transaction(
         'rw',
-        [db.collections, db.entries, db.items, db.photos, db.outbox, db.conflicts, db.settings],
-        async () => await moveEntriesInTransaction(targetId, sourceIds),
+        [db.collections, db.entries, db.items, db.photos, db.movements, db.outbox, db.conflicts, db.settings],
+        async () => await moveEntriesInTransaction(targetId, sourceIds, 'move'),
       ),
     moveEntryPart: async (targetId, sourceId, quantity) =>
       db.transaction(
         'rw',
-        [db.collections, db.entries, db.items, db.photos, db.outbox, db.conflicts, db.settings],
-        async () => await moveEntriesInTransaction(targetId, [sourceId], { quantity }),
+        [db.collections, db.entries, db.items, db.photos, db.movements, db.outbox, db.conflicts, db.settings],
+        async () => await moveEntriesInTransaction(targetId, [sourceId], 'part', { quantity }),
       ),
     undoMove: async (undo) =>
       db.transaction(
         'rw',
-        [db.collections, db.entries, db.items, db.photos, db.outbox, db.conflicts, db.settings],
+        [db.collections, db.entries, db.items, db.photos, db.movements, db.outbox, db.conflicts, db.settings],
         async () => {
           for (const [id, revision] of Object.entries(undo.moved_revisions.entries))
             if ((await db.entries.get(id))?.revision !== revision)
@@ -1957,6 +2035,14 @@ export function createRepo(options: RepoOptions = {}): Repo {
             if ((await db.collections.get(id))?.revision !== revision)
               throw new Error("This move can't be undone because the entry changed since.")
           const at = stamp()
+          for (const id of undo.movement_ids) {
+            const movement = await db.movements.get(id)
+            if (!movement || movement.undone_at !== null)
+              throw new Error("This move can't be undone because its history changed since.")
+            const undone = { ...movement, undone_at: at, updated_at: at, revision: movement.revision + 1 }
+            await db.movements.put(undone)
+            await enqueueMovement(undone)
+          }
           for (const prior of undo.entries) {
             const current = await db.entries.get(prior.id)
             if (!current) continue
@@ -1980,7 +2066,13 @@ export function createRepo(options: RepoOptions = {}): Repo {
                 : current.deleted_at !== null && prior.deleted_at === null
                   ? 'restore'
                   : 'upsert'
-            await enqueue(collection, 'entry', saved, operation, { ...saved })
+            await enqueue(collection, 'entry', saved, operation, {
+              quantity: saved.quantity,
+              unit: saved.unit,
+              count_detail: saved.count_detail,
+              starred_at: saved.starred_at,
+              deleted_at: saved.deleted_at,
+            })
           }
           for (const id of undo.created_entry_ids) {
             const current = await db.entries.get(id)
@@ -2031,6 +2123,8 @@ export function createRepo(options: RepoOptions = {}): Repo {
             }
             await db.collections.put(saved)
             await enqueue(saved, 'collection', saved, 'upsert', {
+              status: saved.status,
+              archived_at: saved.archived_at,
               next_sequence_number: saved.next_sequence_number,
             })
           }
@@ -2039,7 +2133,7 @@ export function createRepo(options: RepoOptions = {}): Repo {
     splitEntries: async (sourceIds, input) =>
       db.transaction(
         'rw',
-        [db.collections, db.entries, db.items, db.photos, db.outbox, db.conflicts, db.settings],
+        [db.collections, db.entries, db.items, db.photos, db.movements, db.outbox, db.conflicts, db.settings],
         async () => {
           const first = sourceIds.map((id) => id).find(Boolean)
           const source = first ? await db.entries.get(first) : undefined
@@ -2068,14 +2162,14 @@ export function createRepo(options: RepoOptions = {}): Repo {
           }
           await db.collections.add(collection)
           await enqueue(collection, 'collection', collection, 'upsert', { ...collection })
-          const result = await moveEntriesInTransaction(collection.id, sourceIds)
+          const result = await moveEntriesInTransaction(collection.id, sourceIds, 'split')
           return { collection, result }
         },
       ),
     mergeCollections: async (targetId, sourceCollectionIds) =>
       db.transaction(
         'rw',
-        [db.collections, db.entries, db.items, db.photos, db.outbox, db.conflicts, db.settings],
+        [db.collections, db.entries, db.items, db.photos, db.movements, db.outbox, db.conflicts, db.settings],
         async () => {
           const target = await db.collections.get(targetId)
           if (!target) throw new Error('Collection not found')
@@ -2094,11 +2188,13 @@ export function createRepo(options: RepoOptions = {}): Repo {
                 .map((entry) => entry.id),
             )
           }
-          const result = await moveEntriesInTransaction(targetId, entryIds)
+          const result = await moveEntriesInTransaction(targetId, entryIds, 'merge')
           for (const source of sources) {
             const current = await db.collections.get(source!.id)
             if (!current) continue
             const at = stamp()
+            if (!result.undo.collections.some((collection) => collection.id === current.id))
+              result.undo.collections.push(current)
             const archived: Collection = {
               ...current,
               status: 'archived',
@@ -2381,100 +2477,119 @@ export function createRepo(options: RepoOptions = {}): Repo {
     getSetting: async <T>(key: string, fallback: T): Promise<T> =>
       ((await db.settings.get(key))?.value as T) ?? fallback,
     setStorageMode: async (id, mode: StorageMode, opts) =>
-      db.transaction('rw', db.collections, db.entries, db.items, db.photos, db.outbox, async () => {
-        const collection = await db.collections.get(id)
-        if (!collection) throw new Error('Collection not found')
-        if (collection.storage_mode === mode) return
-        const at = stamp()
-        if (mode === 'synced' && !opts.consentToUploadExisting)
-          throw new Error('Consent is required before uploading existing data.')
-        const modeCheck = await repo.checkStorageMode(id, mode)
-        if (!modeCheck.allowed)
-          throw new Error(
-            'Storage mode cannot change while items are shared with collections in another mode.',
-          )
-        const entries = await db.entries.where('collection_id').equals(id).toArray()
-        const itemIds = [...new Set(entries.map((entry) => entry.item_id))]
-        const photos = await db.photos.where('item_id').anyOf(itemIds).toArray()
-        if (mode === 'local_only') {
-          const associated = await db.outbox.toArray()
-          await db.outbox.bulkDelete(
-            associated
-              .filter(
-                (item) =>
-                  isUnsent(item) &&
-                  (item.collection_id === id ||
-                    (item.entity === 'item' && itemIds.includes(item.entity_id)) ||
-                    (item.entity === 'photo' && photos.some((photo) => photo.id === item.entity_id))),
-              )
-              .map((item) => item.id),
-          )
-          await db.photos.bulkPut(
-            photos.map((photo) => ({
-              ...photo,
-              upload_state: photo.upload_state === 'uploaded' ? 'uploaded' : 'not_needed',
-              upload_next_attempt_at: null,
-              upload_error: null,
-              sync_state: 'local_only' as const,
-            })),
-          )
-          await db.entries.bulkPut(entries.map((entry) => ({ ...entry, sync_state: 'local_only' })))
-          const localItems = await db.items.bulkGet(itemIds)
-          await db.items.bulkPut(
-            localItems
-              .filter((item): item is Item => !!item)
-              .map((item) => ({ ...item, sync_state: 'local_only' })),
-          )
-          await db.collections.put({
+      db.transaction(
+        'rw',
+        [db.collections, db.entries, db.items, db.photos, db.movements, db.outbox],
+        async () => {
+          const collection = await db.collections.get(id)
+          if (!collection) throw new Error('Collection not found')
+          if (collection.storage_mode === mode) return
+          const at = stamp()
+          if (mode === 'synced' && !opts.consentToUploadExisting)
+            throw new Error('Consent is required before uploading existing data.')
+          const modeCheck = await repo.checkStorageMode(id, mode)
+          if (!modeCheck.allowed)
+            throw new Error(
+              'Storage mode cannot change while items are shared with collections in another mode.',
+            )
+          const entries = await db.entries.where('collection_id').equals(id).toArray()
+          const itemIds = [...new Set(entries.map((entry) => entry.item_id))]
+          const photos = await db.photos.where('item_id').anyOf(itemIds).toArray()
+          const movements = await db.movements
+            .where('from_collection_id')
+            .equals(id)
+            .or('to_collection_id')
+            .equals(id)
+            .distinct()
+            .toArray()
+          if (mode === 'local_only') {
+            const movementIds = new Set(movements.map((movement) => movement.id))
+            await db.movements.bulkPut(
+              movements.map((movement) => ({ ...movement, sync_state: 'local_only' })),
+            )
+            const associated = await db.outbox.toArray()
+            await db.outbox.bulkDelete(
+              associated
+                .filter(
+                  (item) =>
+                    isUnsent(item) &&
+                    (item.collection_id === id ||
+                      (item.entity === 'item' && itemIds.includes(item.entity_id)) ||
+                      (item.entity === 'photo' && photos.some((photo) => photo.id === item.entity_id)) ||
+                      (item.entity === 'movement' && movementIds.has(item.entity_id))),
+                )
+                .map((item) => item.id),
+            )
+            await db.photos.bulkPut(
+              photos.map((photo) => ({
+                ...photo,
+                upload_state: photo.upload_state === 'uploaded' ? 'uploaded' : 'not_needed',
+                upload_next_attempt_at: null,
+                upload_error: null,
+                sync_state: 'local_only' as const,
+              })),
+            )
+            await db.entries.bulkPut(entries.map((entry) => ({ ...entry, sync_state: 'local_only' })))
+            const localItems = await db.items.bulkGet(itemIds)
+            await db.items.bulkPut(
+              localItems
+                .filter((item): item is Item => !!item)
+                .map((item) => ({ ...item, sync_state: 'local_only' })),
+            )
+            await db.collections.put({
+              ...collection,
+              storage_mode: mode,
+              updated_at: at,
+              sync_state: 'local_only',
+            })
+            return
+          }
+          const synced = {
             ...collection,
             storage_mode: mode,
+            sync_consented_at: at,
             updated_at: at,
-            sync_state: 'local_only',
-          })
-          return
-        }
-        const synced = {
-          ...collection,
-          storage_mode: mode,
-          sync_consented_at: at,
-          updated_at: at,
-          sync_state: 'pending' as const,
-        }
-        await db.collections.put(synced)
-        await enqueue(synced, 'collection', synced, 'upsert', { ...synced })
-        for (const entry of entries) {
-          const pending = { ...entry, sync_state: 'pending' as const }
-          await db.entries.put(pending)
-          await enqueue(synced, 'entry', pending, deletionOperation(pending) ?? 'upsert', { ...pending })
-        }
-        for (const itemId of itemIds) {
-          const item = await db.items.get(itemId)
-          if (!item) continue
-          const pending = { ...item, sync_state: 'pending' as const }
-          await db.items.put(pending)
-          await enqueue(synced, 'item', pending, 'upsert', { ...pending })
-        }
-        for (const photo of photos) {
-          const pending = {
-            ...photo,
             sync_state: 'pending' as const,
-            upload_state: photo.upload_state === 'uploaded' ? ('uploaded' as const) : ('pending' as const),
-            upload_error: null,
-            upload_attempts: 0,
-            upload_next_attempt_at: null,
           }
-          await db.photos.put(pending)
-          await enqueue(synced, 'photo', pending, deletionOperation(pending) ?? 'upsert', { ...pending })
-        }
-        // Consent covers recreating missing records, including retries of older rows.
-        await db.outbox
-          .where('collection_id')
-          .equals(id)
-          .filter((row) => row.op !== 'purge' && !row.recreate_if_missing)
-          .modify({ recreate_if_missing: true })
-      }),
+          await db.collections.put(synced)
+          await enqueue(synced, 'collection', synced, 'upsert', { ...synced })
+          for (const entry of entries) {
+            const pending = { ...entry, sync_state: 'pending' as const }
+            await db.entries.put(pending)
+            await enqueue(synced, 'entry', pending, deletionOperation(pending) ?? 'upsert', { ...pending })
+          }
+          for (const itemId of itemIds) {
+            const item = await db.items.get(itemId)
+            if (!item) continue
+            const pending = { ...item, sync_state: 'pending' as const }
+            await db.items.put(pending)
+            await enqueue(synced, 'item', pending, 'upsert', { ...pending })
+          }
+          for (const photo of photos) {
+            const pending = {
+              ...photo,
+              sync_state: 'pending' as const,
+              upload_state: photo.upload_state === 'uploaded' ? ('uploaded' as const) : ('pending' as const),
+              upload_error: null,
+              upload_attempts: 0,
+              upload_next_attempt_at: null,
+            }
+            await db.photos.put(pending)
+            await enqueue(synced, 'photo', pending, deletionOperation(pending) ?? 'upsert', { ...pending })
+          }
+          for (const movement of movements) {
+            if (movement.sync_state !== 'synced') await enqueueMovement(movement)
+          }
+          // Consent covers recreating missing records, including retries of older rows.
+          await db.outbox
+            .where('collection_id')
+            .equals(id)
+            .filter((row) => row.op !== 'purge' && !row.recreate_if_missing)
+            .modify({ recreate_if_missing: true })
+        },
+      ),
     readForExport: async (collectionIds) =>
-      db.transaction('r', db.collections, db.entries, db.items, db.photos, async () => {
+      db.transaction('r', db.collections, db.entries, db.items, db.photos, db.movements, async () => {
         const collections =
           collectionIds === 'all'
             ? await db.collections.toArray()
@@ -2482,11 +2597,12 @@ export function createRepo(options: RepoOptions = {}): Repo {
         const ids = collections.map((c) => c.id)
         const entries = await db.entries.where('collection_id').anyOf(ids).toArray()
         const itemIds = [...new Set(entries.map((entry) => entry.item_id))]
-        const [items, photos] = await Promise.all([
+        const [items, photos, movements] = await Promise.all([
           db.items.bulkGet(itemIds).then((rows) => rows.filter((item): item is Item => !!item)),
           db.photos.where('item_id').anyOf(itemIds).toArray(),
+          db.movements.where('item_id').anyOf(itemIds).toArray(),
         ])
-        return { collections, entries, items, photos }
+        return { collections, entries, items, photos, movements }
       }),
     setSetting: async (key, value) => {
       await db.transaction('rw', db.settings, async () => {

@@ -47,7 +47,13 @@ test('moves one entry between rooms, supports undo, and opens the placement', as
   await page.getByRole('button', { name: /Room B/ }).click()
   await page.locator('.toast').getByRole('button', { name: 'Open' }).click()
   await expect(page).toHaveURL(/\/c\/[^/]+\/e\/[^/]+$/)
-  await expect(page.getByText('Notes for Room B')).toBeVisible()
+  await expect(page.getByRole('region', { name: 'History' }).getByText(/From Room A #0001/)).toBeVisible()
+  await page.getByRole('button', { name: 'Show undone' }).click()
+  await expect(page.getByRole('region', { name: 'History' }).locator('li.undone')).toContainText(
+    'From Room A #0001',
+  )
+  await page.getByRole('button', { name: 'Add note for this collection' }).click()
+  await expect(page.getByLabel('Notes for Room B')).toHaveValue('')
   await expect(page.getByLabel('Entry title')).toHaveValue('Candles')
   await expect(page.getByRole('button', { name: 'View photo 1' })).toBeVisible()
   await page.goto('/')

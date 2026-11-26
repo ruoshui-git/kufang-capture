@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Validate a Kufang Capture export (format versions 1, 2 and 3) using only the stdlib."""
+"""Validate a Kufang Capture export (format versions 1 through 4) using only the stdlib."""
 
 from __future__ import annotations
 
@@ -50,6 +50,30 @@ PHOTOS_V2 = [
     "deleted_at",
 ]
 PHOTOS_V3 = PHOTOS_V2
+MOVEMENTS = [
+    "movement_id",
+    "item_id",
+    "from_entry_id",
+    "to_entry_id",
+    "from_collection_id",
+    "to_collection_id",
+    "from_sequence",
+    "to_sequence",
+    "from_name",
+    "to_name",
+    "quantity",
+    "unit",
+    "count_detail",
+    "target_before_quantity",
+    "kind",
+    "moved_at",
+    "undone_at",
+    "source",
+    "legacy_text",
+    "created_at",
+    "updated_at",
+    "revision",
+]
 # Historical aliases keep the v1 fixture builders straightforward.
 ENTRIES = ENTRIES_V1
 PHOTOS = PHOTOS_V1
@@ -119,10 +143,11 @@ def verify(path: Path, originals: Path | None = None) -> list[str]:
         except (KeyError, json.JSONDecodeError, UnicodeDecodeError) as exc:
             return problems + [f"cannot read manifest.json ({exc})"]
         version = manifest.get("format_version")
-        if manifest.get("format") != "kufang-capture-export" or version not in (1, 2, 3):
-            return problems + ["manifest format/version is not Kufang Capture version 1, 2 or 3"]
-        v2 = version in (2, 3)
-        v3 = version == 3
+        if manifest.get("format") != "kufang-capture-export" or type(version) is not int or version not in (1, 2, 3, 4):
+            return problems + ["manifest format/version is not Kufang Capture version 1 through 4"]
+        v2 = version >= 2
+        v3 = version >= 3
+        v4 = version == 4
         entry_headers = ENTRIES_V3 if v3 else ENTRIES_V2 if v2 else ENTRIES_V1
         photo_headers = PHOTOS_V3 if v3 else PHOTOS_V2 if v2 else PHOTOS_V1
         collection_headers = COLLECTIONS_V3 if v3 else COLLECTIONS
@@ -132,6 +157,8 @@ def verify(path: Path, originals: Path | None = None) -> list[str]:
             if isinstance(item, dict) and isinstance(item.get("path"), str)
         }
         core = ["capture-export/manifest.json", "capture-export/collections.csv", "capture-export/collections.json"]
+        if v4:
+            core += ["capture-export/movements.csv", "capture-export/movements.json"]
         base = ["entries.csv", "entries.json", "photos.csv", "photos.json"]
         expected = set(core + [f"capture-export/{part}" for part in base])
         if trash:
@@ -152,6 +179,32 @@ def verify(path: Path, originals: Path | None = None) -> list[str]:
 
         collection_ids = {row.get("collection_id") for row in collections}
         all_entries = entries + trash_entries
+        if v4:
+            _, movements = load_table(archive, "movements", MOVEMENTS, problems)
+            exported_items = {row.get("item_id") for row in all_entries}
+            seen_movements = set()
+            for row in movements:
+                movement_id = row.get("movement_id")
+                if not isinstance(movement_id, str) or not re.fullmatch(r"[0-7][0-9A-HJKMNP-TV-Z]{25}", movement_id):
+                    problems.append(f"movement {movement_id!r}: invalid ULID")
+                elif movement_id in seen_movements:
+                    problems.append(f"movement {movement_id}: duplicate movement_id")
+                else:
+                    seen_movements.add(movement_id)
+                if row.get("item_id") not in exported_items:
+                    problems.append(f"movement {movement_id}: item_id is not exported")
+                for field in ("quantity", "target_before_quantity"):
+                    quantity = row.get(field)
+                    if quantity is not None and (
+                        not isinstance(quantity, str) or not re.fullmatch(r"-?\d+(\.\d+)?", quantity)
+                    ):
+                        problems.append(f"movement {movement_id}: {field} must be a raw decimal string or null")
+                for field in ("from_sequence", "to_sequence", "revision"):
+                    value = row.get(field)
+                    if type(value) is not int or value < 1:
+                        problems.append(f"movement {movement_id}: {field} must be a positive integer")
+                if row.get("kind") not in ("move", "part", "merge", "split") or row.get("source") not in ("app", "text"):
+                    problems.append(f"movement {movement_id}: invalid kind or source")
         for row in all_entries:
             if row.get("collection_id") not in collection_ids:
                 problems.append(f"entry {row.get('entry_id')}: collection_id is dangling")
@@ -335,6 +388,8 @@ def verify(path: Path, originals: Path | None = None) -> list[str]:
         }
         if v2:
             expected_counts["items"] = len({row.get("item_id") for row in entries})
+        if v4:
+            expected_counts["movements"] = len(movements)
         for key, value in expected_counts.items():
             if counts.get(key) != value:
                 problems.append(f"manifest count mismatch for {key}: expected {value}, got {counts.get(key)}")

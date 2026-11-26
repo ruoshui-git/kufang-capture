@@ -158,7 +158,7 @@ export class AccountGate {
           { key: SETTING_KEYS.syncCursor, value: 0 },
           { key: SETTING_KEYS.lastStorageMode, value: user.is_owner ? 'local_only' : 'synced' },
         )
-        await db.settings.delete(photoUploadRetryKey)
+        await db.settings.bulkDelete([photoUploadRetryKey, SETTING_KEYS.syncSchema2Cursor])
       }
       await db.settings.bulkPut(settings)
       return { kind: 'ready', user }

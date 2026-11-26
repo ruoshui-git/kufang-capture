@@ -170,7 +170,29 @@ export interface PhotoBlob {
   thumbnail: Blob | null
 }
 
-export type OutboxEntity = 'collection' | 'item' | 'entry' | 'photo'
+export interface Movement extends Versioned {
+  id: Id
+  item_id: Id
+  from_entry_id: Id | null
+  to_entry_id: Id | null
+  from_collection_id: Id | null
+  to_collection_id: Id | null
+  from_sequence: number
+  to_sequence: number
+  from_name: string
+  to_name: string
+  quantity: string | null
+  unit: string
+  count_detail: string
+  target_before_quantity: string | null
+  kind: 'move' | 'part' | 'merge' | 'split'
+  moved_at: Timestamp
+  undone_at: Timestamp | null
+  source: 'app' | 'text'
+  legacy_text: string
+}
+
+export type OutboxEntity = 'collection' | 'item' | 'entry' | 'photo' | 'movement'
 export type OutboxOp = 'upsert' | 'delete' | 'restore' | 'purge'
 
 /**
@@ -216,6 +238,7 @@ export const SETTING_KEYS = {
   lastStorageMode: 'last_storage_mode',
   deviceId: 'device_id',
   syncCursor: 'sync_cursor',
+  syncSchema2Cursor: 'sync_schema2_cursor',
   entrySort: 'entry_sort',
   captureMode: 'capture_mode',
   /** string[] of folder names collapsed on the Collections screen ('' = the unfiled group). */
@@ -251,6 +274,7 @@ export interface QuantityByUnit {
 /** List-row view model for the inline Entry List. */
 export interface EntryRow {
   entry: EntryView
+  movement_summary?: { from?: string; count: number; to?: { name: string; sequence: number } }
   photo_count: number
   /** Up to 3 non-deleted photos: the cover first, then the most recently captured. */
   recent_photos: Photo[]

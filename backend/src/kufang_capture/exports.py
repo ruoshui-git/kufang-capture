@@ -70,6 +70,31 @@ PHOTO_COLUMNS = [
     "deleted_at",
 ]
 
+MOVEMENT_COLUMNS = [
+    "movement_id",
+    "item_id",
+    "from_entry_id",
+    "to_entry_id",
+    "from_collection_id",
+    "to_collection_id",
+    "from_sequence",
+    "to_sequence",
+    "from_name",
+    "to_name",
+    "quantity",
+    "unit",
+    "count_detail",
+    "target_before_quantity",
+    "kind",
+    "moved_at",
+    "undone_at",
+    "source",
+    "legacy_text",
+    "created_at",
+    "updated_at",
+    "revision",
+]
+
 
 def _sanitize(value: str) -> str:
     result = unicodedata.normalize("NFC", value)
@@ -242,6 +267,7 @@ def build_export(
     exported_at = datetime.now(UTC).replace(microsecond=0)
     iso_time = exported_at.isoformat(timespec="milliseconds").replace("+00:00", "Z")
     with connect(data_dir) as db:
+        db.execute("BEGIN")
         where = "WHERE id=?" if collection_id else ""
         collections = [
             dict(row)
@@ -279,8 +305,20 @@ def build_export(
                 if item_ids
                 else []
             )
+            movements = (
+                [
+                    dict(row)
+                    for row in db.execute(
+                        "SELECT id AS movement_id, * FROM movements "
+                        f"WHERE item_id IN ({item_marks}) ORDER BY id",
+                        item_ids,
+                    )
+                ]
+                if item_ids
+                else []
+            )
         else:
-            entries, photos = [], []
+            entries, photos, movements = [], [], []
     coll_order = {row["id"]: i for i, row in enumerate(collections)}
     entries.sort(key=lambda row: (coll_order[row["collection_id"]], row["sequence_number"]))
     first_order = {}
@@ -427,6 +465,9 @@ def build_export(
         file_items.append((prefix + stem + ".json", _json(rows, columns), 0, 0, "", None))
 
     add_table("collections", c_rows, COLLECTION_COLUMNS)
+    if not include_trash:
+        movements = [row for row in movements if row["item_id"] in active_item_ids]
+    add_table("movements", movements, MOVEMENT_COLUMNS)
     add_table("entries", e_rows, ENTRY_COLUMNS)
     add_table("photos", photo_rows, PHOTO_COLUMNS)
     file_items.extend(
@@ -475,7 +516,7 @@ def build_export(
         value["total"] = value["total"].rstrip("0").rstrip(".") if "." in value["total"] else value["total"]
     manifest = {
         "format": "kufang-capture-export",
-        "format_version": 3,
+        "format_version": 4,
         "exported_at": iso_time,
         "source": "server",
         "app_version": app_version,
@@ -485,6 +526,7 @@ def build_export(
         "counts": {
             "collections": len(collections),
             "items": len(active_item_ids),
+            "movements": len(movements),
             "entries": len(active_entries),
             "photos": len(active_photos),
             "photo_bytes": sum(p["byte_size"] for p in active_photos),

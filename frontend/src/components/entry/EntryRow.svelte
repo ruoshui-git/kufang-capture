@@ -269,7 +269,15 @@
     </button>
   </div>
 
-  {#if entryNotes}<p class="entry-note-preview">{entryNotes}</p>{/if}
+  <div class="entry-meta">
+    {#if entryNotes}<p class="entry-note-preview">{entryNotes}</p>{/if}
+    {#if row.movement_summary}
+      <p class="movement-preview">
+        {row.movement_summary.from ? `From ${row.movement_summary.from} · ` : ''}{row.movement_summary.count}
+        {row.movement_summary.count === 1 ? 'move' : 'moves'}
+      </p>
+    {/if}
+  </div>
   <div class="fields">
     <div class="quantity-wrap">
       <input
@@ -424,6 +432,7 @@
     grid-template-areas:
       'head head'
       'thumbs actions'
+      'meta meta'
       'fields fields'
       'foot foot'
       'extra extra';
@@ -481,7 +490,15 @@
     background: transparent;
     color: var(--color-warn);
   }
-  .entry-note-preview {
+  .entry-meta {
+    grid-area: meta;
+    min-width: 0;
+    min-height: calc(var(--text-sm) * var(--leading-body));
+    display: flex;
+    gap: var(--space-3);
+  }
+  .entry-note-preview,
+  .movement-preview {
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
@@ -696,6 +713,7 @@
       grid-template-areas:
         'tag title star thumbs actions quantity dimensions note details menu'
         '. badges badges badges badges badges badges badges badges .'
+        '. meta meta meta meta meta meta meta meta .'
         'status status status status status status status status status status';
       gap: var(--space-1);
       padding: var(--space-2);
