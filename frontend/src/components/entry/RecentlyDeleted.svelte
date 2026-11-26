@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { m } from '$lib/paraglide/messages.js'
   import { onMount } from 'svelte'
   import { repo } from '$lib/db'
   import type { EntryRow, Photo } from '$lib/types'
@@ -20,32 +21,39 @@
   })
 </script>
 
-<section class="trash" aria-label="Recently Deleted">
-  <h2>Deleted entries</h2>
+<section class="trash" aria-label={m.entry_recently_deleted()}>
+  <h2>{m.entry_deleted_entries()}</h2>
   {#each rows as row (row.entry.id)}
     {@const target = row.movement_summary?.to}
     {@const legacy = target ? null : row.entry.entry_notes.match(/^Moved to .+$/m)}
+    {@const legacyTarget = legacy?.[0].match(/^Moved to "(.+)" (#[0-9]+)\r?$/)}
     <div class="trash-row">
       <span>
-        {formatSequence(row.entry.sequence_number)} — {row.entry.title || 'Untitled entry'}
+        {formatSequence(row.entry.sequence_number)} — {row.entry.title || m.entry_untitled_entry()}
         <small
-          >{#if target}Moved to "{target.name}" {formatSequence(
-              target.sequence,
-            )}{:else if legacy}{legacy[0]}{/if}</small
+          >{#if target}{m.entry_trash_moved_to({
+              name: target.name,
+              sequence: formatSequence(target.sequence),
+            })}{:else if legacyTarget}{m.entry_trash_moved_to({
+              name: legacyTarget[1]!,
+              sequence: legacyTarget[2]!,
+            })}{:else if legacy}{legacy[0]}{/if}</small
         >
       </span>
-      <button onclick={() => void repo.restoreEntry(row.entry.id)}>Restore</button>
+      <button onclick={() => void repo.restoreEntry(row.entry.id)}>{m.entry_restore()}</button>
     </div>
   {/each}
-  <h2>Deleted photos</h2>
+  <h2>{m.entry_deleted_photos()}</h2>
   {#each photos as photo (photo.id)}<div class="trash-row">
       <span
-        >Photo from {formatSequence(
-          rows.find((row) => row.entry.item_id === photo.item_id)?.entry.sequence_number ?? 0,
-        )}</span
-      ><button onclick={() => void repo.restorePhoto(photo.id)}>Restore</button>
+        >{m.entry_trash_photo_from({
+          sequence: formatSequence(
+            rows.find((row) => row.entry.item_id === photo.item_id)?.entry.sequence_number ?? 0,
+          ),
+        })}</span
+      ><button onclick={() => void repo.restorePhoto(photo.id)}>{m.entry_restore()}</button>
     </div>{/each}
-  {#if !rows.length && !photos.length}<p>No recently deleted entries or photos.</p>{/if}
+  {#if !rows.length && !photos.length}<p>{m.entry_nothing_deleted()}</p>{/if}
 </section>
 
 <style>

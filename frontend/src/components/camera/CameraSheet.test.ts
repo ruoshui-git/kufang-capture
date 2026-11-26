@@ -1,3 +1,4 @@
+import { setLocale } from '$lib/paraglide/runtime.js'
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/svelte'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
@@ -126,4 +127,24 @@ describe('fast camera controls', () => {
     document.dispatchEvent(new Event('visibilitychange'))
     await waitFor(() => expect(stopCamera).toHaveBeenCalledWith(stream))
   })
+})
+
+it('names rear cameras and focus modes in Chinese while retaining browser option values', async () => {
+  setup({ focusMode: ['manual', 'continuous'], torch: true } as MediaTrackCapabilities)
+  vi.mocked(navigator.mediaDevices.enumerateDevices).mockResolvedValue([
+    { kind: 'videoinput', label: 'Back camera', deviceId: 'back-one' },
+    { kind: 'videoinput', label: 'Rear camera', deviceId: 'back-two' },
+  ] as MediaDeviceInfo[])
+  await setLocale('zh-CN', { reload: false })
+  try {
+    render(CameraSheet, { props: { open: true, entryId: 'entry' } })
+    expect(await screen.findByRole('dialog', { name: '快速拍照' })).toBeInTheDocument()
+    expect(await screen.findByRole('option', { name: '后置相机 2' })).toHaveValue('back-two')
+    expect(screen.getByRole('option', { name: '手动对焦' })).toHaveValue('manual')
+    expect(screen.getByRole('option', { name: '连续自动对焦' })).toHaveValue('continuous')
+    expect(screen.getByLabelText('补光灯')).toBeInTheDocument()
+    expect(screen.queryByLabelText('变焦')).not.toBeInTheDocument()
+  } finally {
+    await setLocale('en', { reload: false })
+  }
 })

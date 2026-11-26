@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { m } from '$lib/paraglide/messages.js'
   import { repo } from '$lib/db'
   import type { Id, Photo } from '$lib/types'
   import { thumbnailUrl } from '$lib/photos'
@@ -64,33 +65,40 @@
 </script>
 
 {#if photos.length}
-  <div class="photo-grid" aria-label="Entry photos">
+  <div class="photo-grid" aria-label={m.entry_entry_photos()}>
     {#each photos as photo, index (photo.id)}
       <article class="photo-card">
-        <button class="photo-open" aria-label="View photo {index + 1}" onclick={() => onopen(photo.id)}>
+        <button
+          class="photo-open"
+          aria-label={m.entry_view_photo({ number: index + 1 })}
+          onclick={() => onopen(photo.id)}
+        >
           {#if urls[photo.id]?.account === $photoAccount}<img
               src={urls[photo.id]?.url}
-              alt={photo.caption || `Entry photo ${index + 1}`}
-            />{:else}<span class="photo-placeholder">Loading photo…</span>{/if}
-          {#if photo.is_cover}<span class="cover-badge">Cover</span>{/if}
+              alt={photo.caption || m.entry_entry_photo_number({ number: index + 1 })}
+            />{:else}<span class="photo-placeholder">{m.entry_loading_photo()}</span>{/if}
+          {#if photo.is_cover}<span class="cover-badge">{m.entry_cover()}</span>{/if}
         </button>
         <div class="photo-controls">
-          {#if !photo.is_cover}<button onclick={() => void repo.setCoverPhoto(photo.id)}>Set as cover</button
-            >{:else}<span>Cover photo</span>{/if}
+          {#if !photo.is_cover}<button onclick={() => void repo.setCoverPhoto(photo.id)}
+              >{m.entry_set_cover()}</button
+            >{:else}<span>{m.entry_cover_photo()}</span>{/if}
           <div class="move-controls">
-            <button aria-label="Move earlier" disabled={index === 0} onclick={() => void move(index, -1)}
-              >↑</button
+            <button
+              aria-label={m.entry_photo_earlier()}
+              disabled={index === 0}
+              onclick={() => void move(index, -1)}>↑</button
             ><button
-              aria-label="Move later"
+              aria-label={m.entry_photo_later()}
               disabled={index === photos.length - 1}
               onclick={() => void move(index, 1)}>↓</button
             >
           </div>
         </div>
         <label class="caption-field"
-          >Caption<input
+          >{m.entry_caption()}<input
             value={captionDraft[photo.id] ?? photo.caption}
-            aria-label="Photo caption"
+            aria-label={m.entry_photo_caption()}
             data-photo-caption={photo.id}
             oninput={(event) => captionChanged(photo, event.currentTarget.value)}
             onblur={(event) => void flushCaption(photo, event.currentTarget.value)}
@@ -101,7 +109,7 @@
           onclick={async () => {
             await repo.deletePhoto(photo.id)
             ondelete(photo)
-          }}>Delete photo</Button
+          }}>{m.entry_delete_photo()}</Button
         >
       </article>
     {/each}
@@ -170,6 +178,10 @@
     background: transparent;
     color: var(--color-ballpoint);
     cursor: pointer;
+  }
+  :global([lang='zh-CN']) .photo-controls > button {
+    padding-inline: var(--space-1);
+    font-size: var(--text-sm);
   }
   .photo-controls span {
     color: var(--color-muted);

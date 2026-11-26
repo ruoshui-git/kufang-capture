@@ -1,3 +1,4 @@
+import { setLocale } from '$lib/paraglide/runtime.js'
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/svelte'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import EntryRow from './EntryRow.svelte'
@@ -233,4 +234,28 @@ describe('entry row inline editing', () => {
     expiration.blur()
     await waitFor(async () => expect((await repo.getEntry(entry.id))?.expiration_date).toBeNull())
   })
+})
+
+it('localizes the row and keeps Enter navigation independent of accessible names', async () => {
+  const collection = await repo.createCollection({ name: '库房', storage_mode: 'local_only' })
+  await repo.createEntry(collection.id)
+  const [row] = await first(repo.watchEntryRows(collection.id, { search: '', filter: 'all', sort: 'newest' }))
+  await setLocale('zh-CN', { reload: false })
+  try {
+    render(EntryRow, {
+      props: { row: row!, units: [], ondetails: () => {}, onviewer: () => {}, ondelete: () => {} },
+    })
+    expect(screen.getByLabelText('条目标题')).toHaveAttribute('placeholder', '条目 #0001')
+    expect(screen.getByText('已保存到本设备')).toBeInTheDocument()
+    expect(screen.getByText('0 张照片')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '从相册添加' })).toBeInTheDocument()
+    await fireEvent.keyDown(screen.getByLabelText('数量'), { key: 'Enter' })
+    expect(screen.getByLabelText('尺寸')).toHaveFocus()
+    await fireEvent.keyDown(screen.getByLabelText('尺寸'), { key: 'Enter' })
+    expect(screen.getByLabelText('简短备注')).toHaveFocus()
+    await fireEvent.click(screen.getByRole('button', { name: '更多详情' }))
+    expect(screen.getByLabelText('清点明细')).toBeInTheDocument()
+  } finally {
+    await setLocale('en', { reload: false })
+  }
 })

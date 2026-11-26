@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { m } from '$lib/paraglide/messages.js'
   import { onMount } from 'svelte'
   import { repo } from '$lib/db'
   import type { EntryView, Id, Movement, Photo } from '$lib/types'
@@ -61,7 +62,7 @@
   let captureMode = $state<CaptureMode>('native')
   let failure = $state('')
   let showEntryNotes = $state(false)
-  let collectionName = $state('this collection')
+  let collectionName = $state<string>()
   let dimensionsField: HTMLTextAreaElement | undefined = $state()
   let syncPhase = $state('idle')
   const timers = new Map<EditableKey, ReturnType<typeof setTimeout>>()
@@ -216,7 +217,7 @@
       dirty.delete(field)
       dirty = new Set(dirty)
     } catch (cause) {
-      failure = 'Could not save this change on this device. Try again.'
+      failure = m.entry_save_failed()
     } finally {
       savingCount -= 1
     }
@@ -233,7 +234,7 @@
       const incoming = await selection
       if (incoming.length) await repo.addPhotos(entryId, incoming)
     } catch (cause) {
-      showToast({ message: 'Could not add photos. Check available storage and try again.' })
+      showToast({ message: m.entry_add_photos_failed() })
     }
   }
   function openCamera() {
@@ -252,8 +253,8 @@
   function undoDelete(photo: Photo) {
     const count = (entry?.shared_with.length ?? 0) + 1
     showToast({
-      message: count > 1 ? `Photo deleted from ${count} collections.` : 'Photo deleted',
-      actionLabel: 'Undo',
+      message: count > 1 ? m.entry_photo_deleted_shared({ count }) : m.entry_photo_deleted(),
+      actionLabel: m.entry_undo(),
       action: () => repo.restorePhoto(photo.id),
     })
   }
@@ -261,38 +262,45 @@
 
 <svelte:head
   ><title
-    >{entry ? `${formatSequence(entry.sequence_number)} — Entry detail` : 'Entry detail'} — Kufang Capture</title
+    >{entry
+      ? `${formatSequence(entry.sequence_number)} — ${m.entry_page_title()}`
+      : m.entry_page_title()}</title
   ></svelte:head
 >
 {#if !entry}
   <section class="detail-empty">
-    {#if entry === undefined}<p>Loading entry…</p>{/if}
+    {#if entry === undefined}<p>{m.entry_loading()}</p>{/if}
   </section>
 {:else}
   <section class:panel={variant === 'panel'} class="detail-page">
     <header class="detail-header">
-      {#if variant === 'page'}<button class="back-link" onclick={backToList}>← Back to list</button
-        >{:else}<button class="back-link" onclick={() => navigate(`/c/${collectionId}`)}>Close</button>{/if}
+      {#if variant === 'page'}<button class="back-link" onclick={backToList}>{m.entry_back_to_list()}</button
+        >{:else}<button class="back-link" onclick={() => navigate(`/c/${collectionId}`)}
+          >{m.entry_close()}</button
+        >{/if}
       <div class="detail-title-row">
         <Tag sequence={entry.sequence_number} size="lg" /><input
           class="title-input"
-          aria-label="Entry title"
-          placeholder="Entry title"
+          aria-label={m.entry_title()}
+          placeholder={m.entry_title()}
           value={draft.title ?? ''}
           data-field="title"
           oninput={(event) => setField('title', event.currentTarget.value)}
           onblur={() => void flushField('title')}
         />
       </div>
-      {#if entry.review_status === 'needs_review'}<span class="review-badge">Needs review</span>{/if}
+      {#if entry.review_status === 'needs_review'}<span class="review-badge">{m.entry_needs_review()}</span
+        >{/if}
       <button
         class="star-detail"
-        aria-label={entry.starred_at ? 'Unstar entry' : 'Star entry'}
+        aria-label={entry.starred_at ? m.entry_unstar() : m.entry_star()}
         aria-pressed={entry.starred_at !== null}
         onclick={() => void repo.setEntryStarred(entryId, entry?.starred_at === null)}
-        >{entry.starred_at ? '★ Starred' : '☆ Star entry'}</button
+        >{entry.starred_at ? m.entry_starred() : m.entry_star_action()}</button
       >
-      {#if !entry.deleted_at}<Button variant="quiet" onclick={() => (moveOpen = true)}>Move to…</Button>{/if}
+      {#if !entry.deleted_at}<Button variant="quiet" onclick={() => (moveOpen = true)}
+          >{m.entry_move_to()}</Button
+        >{/if}
       {#if entry.deleted_at}
         {@const legacy = lastPlacementChange
           ? null
@@ -312,66 +320,65 @@
         >
           <span>
             {#if movedAway}
-              Moved to "{placed?.collection_name ?? movedAway.to_name}" as {formatSequence(
-                placed?.sequence_number ?? movedAway.to_sequence,
-              )}
+              {m.entry_moved_notice({
+                name: placed?.collection_name ?? movedAway.to_name,
+                sequence: formatSequence(placed?.sequence_number ?? movedAway.to_sequence),
+              })}
             {:else if legacy}
-              Moved to "{legacy[1]}" as {legacy[2]}
+              {m.entry_moved_notice({ name: legacy[1]!, sequence: legacy[2]! })}
             {:else if placement}
-              Removed from this collection. Also in "{placement.collection_name}" {formatSequence(
-                placement.sequence_number,
-              )}
+              {m.entry_removed_shared_notice({
+                name: placement.collection_name,
+                sequence: formatSequence(placement.sequence_number),
+              })}
             {/if}
           </span>
-          {#if placement}<a href="/c/{placement.collection_id}/e/{placement.entry_id}">Open</a>{/if}
+          {#if placement}<a href="/c/{placement.collection_id}/e/{placement.entry_id}">{m.entry_open()}</a
+            >{/if}
         </div>
       {/if}
       {#if entry.shared_with.length > 0}<p class="shared-hint">
-          Title, notes and photos are shared across {entry.shared_with.length + 1} collections.
+          {m.entry_shared_hint({ count: entry.shared_with.length + 1 })}
         </p>{/if}
-      {#if entry.shared_with.length > 0}<section class="also-in" aria-label="Also in">
-          <strong>Also in</strong>
+      {#if entry.shared_with.length > 0}<section class="also-in" aria-label={m.entry_also_in()}>
+          <strong>{m.entry_also_in()}</strong>
           {#each entry.shared_with as placement (placement.entry_id)}<a
               href="/c/{placement.collection_id}/e/{placement.entry_id}"
               >{placement.collection_name} · {formatSequence(placement.sequence_number)}</a
             >{/each}
         </section>{/if}
       <label class="review-select"
-        >Review status <select
+        >{m.entry_review_status()}
+        <select
           value={entry.review_status}
           onchange={(event) =>
             void repo.updateEntry(entryId, {
               review_status: event.currentTarget.value as EntryView['review_status'],
             })}
-          ><option value="draft">Draft</option><option value="complete">Complete</option><option
-            value="needs_review">Needs review</option
-          ></select
+          ><option value="draft">{m.entry_draft()}</option><option value="complete"
+            >{m.entry_complete()}</option
+          ><option value="needs_review">{m.entry_needs_review()}</option></select
         ></label
       >
       <p class="save-state" aria-live="polite">
-        {#if savingCount}Saving…{:else if failure}{failure}{:else if syncPhase === 'syncing' && entry.display_sync_state === 'pending'}Syncing{:else if entry.display_sync_state === 'conflict'}Conflict{:else if entry.display_sync_state === 'error'}Sync
-          error{:else if entry.display_sync_state === 'pending'}Pending sync{:else if entry.display_sync_state === 'synced'}Backed
-          up{:else}Saved on this device{/if}
+        {#if savingCount}{m.entry_saving()}{:else if failure}{failure}{:else if syncPhase === 'syncing' && entry.display_sync_state === 'pending'}{m.entry_syncing()}{:else if entry.display_sync_state === 'conflict'}{m.entry_conflict()}{:else if entry.display_sync_state === 'error'}{m.entry_sync_error()}{:else if entry.display_sync_state === 'pending'}{m.entry_pending_sync()}{:else if entry.display_sync_state === 'synced'}{m.entry_backed_up()}{:else}{m.entry_saved_device()}{/if}
       </p>
     </header>
 
     {#if entry.deleted_at}
       <div class="deleted-notice" role="status">
-        <span
-          >{entry.shared_with.length
-            ? 'Removed from this collection. Restoring keeps it in both.'
-            : 'This entry was deleted.'}</span
+        <span>{entry.shared_with.length ? m.entry_deleted_shared_restore() : m.entry_deleted_notice()}</span
         ><Button
           onclick={async () => {
             await repo.restoreEntry(entryId)
-          }}>Restore</Button
+          }}>{m.entry_restore()}</Button
         >
       </div>
     {:else}
       <div class="photo-actions">
-        <Button variant="capture" onclick={openCamera}>Add Photo</Button><Button
+        <Button variant="capture" onclick={openCamera}>{m.entry_add_photo()}</Button><Button
           variant="quiet"
-          onclick={() => void add('library')}>Add from Photos</Button
+          onclick={() => void add('library')}>{m.entry_add_from_photos()}</Button
         >
       </div>
       <PhotoGrid
@@ -386,8 +393,8 @@
 
       <div class="field-grid">
         <label class="field"
-          >Quantity<input
-            aria-label="Quantity"
+          >{m.entry_quantity()}<input
+            aria-label={m.entry_quantity()}
             data-field="quantity"
             inputmode="decimal"
             enterkeyhint="next"
@@ -395,15 +402,14 @@
             oninput={(event) => setField('quantity', event.currentTarget.value)}
             onblur={() => void flushField('quantity')}
             aria-invalid={invalidQuantity}
-          />{#if entry.shared_with.length > 0}<small class="field-note"
-              >This count is for this collection only.</small
+          />{#if entry.shared_with.length > 0}<small class="field-note">{m.entry_qty_local()}</small
             >{/if}{#if invalidQuantity}<small class="field-hint" role="alert"
-              >Enter a decimal number, such as 12.5.</small
+              >{m.entry_invalid_quantity()}</small
             >{/if}</label
         >
         <label class="field"
-          >Unit<input
-            aria-label="Unit"
+          >{m.entry_unit()}<input
+            aria-label={m.entry_unit()}
             data-field="unit"
             value={draft.unit ?? ''}
             oninput={(event) => setField('unit', event.currentTarget.value)}
@@ -411,21 +417,21 @@
           /></label
         >
         <label class="field"
-          >Expiration date<input
+          >{m.entry_expiration()}<input
             type="date"
             data-field="expiration_date"
             value={draft.expiration_date ?? ''}
             oninput={(event) => setField('expiration_date', event.currentTarget.value)}
             onblur={() => void flushField('expiration_date')}
-          /><small class="field-note">Leave blank if unknown</small></label
+          /><small class="field-note">{m.entry_expiration_hint()}</small></label
         >
         <label class="field full-field"
-          >Dimensions<textarea
+          >{m.entry_dimensions()}<textarea
             class="dimensions-field"
             data-field="dimensions"
             bind:this={dimensionsField}
             rows="2"
-            placeholder="e.g. 30 × 20 × 15 cm"
+            placeholder={m.entry_dimensions_example()}
             value={draft.dimensions ?? ''}
             oninput={(event) => {
               const field = event.currentTarget
@@ -439,50 +445,54 @@
             onblur={() => void flushField('dimensions')}></textarea></label
         >
         <label class="field full-field"
-          >Count detail<textarea
+          >{m.entry_count_detail()}<textarea
             data-field="count_detail"
             rows="2"
-            placeholder="e.g. 3 boxes, 24 packs each, plus 2 loose packs"
+            placeholder={m.entry_count_detail_example()}
             value={draft.count_detail ?? ''}
             oninput={(event) => setField('count_detail', event.currentTarget.value)}
             onblur={() => void flushField('count_detail')}></textarea></label
         >
         <label class="field full-field"
-          >Notes<textarea
+          >{m.entry_notes()}<textarea
             data-field="notes"
             rows="4"
             value={draft.notes ?? ''}
             oninput={(event) => setField('notes', event.currentTarget.value)}
             onblur={() => void flushField('notes')}></textarea>{#if entry.shared_with.length > 0}<small
-              class="field-note">Changes apply across {entry.shared_with.length + 1} collections.</small
+              class="field-note">{m.entry_changes_shared({ count: entry.shared_with.length + 1 })}</small
             >{/if}</label
         >
         {#if entry.shared_with.length > 0 || entry.entry_notes || showEntryNotes}
           <label class="field full-field"
-            >Notes for {collectionName}<textarea
+            >{collectionName === undefined
+              ? m.entry_notes_this_collection()
+              : m.entry_notes_collection({ name: collectionName })}<textarea
               data-field="entry_notes"
               rows="3"
               value={draft.entry_notes ?? ''}
               oninput={(event) => setField('entry_notes', event.currentTarget.value)}
               onblur={() => void flushField('entry_notes')}></textarea><small class="field-note"
-              >Only in this collection.</small
+              >{m.entry_note_local()}</small
             ></label
           >
         {:else}<button class="add-entry-note" onclick={() => (showEntryNotes = true)}
-            >Add note for this collection</button
+            >{m.entry_add_collection_note()}</button
           >{/if}
       </div>
     {/if}
-    <nav class="detail-navigation" aria-label="Entry navigation">
+    <nav class="detail-navigation" aria-label={m.entry_navigation()}>
       <Button
         variant="quiet"
         disabled={!adjacent.prev}
-        onclick={() => adjacent.prev && navigate(`/c/${collectionId}/e/${adjacent.prev}`)}>Previous</Button
+        onclick={() => adjacent.prev && navigate(`/c/${collectionId}/e/${adjacent.prev}`)}
+        >{m.entry_previous()}</Button
       ><Button
         variant="quiet"
         disabled={!adjacent.next}
-        onclick={() => adjacent.next && navigate(`/c/${collectionId}/e/${adjacent.next}`)}>Next</Button
-      ><Button onclick={() => void newEntry()}>+ New Entry</Button>
+        onclick={() => adjacent.next && navigate(`/c/${collectionId}/e/${adjacent.next}`)}
+        >{m.entry_next()}</Button
+      ><Button onclick={() => void newEntry()}>{m.entry_new()}</Button>
     </nav>
     <MovementHistory {entryId} {movements} />
   </section>
@@ -676,6 +686,10 @@
     border: 1px solid var(--color-warn);
     border-radius: var(--radius-md);
     background: var(--color-card);
+  }
+  .deleted-notice :global(.button) {
+    flex-shrink: 0;
+    white-space: nowrap;
   }
   .detail-empty {
     max-width: 900px;

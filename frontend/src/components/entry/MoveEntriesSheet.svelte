@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { m } from '$lib/paraglide/messages.js'
   import { onDestroy } from 'svelte'
   import { repo } from '$lib/db'
   import type { CollectionSummary, EntryRow, Id, StorageMode } from '$lib/types'
@@ -59,7 +60,7 @@
 
   $effect(() => {
     if (!open) return
-    name = `${sourceName} (split)`
+    name = m.entry_split_name({ name: sourceName })
     newFolder = folder
     selected = new Set()
     destination = 'new'
@@ -110,7 +111,7 @@
         count = result.created.length + result.restored.length + result.merged_into_existing.length
       }
       open = false
-      showToast({ message: `Moved ${count} ${count === 1 ? 'entry' : 'entries'}` })
+      showToast({ message: m.entry_moved_count({ count }) })
     } catch (cause) {
       error = cause instanceof Error ? cause.message : String(cause)
     } finally {
@@ -119,35 +120,50 @@
   }
 </script>
 
-<Sheet bind:open title="Move entries">
+<Sheet bind:open title={m.entry_move_entries()}>
   {#snippet children()}
     <label class="search-field"
-      >Search entries<input aria-label="Search move entries" bind:value={search} /></label
+      >{m.entry_search_entries()}<input
+        aria-label={m.entry_search_move_entries()}
+        bind:value={search}
+      /></label
     >
     <div class="select-actions">
-      <span>{selected.size} selected</span>
+      <span>{m.entry_selected({ count: selected.size })}</span>
       <button type="button" class="quiet-link" onclick={toggleAll}
-        >{allFilteredSelected ? 'Clear' : 'Select all'}</button
+        >{allFilteredSelected ? m.entry_clear() : m.entry_select_all()}</button
       >
     </div>
-    <div class="entry-list" aria-label="Entries to move">
+    <div class="entry-list" aria-label={m.entry_entries_to_move()}>
       {#each filteredRows as row (row.entry.id)}
         <label class="entry-row">
           <input type="checkbox" checked={selected.has(row.entry.id)} onchange={() => toggle(row.entry.id)} />
           <strong>{formatSequence(row.entry.sequence_number)}</strong>
-          <span>{row.entry.title || 'Untitled'}</span>
+          <span>{row.entry.title || m.entry_untitled()}</span>
           <small>{row.entry.quantity ?? ''}{row.entry.unit ? ` ${row.entry.unit}` : ''}</small>
         </label>
-      {:else}<p>No active entries found.</p>{/each}
+      {:else}<p>{m.entry_no_active_entries()}</p>{/each}
     </div>
     <fieldset class="destinations">
-      <legend>Move to</legend>
+      <legend>{m.entry_move_destination()}</legend>
       <label class="destination-row"
-        ><input type="radio" name="move-destination" value="new" bind:group={destination} />New collection</label
+        ><input
+          type="radio"
+          name="move-destination"
+          value="new"
+          bind:group={destination}
+        />{m.entry_new_collection()}</label
       >
       {#if destination === 'new'}
-        <label class="field">Name<input aria-label="New collection name" bind:value={name} /></label>
-        <label class="field">Folder<input aria-label="New collection folder" bind:value={newFolder} /></label>
+        <label class="field"
+          >{m.entry_name()}<input aria-label={m.entry_new_collection_name()} bind:value={name} /></label
+        >
+        <label class="field"
+          >{m.entry_folder()}<input
+            aria-label={m.entry_new_collection_folder()}
+            bind:value={newFolder}
+          /></label
+        >
       {/if}
       {#each destinations as item (item.collection.id)}
         <label class="destination-row"
@@ -164,7 +180,8 @@
     <div class="actions">
       <Button
         disabled={!selected.size || busy || (destination === 'new' && !name.trim())}
-        onclick={() => void move()}>{busy ? 'Moving…' : `Move ${selected.size}`}</Button
+        onclick={() => void move()}
+        >{busy ? m.entry_moving() : m.entry_move_selected({ count: selected.size })}</Button
       >
     </div>
   {/snippet}

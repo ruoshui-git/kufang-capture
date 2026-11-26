@@ -1,3 +1,5 @@
+import { m } from '$lib/paraglide/messages.js'
+import { setLocale } from '$lib/paraglide/runtime.js'
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/svelte'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
@@ -134,4 +136,43 @@ describe('ImportEntriesSheet', () => {
     await fireEvent.click(screen.getByRole('button', { name: 'Import 2' }))
     await waitFor(() => expect(repo.importEntries).toHaveBeenCalledWith('target', ['first', 'second']))
   })
+})
+
+it('localizes archived search matches, extra placements, pagination, and import errors', async () => {
+  const placements = [1, 2, 3].map((sequence_number) => ({
+    collection_name: '库房',
+    sequence_number,
+    quantity: '3',
+    unit: '箱',
+  }))
+  const rows = Array.from({ length: 51 }, (_, index) => ({
+    ...candidate(String(index)),
+    placements,
+    archived: true,
+  }))
+  repo.watchImportSources.mockReturnValue(watch([]))
+  repo.watchImportSearch.mockReturnValue(watch(rows))
+  let rejectImport!: (reason: Error) => void
+  repo.importEntries.mockImplementation(() => new Promise((_resolve, reject) => (rejectImport = reject)))
+  await setLocale('zh-CN', { reload: false })
+  try {
+    render(ImportEntriesSheet, {
+      props: { targetCollectionId: 'target', storageMode: 'synced', open: true },
+    })
+    expect(await screen.findByText('暂无其他同步到服务器的清点单。')).toBeInTheDocument()
+    await fireEvent.input(screen.getByRole('textbox', { name: '搜索全部清点单' }), {
+      target: { value: 'Candles' },
+    })
+    await fireEvent.click(await screen.findByRole('button', { name: '显示更多' }))
+    expect(screen.getAllByRole('checkbox')).toHaveLength(51)
+    expect(screen.getAllByText('已归档')).toHaveLength(51)
+    expect(screen.getAllByText('库房 #0001 · 3 箱；库房 #0002 · 3 箱，另有 1 处')).toHaveLength(51)
+    await fireEvent.click(screen.getAllByRole('checkbox')[0]!)
+    await fireEvent.click(screen.getByRole('button', { name: '导入 1 个物品' }))
+    expect(screen.getByRole('button', { name: '正在导入…' })).toBeDisabled()
+    rejectImport(new Error(m.core_source_entry_inactive()))
+    expect(await screen.findByRole('alert')).toHaveTextContent('来源条目必须处于有效状态。')
+  } finally {
+    await setLocale('en', { reload: false })
+  }
 })

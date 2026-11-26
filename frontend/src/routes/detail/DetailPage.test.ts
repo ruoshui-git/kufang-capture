@@ -1,3 +1,4 @@
+import { setLocale } from '$lib/paraglide/runtime.js'
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/svelte'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { Blob as NodeBlob } from 'node:buffer'
@@ -269,4 +270,24 @@ it('shows a chain and separate arrivals after a return and keeps historical name
   expect(history.querySelector('li.undone')).toHaveTextContent('5 boxes from Room A #0001')
   await fireEvent.click(screen.getByRole('button', { name: 'Hide undone' }))
   expect(history.querySelector('li.undone')).toBeNull()
+})
+
+it('localizes the deleted detail and legacy move notice without changing the stored note', async () => {
+  const collection = await repo.createCollection({ name: '仓库甲', storage_mode: 'local_only' })
+  const entry = await repo.createEntry(collection.id)
+  const legacy = 'Moved to "仓库乙" #0042'
+  await repo.updateEntry(entry.id, { entry_notes: legacy })
+  await repo.deleteEntry(entry.id)
+  await setLocale('zh-CN', { reload: false })
+  try {
+    render(DetailPage, { props: { collectionId: collection.id, entryId: entry.id } })
+    expect(await screen.findByText('已移至“仓库乙”，编号为 #0042')).toBeInTheDocument()
+    expect(screen.getByText('已保存到本设备')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '恢复' })).toBeInTheDocument()
+    expect(screen.getByText('暂无移动记录')).toBeInTheDocument()
+    expect(document.title).toBe('#0001 — 条目详情 — Kufang Capture')
+    expect((await repo.getEntry(entry.id))?.entry_notes).toBe(legacy)
+  } finally {
+    await setLocale('en', { reload: false })
+  }
 })

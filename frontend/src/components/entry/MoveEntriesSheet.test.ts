@@ -1,3 +1,5 @@
+import { m } from '$lib/paraglide/messages.js'
+import { setLocale } from '$lib/paraglide/runtime.js'
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/svelte'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
@@ -87,4 +89,32 @@ describe('MoveEntriesSheet', () => {
     await fireEvent.click(screen.getByRole('button', { name: 'Move 1' }))
     await waitFor(() => expect(repo.moveEntries).toHaveBeenCalledWith('other', ['entry-2']))
   })
+})
+
+it('localizes the in-progress bulk move and preserves the repository error', async () => {
+  repo.watchEntryRows.mockReturnValue(watch([row('entry-1', 1, '纸箱')]))
+  repo.watchCollectionSummaries.mockReturnValue(watch([room('other', '二号库房')]))
+  let rejectMove!: (reason: Error) => void
+  repo.moveEntries.mockImplementation(() => new Promise((_resolve, reject) => (rejectMove = reject)))
+  await setLocale('zh-CN', { reload: false })
+  try {
+    render(MoveEntriesSheet, {
+      props: {
+        collectionId: 'source',
+        sourceName: '一号库房',
+        folder: '',
+        storageMode: 'local_only',
+        open: true,
+      },
+    })
+    expect(screen.getByLabelText('新清点单名称')).toHaveValue('一号库房（拆分）')
+    await fireEvent.click(screen.getByRole('checkbox', { name: /纸箱/ }))
+    await fireEvent.click(screen.getByRole('radio', { name: '二号库房' }))
+    await fireEvent.click(screen.getByRole('button', { name: '移动 1 个条目' }))
+    expect(screen.getByRole('button', { name: '正在移动…' })).toBeDisabled()
+    rejectMove(new Error(m.core_select_active_entry()))
+    expect(await screen.findByRole('alert')).toHaveTextContent('请至少选择一个有效条目')
+  } finally {
+    await setLocale('en', { reload: false })
+  }
 })

@@ -40,7 +40,7 @@
   ],
   "core_camera_unsupported": "当前环境不支持访问相机。",
   "core_camera_open_failed": "无法打开相机。",
-  "core_camera_crop_failed": "无法进行数字裁剪。",
+  "core_camera_crop_failed": "无法进行数码裁切。",
   "core_camera_preview_unready": "相机预览尚未就绪。",
   "core_camera_frame_failed": "无法获取相机画面。",
   "core_camera_encode_failed": "无法编码相机画面。",

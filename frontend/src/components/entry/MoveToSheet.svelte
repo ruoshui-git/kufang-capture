@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { m } from '$lib/paraglide/messages.js'
   import { repo } from '$lib/db'
   import type { CollectionSummary, EntryView } from '$lib/types'
   import { SETTING_KEYS, formatSequence } from '$lib/types'
@@ -77,12 +78,12 @@
     amountValid
       ? ''
       : amount === null || amountInput.trim() === ''
-        ? 'Enter an amount greater than zero.'
+        ? m.entry_move_amount_empty()
         : amount === undefined
-          ? 'Enter a valid decimal amount.'
+          ? m.entry_move_amount_decimal()
           : !/[1-9]/.test(amount)
-            ? 'Amount must be greater than zero.'
-            : 'Amount cannot exceed the recorded quantity.',
+            ? m.entry_move_amount_zero()
+            : m.entry_move_amount_excess(),
   )
   const recentItems = $derived(
     recent
@@ -109,69 +110,93 @@
       await repo.setSetting(SETTING_KEYS.recentMoveTargets, [...recent])
       open = false
       onmoved?.({ partial })
-      const amountText = `${amount ?? ''}${entry.unit ? ` ${entry.unit}` : ''}`
+      const destination = { name: target.name, sequence: formatSequence(placed.sequence_number) }
+      const count = `${amount ?? ''}${entry.unit ? ` ${entry.unit}` : ''}`
+      const merged = result.merged_into_existing.length > 0
+      const message = partial
+        ? merged
+          ? m.entry_moved_part_merged({ ...destination, count })
+          : m.entry_moved_part({ ...destination, count })
+        : merged
+          ? m.entry_moved_merged(destination)
+          : m.entry_moved_notice(destination)
       showToast({
-        message: `${partial ? `Moved ${amountText} to "${target.name}"` : `Moved to "${target.name}"`} as ${formatSequence(placed.sequence_number)}${result.merged_into_existing.length ? ' (added to the entry already there)' : ''}`,
+        message,
         actions: [
           {
-            label: 'Undo',
+            label: m.entry_undo(),
             action: async () => {
               try {
                 await repo.undoMove(result.undo)
-                showToast({ message: 'Move undone' })
+                showToast({ message: m.entry_move_undone() })
               } catch (error) {
-                showToast({ message: error instanceof Error ? error.message : 'Could not undo move' })
+                showToast({ message: error instanceof Error ? error.message : m.entry_move_undo_failed() })
               }
             },
           },
-          { label: 'Open', action: () => navigate(`/c/${target.id}/e/${placed.id}`) },
+          { label: m.entry_open(), action: () => navigate(`/c/${target.id}/e/${placed.id}`) },
         ],
       })
     } catch (error) {
-      showToast({ message: error instanceof Error ? error.message : 'Could not move entry' })
+      showToast({ message: error instanceof Error ? error.message : m.entry_move_failed() })
     }
   }
 </script>
 
-<Sheet bind:open title={entry ? `Move ${formatSequence(entry.sequence_number)} to…` : 'Move to…'}>
+<Sheet
+  bind:open
+  title={entry
+    ? m.entry_move_entry_to({ sequence: formatSequence(entry.sequence_number) })
+    : m.entry_move_to()}
+>
   <div class="picker">
     {#if totalAmount !== null && totalAmount !== undefined && /^\d+(?:\.\d+)?$/.test(totalAmount) && /[1-9]/.test(totalAmount)}
       <div class="amount-field">
-        <label for="move-amount">Amount to move</label>
+        <label for="move-amount">{m.entry_move_amount()}</label>
         <div class="amount-control">
           <input
             id="move-amount"
-            aria-label="Amount to move"
+            aria-label={m.entry_move_amount()}
             inputmode="decimal"
             enterkeyhint="done"
             bind:value={amountInput}
           />
           {#if entry?.unit}<span>{entry.unit}</span>{/if}
         </div>
-        <small>of {totalAmount}{entry?.unit ? ` ${entry.unit}` : ''}</small>
+        <small
+          >{m.entry_move_amount_of({ total: `${totalAmount}${entry?.unit ? ` ${entry.unit}` : ''}` })}</small
+        >
         {#if !amountValid}<small class="amount-error" role="alert">{amountError}</small>{/if}
       </div>
     {/if}
-    <input class="search" aria-label="Search collections" placeholder="Search rooms" bind:value={query} />
-    {#if recentItems.length}<h3>Recent</h3>
+    <input
+      class="search"
+      aria-label={m.entry_search_collections()}
+      placeholder={m.entry_search_rooms()}
+      bind:value={query}
+    />
+    {#if recentItems.length}<h3>{m.entry_recent()}</h3>
       {#each recentItems as item (item.collection.id)}<button
           class="destination"
           disabled={!amountValid}
           onclick={() => void move(item.collection)}
-          ><span>{item.collection.name}</span><small>{item.entry_count} entries</small></button
+          ><span>{item.collection.name}</span><small
+            >{m.entry_destination_entry_count({ count: item.entry_count })}</small
+          ></button
         >{/each}{/if}
-    {#each [...new Set(others.map((item) => item.collection.folder || 'Unfiled'))] as folder (folder)}<h3>
+    {#each [...new Set(others.map((item) => item.collection.folder || m.entry_unfiled()))] as folder (folder)}<h3
+      >
         {folder}
       </h3>
-      {#each others.filter((item) => (item.collection.folder || 'Unfiled') === folder) as item (item.collection.id)}<button
+      {#each others.filter((item) => (item.collection.folder || m.entry_unfiled()) === folder) as item (item.collection.id)}<button
           class="destination"
           disabled={!amountValid}
           onclick={() => void move(item.collection)}
-          ><span>{item.collection.name}</span><small>{item.entry_count} entries</small></button
+          ><span>{item.collection.name}</span><small
+            >{m.entry_destination_entry_count({ count: item.entry_count })}</small
+          ></button
         >{/each}{/each}
-    {#if eligible.length === 0}<p>
-        No eligible collections. Collections must use the same storage mode.
-      </p>{/if}
+    {#if eligible.length === 0}<p>{m.entry_no_move_destinations()}</p>{/if}
   </div>
 </Sheet>
 

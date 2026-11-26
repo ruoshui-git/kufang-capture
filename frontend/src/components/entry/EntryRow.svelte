@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { m } from '$lib/paraglide/messages.js'
   import { onDestroy, onMount, untrack } from 'svelte'
   import { Camera, ChevronDown, Images } from '@lucide/svelte'
   import type { EntryRow as EntryRowModel, EntryView, Photo } from '$lib/types'
@@ -66,7 +67,7 @@
     dimensions: undefined,
   })
   let quantityError = $state(false)
-  let status = $state('Saved on this device')
+  let status = $state<'idle' | 'saving' | 'photo-error'>('idle')
   let mode = $state<CaptureMode>('native')
   let cameraOpen = $state(false)
   let moveOpen = $state(false)
@@ -126,10 +127,10 @@
     if (field === 'expiration_date') dirty.expirationDate = true
     if (field === 'dimensions') dirty.dimensions = true
     acknowledged[field] = undefined
-    status = 'Saving…'
+    status = 'saving'
     autosave.schedule(field, value)
     setTimeout(() => {
-      if (status === 'Saving…') status = row.pending_sync ? 'Pending sync' : 'Saved on this device'
+      if (status === 'saving') status = 'idle'
     }, 340)
   }
   function quantityChanged(value: string) {
@@ -162,7 +163,7 @@
       const photos = await picked
       if (photos.length) await repo.addPhotos(row.entry.id, photos)
     } catch {
-      status = 'Could not add photos'
+      status = 'photo-error'
     }
   }
   function openCapture() {
@@ -183,14 +184,14 @@
   }
   const syncLabel = $derived(
     row.entry.display_sync_state === 'conflict'
-      ? 'Conflict'
+      ? m.entry_conflict()
       : row.entry.display_sync_state === 'error'
-        ? 'Sync error'
+        ? m.entry_sync_error()
         : row.entry.display_sync_state === 'synced'
-          ? 'Backed up'
+          ? m.entry_backed_up()
           : row.entry.display_sync_state === 'pending'
-            ? 'Pending sync'
-            : 'Saved on this device',
+            ? m.entry_pending_sync()
+            : m.entry_saved_device(),
   )
 </script>
 
@@ -198,15 +199,15 @@
   <div class="row-head">
     <button
       class="tag-link"
-      aria-label="Open details for {formatSequence(row.entry.sequence_number)}"
+      aria-label={m.entry_details_for({ sequence: formatSequence(row.entry.sequence_number) })}
       onclick={() => ondetails(row.entry)}
     >
       <Tag sequence={row.entry.sequence_number} incomplete={row.is_incomplete} />
     </button>
     <input
       class="title"
-      aria-label="Entry title"
-      placeholder="Entry {formatSequence(row.entry.sequence_number)}"
+      aria-label={m.entry_title()}
+      placeholder={m.core_entry_untitled({ sequence: formatSequence(row.entry.sequence_number) })}
       value={title}
       oninput={(event) => {
         title = event.currentTarget.value
@@ -216,38 +217,42 @@
     />
     {#if row.entry.starred_at}<button
         class="star-toggle"
-        aria-label="Unstar entry"
+        aria-label={m.entry_unstar()}
         aria-pressed="true"
         onclick={() => void repo.setEntryStarred(row.entry.id, false)}>★</button
       >{:else}<button
         class="star-toggle"
-        aria-label="Star entry"
+        aria-label={m.entry_star()}
         aria-pressed="false"
         onclick={() => void repo.setEntryStarred(row.entry.id, true)}>☆</button
       >{/if}
     <div class="row-badges">
-      {#if row.entry.review_status === 'needs_review'}<span class="badge needs-review">Needs review</span
+      {#if row.entry.review_status === 'needs_review'}<span class="badge needs-review"
+          >{m.entry_needs_review()}</span
         >{/if}
       {#if row.entry.shared_with.length > 0}<span class="shared-tag"
-          >Shared · {row.entry.shared_with.length + 1} collections</span
+          >{m.entry_shared_tag({ count: row.entry.shared_with.length + 1 })}</span
         >{/if}
     </div>
     <div class="menu-cell">
-      <Menu label="Entry actions">
-        <button role="menuitem" onclick={() => (moveOpen = true)}>Move to…</button>
+      <Menu label={m.entry_actions()}>
+        <button role="menuitem" onclick={() => (moveOpen = true)}>{m.entry_move_to()}</button>
         <button
           role="menuitem"
           onclick={() => void repo.setEntryStarred(row.entry.id, row.entry.starred_at === null)}
-          >{row.entry.starred_at ? 'Unstar entry' : 'Star entry'}</button
+          >{row.entry.starred_at ? m.entry_unstar() : m.entry_star()}</button
         >
         <button
           role="menuitem"
           onclick={() =>
             void repo.updateEntry(row.entry.id, {
               review_status: row.entry.review_status === 'needs_review' ? 'complete' : 'needs_review',
-            })}>{row.entry.review_status === 'needs_review' ? 'Mark complete' : 'Mark needs review'}</button
+            })}
+          >{row.entry.review_status === 'needs_review'
+            ? m.entry_mark_complete()
+            : m.entry_mark_needs_review()}</button
         >
-        <button role="menuitem" onclick={() => ondelete(row)}>Delete entry</button>
+        <button role="menuitem" onclick={() => ondelete(row)}>{m.entry_delete()}</button>
       </Menu>
     </div>
   </div>
@@ -261,11 +266,11 @@
   <div class="photo-actions">
     <Button variant="capture" onclick={openCapture}>
       <Camera size={18} aria-hidden="true" />
-      <span class="camera-label">Add Photo</span>
+      <span class="camera-label">{m.entry_add_photo()}</span>
     </Button>
-    <button class="library" aria-label="Add from Photos" onclick={() => void capture('library')}>
+    <button class="library" aria-label={m.entry_add_from_photos()} onclick={() => void capture('library')}>
       <Images size={18} aria-hidden="true" />
-      <span class="visually-hidden">Add from Photos</span>
+      <span class="visually-hidden">{m.entry_add_from_photos()}</span>
     </button>
   </div>
 
@@ -273,17 +278,18 @@
     {#if entryNotes}<p class="entry-note-preview">{entryNotes}</p>{/if}
     {#if row.movement_summary}
       <p class="movement-preview">
-        {row.movement_summary.from ? `From ${row.movement_summary.from} · ` : ''}{row.movement_summary.count}
-        {row.movement_summary.count === 1 ? 'move' : 'moves'}
+        {row.movement_summary.from
+          ? m.entry_moves_from({ name: row.movement_summary.from, count: row.movement_summary.count })
+          : m.entry_moves({ count: row.movement_summary.count })}
       </p>
     {/if}
   </div>
   <div class="fields">
     <div class="quantity-wrap">
       <input
-        aria-label="Quantity"
+        aria-label={m.entry_quantity()}
         inputmode="decimal"
-        placeholder="Qty"
+        placeholder={m.entry_qty()}
         value={quantity}
         oninput={(event) => quantityChanged(event.currentTarget.value)}
         onblur={() => void flushDrafts()}
@@ -292,7 +298,7 @@
             event.preventDefault()
             ;(
               event.currentTarget.parentElement?.parentElement?.querySelector(
-                '[aria-label="Dimensions"]',
+                '.dimensions',
               ) as HTMLInputElement | null
             )?.focus()
           }
@@ -301,8 +307,8 @@
     </div>
     <input
       class="dimensions"
-      aria-label="Dimensions"
-      placeholder="Dimensions"
+      aria-label={m.entry_dimensions()}
+      placeholder={m.entry_dimensions()}
       value={dimensions}
       oninput={(event) => {
         dimensions = event.currentTarget.value
@@ -314,7 +320,7 @@
           event.preventDefault()
           ;(
             event.currentTarget.parentElement?.parentElement?.querySelector(
-              '[aria-label="Short note"]',
+              '.short-note',
             ) as HTMLInputElement | null
           )?.focus()
         }
@@ -322,8 +328,8 @@
     />
     <input
       class="short-note"
-      aria-label="Short note"
-      placeholder="Short note"
+      aria-label={m.entry_short_note()}
+      placeholder={m.entry_short_note()}
       value={shortNote}
       oninput={(event) => {
         shortNote = event.currentTarget.value
@@ -333,7 +339,7 @@
       }}
       onblur={() => void flushDrafts()}
     />
-    {#if quantityError}<small class="error" role="alert">Enter a number such as 12 or 12.5.</small>{/if}
+    {#if quantityError}<small class="error" role="alert">{m.entry_invalid_quantity_short()}</small>{/if}
   </div>
 
   <div class="row-foot">
@@ -341,9 +347,9 @@
       class="more-toggle"
       aria-expanded={expanded}
       aria-controls="extra-{row.entry.id}"
-      aria-label="More details"
+      aria-label={m.entry_more_details()}
       onclick={() => (expanded = !expanded)}
-      >More<ChevronDown size={16} aria-hidden="true" class={expanded ? 'flipped' : ''} /></button
+      >{m.entry_more()}<ChevronDown size={16} aria-hidden="true" class={expanded ? 'flipped' : ''} /></button
     >
     <div class="row-status" aria-live="polite">
       <StatusLine
@@ -354,17 +360,23 @@
             : row.entry.display_sync_state === 'pending'
               ? 'warn'
               : 'muted'}
-        >{status === 'Saving…' || status === 'Could not add photos' ? status : syncLabel}</StatusLine
-      ><span class="photo-count">{row.photo_count} {row.photo_count === 1 ? 'photo' : 'photos'}</span>
+        >{status === 'saving'
+          ? m.entry_saving()
+          : status === 'photo-error'
+            ? m.entry_add_photos_failed_short()
+            : syncLabel}</StatusLine
+      ><span class="photo-count">{m.entry_photo_count({ count: row.photo_count })}</span>
     </div>
-    <button class="details-link" aria-label="Details" onclick={() => ondetails(row.entry)}>Details ›</button>
+    <button class="details-link" aria-label={m.entry_details()} onclick={() => ondetails(row.entry)}
+      >{m.entry_details_link()}</button
+    >
   </div>
   {#if expanded}
     <div class="extra" id="extra-{row.entry.id}">
       <label
-        >Unit<input
+        >{m.entry_unit()}<input
           list="units-{row.entry.collection_id}"
-          placeholder="e.g. boxes"
+          placeholder={m.entry_unit_example()}
           value={unit}
           oninput={(event) => {
             unit = event.currentTarget.value
@@ -377,7 +389,7 @@
         >{#each units as item}<option value={item}></option>{/each}</datalist
       >
       <label
-        >Expiration date<input
+        >{m.entry_expiration()}<input
           type="date"
           value={expirationDate}
           oninput={(event) => {
@@ -388,7 +400,7 @@
         /></label
       >
       <label class="wide"
-        >Count detail<textarea
+        >{m.entry_count_detail()}<textarea
           rows="2"
           value={countDetail}
           oninput={(event) => {
@@ -398,7 +410,7 @@
           onblur={() => void flushDrafts()}></textarea></label
       >
       <label class="wide"
-        >Notes<textarea
+        >{m.entry_notes()}<textarea
           rows="3"
           value={notes}
           oninput={(event) => {

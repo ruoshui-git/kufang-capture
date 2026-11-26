@@ -1,4 +1,7 @@
 <script lang="ts">
+  import { m } from '$lib/paraglide/messages.js'
+  import { formatBytes } from '$lib/i18n/format'
+  import { getLocale } from '$lib/paraglide/runtime.js'
   import { onMount } from 'svelte'
   import { repo } from '$lib/db'
   import type { Id, Photo } from '$lib/types'
@@ -158,15 +161,18 @@
   }
   function sourceLabel(photo: Photo) {
     return photo.capture_source === 'native_camera'
-      ? 'System camera'
+      ? m.entry_system_camera()
       : photo.capture_source === 'photo_library'
-        ? 'Photo library'
-        : 'Camera frame'
+        ? m.entry_photo_library()
+        : m.entry_camera_frame()
   }
   function sizeLabel(bytes: number) {
-    return bytes < 1024 * 1024
-      ? `${(bytes / 1024).toFixed(0)} KB`
-      : `${(bytes / (1024 * 1024)).toFixed(1)} MB`
+    if (getLocale() !== 'en') return formatBytes(bytes)
+    // Keep the existing KB minimum and rounding in English.
+    const megabytes = bytes >= 1024 * 1024
+    const unit = megabytes ? 'MB' : 'KB'
+    const amount = megabytes ? (bytes / (1024 * 1024)).toFixed(1) : (bytes / 1024).toFixed(0)
+    return `${amount} ${unit}`
   }
 </script>
 
@@ -176,20 +182,20 @@
     role="dialog"
     tabindex="-1"
     aria-modal="true"
-    aria-label="Photo viewer"
+    aria-label={m.entry_photo_viewer()}
     onkeydown={keydown}
   >
     <header class="viewer-head">
-      <span>{index + 1} of {photos.length}</span><button
+      <span>{m.entry_photo_position({ number: index + 1, total: photos.length })}</span><button
         bind:this={initialFocus}
-        aria-label="Close photo viewer"
-        onclick={close}>Close</button
+        aria-label={m.entry_close_viewer()}
+        onclick={close}>{m.entry_close()}</button
       >
     </header>
     <div
       class="viewer-stage"
       role="group"
-      aria-label="Photo image area"
+      aria-label={m.entry_photo_image_area()}
       onpointerdown={onPointerDown}
       onpointermove={onPointerMove}
       onpointerup={onPointerUp}
@@ -199,25 +205,31 @@
       {#if source && source.id === current?.id && source.account === $photoAccount}<img
           class="viewer-image"
           src={source.url}
-          alt={current?.caption || `Photo ${index + 1}`}
+          alt={current?.caption || m.entry_photo_number({ number: index + 1 })}
           style:transform="translate({panX}px, {panY}px) scale({scale})"
           draggable="false"
-        />{:else}<p>No photo available</p>{/if}
+        />{:else}<p>{m.entry_no_photo_available()}</p>{/if}
     </div>
-    <button class="viewer-prev" aria-label="Previous photo" disabled={index === 0} onclick={() => change(-1)}
-      >‹</button
+    <button
+      class="viewer-prev"
+      aria-label={m.entry_previous_photo()}
+      disabled={index === 0}
+      onclick={() => change(-1)}>‹</button
     >
     <button
       class="viewer-next"
-      aria-label="Next photo"
+      aria-label={m.entry_next_photo()}
       disabled={index >= photos.length - 1}
       onclick={() => change(1)}>›</button
     >
     {#if current}<footer class="viewer-meta">
-        <strong>{current.caption || 'No caption'}</strong><span
-          >{sourceLabel(current)} — {current.width ?? '—'} × {current.height ?? '—'} — {sizeLabel(
-            current.byte_size,
-          )}</span
+        <strong>{current.caption || m.entry_no_caption()}</strong><span
+          >{m.entry_photo_metadata({
+            source: sourceLabel(current),
+            width: current.width ?? '—',
+            height: current.height ?? '—',
+            size: sizeLabel(current.byte_size),
+          })}</span
         >
       </footer>{/if}
   </div>

@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { m } from '$lib/paraglide/messages.js'
   import { getLocale } from '$lib/paraglide/runtime.js'
   import type { Id, Movement } from '$lib/types'
   import { formatSequence } from '$lib/types'
@@ -14,14 +15,16 @@
     const from = movement.from_name + ' ' + formatSequence(movement.from_sequence)
     const to = movement.to_name + ' ' + formatSequence(movement.to_sequence)
     const count = [movement.quantity, movement.unit].filter(Boolean).join(' ')
-    if (movement.from_entry_id === entryId) return '→ ' + (count ? count + ' to ' : 'To ') + to
-    if (movement.to_entry_id === entryId) return (count ? count + ' from ' : 'From ') + from
-    return (count ? count + ' from ' : 'From ') + from + ' → ' + to
+    if (movement.from_entry_id === entryId)
+      return count ? m.entry_history_amount_to({ count, to }) : m.entry_history_to({ to })
+    if (movement.to_entry_id === entryId)
+      return count ? m.entry_history_amount_from({ count, from }) : m.entry_history_from({ from })
+    return count ? m.entry_history_amount_between({ count, from, to }) : m.entry_history_between({ from, to })
   }
 </script>
 
-<section class="history" aria-label="History">
-  <h2>History</h2>
+<section class="history" aria-label={m.entry_history()}>
+  <h2>{m.entry_history()}</h2>
   {#if visible.length > 0}
     <ol>
       {#each visible as movement (movement.id)}
@@ -30,17 +33,19 @@
           · {description(movement)}{#if movement.count_detail}
             · {movement.count_detail}{/if}
           {#if movement.to_entry_id === entryId && movement.target_before_quantity !== null}
-            <span class="previous"> · Already here: {movement.target_before_quantity}</span>
+            <span class="previous">
+              · {m.entry_history_previous({ quantity: movement.target_before_quantity })}</span
+            >
           {/if}
         </li>
       {/each}
     </ol>
   {:else}
-    <p>No moves yet</p>
+    <p>{m.entry_no_moves()}</p>
   {/if}
   {#if hasUndone}
     <Button variant="quiet" onclick={() => (showUndone = !showUndone)}>
-      {showUndone ? 'Hide undone' : 'Show undone'}
+      {showUndone ? m.entry_hide_undone() : m.entry_show_undone()}
     </Button>
   {/if}
 </section>

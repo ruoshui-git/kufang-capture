@@ -18,7 +18,7 @@
 | Language                   | 语言              |
 | Account / owner            | 账号 / 所有者     |
 | Original photo / thumbnail | 照片原件 / 缩略图 |
-| Digital crop               | 数字裁剪          |
+| Digital crop               | 数码裁切          |
 | Storage mode               | 存储模式          |
 | Server exports             | 服务器导出        |
 

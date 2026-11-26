@@ -1,4 +1,6 @@
 <script lang="ts">
+  import { m } from '$lib/paraglide/messages.js'
+  import { getLocale } from '$lib/paraglide/runtime.js'
   import { onDestroy } from 'svelte'
   import { repo } from '$lib/db'
   import type { IncomingPhoto } from '$lib/repo'
@@ -114,7 +116,7 @@
     try {
       await setTrackConstraint(track()!, { zoom: value })
     } catch {
-      error = 'The camera rejected that zoom setting.'
+      error = m.entry_zoom_failed()
     }
   }
 
@@ -122,7 +124,7 @@
     try {
       await setTrackConstraint(track()!, { torch: (event.currentTarget as HTMLInputElement).checked })
     } catch {
-      error = 'The camera could not change the torch setting.'
+      error = m.entry_torch_failed()
     }
   }
 
@@ -130,7 +132,7 @@
     try {
       await setTrackConstraint(track()!, { focusMode: (event.currentTarget as HTMLSelectElement).value })
     } catch {
-      error = 'The camera could not change focus mode.'
+      error = m.entry_focus_mode_failed()
     }
   }
 
@@ -140,7 +142,7 @@
         focusDistance: Number((event.currentTarget as HTMLInputElement).value),
       })
     } catch {
-      error = 'The camera could not change focus distance.'
+      error = m.entry_focus_distance_failed()
     }
   }
 
@@ -205,7 +207,7 @@
           URL.revokeObjectURL(url)
           urls = urls.filter((candidate) => candidate !== url)
         }
-        error = 'Could not save this photo. Check available storage and try again.'
+        error = m.entry_save_photo_failed()
       } finally {
         queuedCount = Math.max(0, queuedCount - 1)
       }
@@ -225,18 +227,34 @@
             oncaptured?.(added)
           })
           .catch((cause) => {
-            error = 'Could not save this photo. Check available storage and try again.'
+            error = m.entry_save_photo_failed()
           })
           .finally(() => queuedCount--)
       }
     } catch (cause) {
-      error = 'Could not open the system camera. Check camera permission and try again.'
+      error = m.entry_system_camera_failed()
     }
   }
 
   function close() {
     stop()
     open = false
+  }
+
+  function focusModeLabel(mode: string, index: number) {
+    if (getLocale() === 'en') return mode
+    switch (mode) {
+      case 'none':
+        return m.entry_focus_none()
+      case 'manual':
+        return m.entry_focus_manual()
+      case 'single-shot':
+        return m.entry_focus_single()
+      case 'continuous':
+        return m.entry_focus_continuous()
+      default:
+        return m.entry_focus_mode_number({ number: index + 1 })
+    }
   }
 
   const zoomRange = $derived(
@@ -246,30 +264,32 @@
 </script>
 
 {#if open}
-  <div class="camera-overlay" role="dialog" aria-modal="true" aria-label="Fast camera">
+  <div class="camera-overlay" role="dialog" aria-modal="true" aria-label={m.entry_fast_camera()}>
     <header class="camera-head">
-      <button class="camera-text-button" onclick={close}>Done</button>
-      <strong>Fast camera</strong>
+      <button class="camera-text-button" onclick={close}>{m.entry_camera_done()}</button>
+      <strong>{m.entry_fast_camera()}</strong>
       <span class="camera-count" aria-live="polite"
-        >{savedCount} saved{queuedCount ? ` — ${queuedCount} saving` : ''}</span
+        >{queuedCount
+          ? m.entry_camera_saving_count({ saved: savedCount, queued: queuedCount })
+          : m.entry_camera_saved_count({ saved: savedCount })}</span
       >
     </header>
     <main class="camera-main">
       <div
         class="preview-wrap"
         role="application"
-        aria-label="Camera preview controls"
+        aria-label={m.entry_camera_preview_controls()}
         onpointerup={tapFocus}
         ontouchstart={pinchDistance}
         ontouchmove={pinchDistance}
         ontouchend={() => (pinchStart = null)}
       >
-        <video bind:this={video} autoplay playsinline muted aria-label="Camera preview"></video>
+        <video bind:this={video} autoplay playsinline muted aria-label={m.entry_camera_preview()}></video>
         {#if flash}<div class="flash" aria-hidden="true"></div>{/if}
         {#if paused}<div class="paused">
-            <strong>Camera paused</strong><span>Tap to resume</span><button
+            <strong>{m.entry_camera_paused()}</strong><span>{m.entry_tap_resume()}</span><button
               class="camera-text-button"
-              onclick={() => start(selectedCamera || undefined)}>Resume camera</button
+              onclick={() => start(selectedCamera || undefined)}>{m.entry_resume_camera()}</button
             >
           </div>{/if}
         {#if error}<div class="camera-error" role="alert">{error}</div>{/if}
@@ -277,17 +297,21 @@
       <div class="camera-tools">
         {#if cameras.length > 1}
           <label
-            >Lens <select value={selectedCamera} onchange={changeLens}
-              >{#each cameras as camera (camera.deviceId)}<option value={camera.deviceId}
-                  >{camera.label}</option
+            >{m.entry_lens()}
+            <select value={selectedCamera} onchange={changeLens}
+              >{#each cameras as camera, index (camera.deviceId)}<option value={camera.deviceId}
+                  >{getLocale() === 'en'
+                    ? camera.label
+                    : m.entry_camera_number({ number: index + 1 })}</option
                 >{/each}</select
             ></label
           >
         {/if}
         {#if zoomRange}
           <label
-            >Zoom <input
-              aria-label="Zoom"
+            >{m.entry_zoom()}
+            <input
+              aria-label={m.entry_zoom()}
               type="range"
               min={zoomRange.min}
               max={zoomRange.max}
@@ -296,21 +320,26 @@
               oninput={setZoom}
             /></label
           >
-        {:else if digitalCropTouched}<span class="digital-label">Digital crop {digitalCrop.toFixed(1)}×</span
+        {:else if digitalCropTouched}<span class="digital-label"
+            >{m.entry_digital_crop({ zoom: digitalCrop.toFixed(1) })}</span
           >{/if}
         {#if capabilities.torch}<label class="toggle-control"
-            ><input type="checkbox" onchange={setTorch} /> Torch</label
+            ><input type="checkbox" onchange={setTorch} /> {m.entry_torch()}</label
           >{/if}
         {#if capabilities.focusMode?.length}
           <label
-            >Focus mode <select onchange={setFocusMode}
-              >{#each capabilities.focusMode as mode}<option value={mode}>{mode}</option>{/each}</select
+            >{m.entry_focus_mode()}
+            <select onchange={setFocusMode}
+              >{#each capabilities.focusMode as mode, index (mode)}<option value={mode}
+                  >{focusModeLabel(mode, index)}</option
+                >{/each}</select
             ></label
           >
         {/if}
         {#if focusRange}<label
-            >Focus distance <input
-              aria-label="Focus distance"
+            >{m.entry_focus_distance()}
+            <input
+              aria-label={m.entry_focus_distance()}
               type="range"
               min={focusRange.min}
               max={focusRange.max}
@@ -319,15 +348,15 @@
             /></label
           >{/if}
       </div>
-      <div class="camera-strip" aria-label="Recent captures">
-        {#each urls as url}<img src={url} alt="Recent capture" />{/each}
+      <div class="camera-strip" aria-label={m.entry_recent_captures()}>
+        {#each urls as url}<img src={url} alt={m.entry_recent_capture()} />{/each}
       </div>
-      {#if error.includes('Allow camera access') || paused}
-        <button class="system-camera" onclick={useSystemCamera}>Use system camera instead</button>
+      {#if error === m.core_camera_permission() || paused}
+        <button class="system-camera" onclick={useSystemCamera}>{m.entry_use_system_camera()}</button>
       {/if}
     </main>
     <footer class="camera-footer">
-      <button class="shutter" aria-label="Take photo" onclick={shot} disabled={paused}>
+      <button class="shutter" aria-label={m.entry_take_photo()} onclick={shot} disabled={paused}>
         <span></span>
       </button>
     </footer>

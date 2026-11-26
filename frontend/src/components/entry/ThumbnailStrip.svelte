@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { m } from '$lib/paraglide/messages.js'
   import type { Photo } from '$lib/types'
   import { thumbnailUrl } from '$lib/photos'
   import { photoAccount } from '$lib/sync/binding'
@@ -28,11 +29,11 @@
 </script>
 
 {#if photos.length === 0}
-  <div class="no-photos" aria-label="No photos">No photos</div>
+  <div class="no-photos" aria-label={m.entry_no_photos()}>{m.entry_no_photos()}</div>
 {:else}
-  <div class="thumb-strip" aria-label="Recent photos">
+  <div class="thumb-strip" aria-label={m.entry_recent_photos()}>
     {#each photos as photo (photo.id)}
-      <button class="thumb" aria-label="Open photo" onclick={() => onopen(photo.id)}>
+      <button class="thumb" aria-label={m.entry_open_photo()} onclick={() => onopen(photo.id)}>
         {#if urls[photo.id]?.account === $photoAccount}<img
             src={urls[photo.id]?.url ?? ''}
             alt=""
@@ -40,8 +41,10 @@
           />{:else}<span aria-hidden="true">▧</span>{/if}
       </button>
     {/each}
-    {#if total > photos.length}<button class="thumb more" aria-label="Open remaining photos" onclick={onmore}
-        >+{total - photos.length}</button
+    {#if total > photos.length}<button
+        class="thumb more"
+        aria-label={m.entry_open_remaining_photos()}
+        onclick={onmore}>+{total - photos.length}</button
       >{/if}
   </div>
 {/if}
@@ -68,6 +71,8 @@
     place-items: center;
   }
   .thumb {
+    flex-shrink: 1;
+    min-width: 0;
     cursor: pointer;
   }
   .thumb img {

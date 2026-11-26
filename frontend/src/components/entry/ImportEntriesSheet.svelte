@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { m } from '$lib/paraglide/messages.js'
   import { onDestroy, untrack } from 'svelte'
   import { repo } from '$lib/db'
   import type { Collection, Id } from '$lib/types'
@@ -113,7 +114,8 @@
       return count ? `${place} · ${count}` : place
     })
     const more = row.placements.length - shown.length
-    return shown.join('; ') + (more > 0 ? ` +${more} more` : '')
+    const placements = shown.join(m.entry_placement_separator())
+    return more > 0 ? m.entry_import_more_placements({ placements, count: more }) : placements
   }
   function chooseSource(source: Collection) {
     stopSearch()
@@ -164,9 +166,9 @@
       showToast({
         message:
           restoredCount > 0
-            ? `Imported ${count} · ${restoredCount} restored with ${restoredCount === 1 ? 'its' : 'their'} old ${restoredCount === 1 ? 'number' : 'numbers'}`
-            : `Imported ${count} ${count === 1 ? 'item' : 'items'}`,
-        actionLabel: 'Undo',
+            ? m.entry_imported_restored({ count, restoredCount })
+            : m.entry_imported({ count }),
+        actionLabel: m.entry_undo(),
         action: () => undoImport(result),
       })
     } catch (cause) {
@@ -180,19 +182,22 @@
   }
 </script>
 
-<Sheet bind:open title={step === 1 ? 'Import from another collection' : `Import from ${sourceName}`}>
+<Sheet
+  bind:open
+  title={step === 1 ? m.entry_import_another() : m.entry_import_from_name({ name: sourceName })}
+>
   {#snippet children()}
     {#if step === 1}
-      <h2>Import from</h2>
+      <h2>{m.entry_import_from()}</h2>
       <label class="search-field"
-        >Search all collections<input
-          aria-label="Search all collections"
+        >{m.entry_search_all()}<input
+          aria-label={m.entry_search_all()}
           value={search}
           oninput={(event) => searchChanged(event.currentTarget.value)}
         /></label
       >
       {#if search.trim()}
-        <div class="candidate-list" aria-label="Import search results">
+        <div class="candidate-list" aria-label={m.entry_import_search_results()}>
           {#each searchRows.slice(0, limit) as row (row.entry.item_id)}
             {@const photo = row.recent_photos[0]}
             <label class="candidate-row" class:disabled={row.already_here}>
@@ -205,54 +210,53 @@
               {#if photo && thumbnails[photo.id]?.account === $photoAccount}<img
                   src={thumbnails[photo.id]?.url}
                   alt=""
-                />{:else}<span class="thumb-placeholder">Photo</span>{/if}
+                />{:else}<span class="thumb-placeholder">{m.entry_photo()}</span>{/if}
               <span class="candidate-copy"
                 ><strong>{entryDisplayTitle(row.entry)}</strong>{#if row.entry.dimensions}<small
                     >{row.entry.dimensions}</small
                   >{/if}<span class="placements">{placementsText(row)}</span></span
               >
-              {#if row.archived}<span class="archived">Archived</span>{/if}
-              {#if row.already_here}<span class="already">Already here</span>{/if}
+              {#if row.archived}<span class="archived">{m.entry_archived()}</span>{/if}
+              {#if row.already_here}<span class="already">{m.entry_already_here()}</span>{/if}
             </label>
           {/each}
         </div>
-        {#if searched && searchRows.length === 0}<p class="quiet" role="status">No matching items.</p>{/if}
+        {#if searched && searchRows.length === 0}<p class="quiet" role="status">{m.entry_no_items()}</p>{/if}
         {#if searchRows.length > limit}<Button
             variant="quiet"
             onclick={() => {
               limit += 50
               loadThumbnails(searchRows.slice(limit - 50, limit))
-            }}>Show more</Button
+            }}>{m.entry_show_more()}</Button
           >{/if}
       {:else if sources.length}
         <div class="source-list">
           {#each sources as source (source.id)}
             <button class="source-row" onclick={() => chooseSource(source)}
               ><span>{source.name}</span>{#if source.status === 'archived'}<span class="archived"
-                  >Archived</span
+                  >{m.entry_archived()}</span
                 >{/if}</button
             >
           {/each}
         </div>
       {:else}
-        <p>No other {storageMode === 'local_only' ? 'Local Only' : 'Synced'} collections yet.</p>
+        <p>
+          {storageMode === 'local_only' ? m.entry_no_local_collections() : m.entry_no_synced_collections()}
+        </p>
       {/if}
       <p class="quiet">
-        Only {storageMode === 'local_only' ? 'Local Only' : 'Synced'} collections can share items with a {storageMode ===
-        'local_only'
-          ? 'Local Only'
-          : 'Synced'} collection.
+        {storageMode === 'local_only' ? m.entry_share_local_only() : m.entry_share_synced_only()}
       </p>
     {:else}
-      <button class="back" onclick={back}>← Back</button>
+      <button class="back" onclick={back}>{m.entry_back()}</button>
       <label class="search-field"
-        >Search items<input
-          aria-label="Search import items"
+        >{m.entry_search_items()}<input
+          aria-label={m.entry_search_import_items()}
           value={search}
           oninput={(event) => searchChanged(event.currentTarget.value)}
         /></label
       >
-      <div class="candidate-list" aria-label="Import candidates">
+      <div class="candidate-list" aria-label={m.entry_import_candidates()}>
         {#each candidates.slice(0, limit) as candidate (candidate.entry.id)}
           {@const photo = candidate.recent_photos[0]}
           <label class="candidate-row" class:disabled={candidate.already_here}>
@@ -265,7 +269,7 @@
             {#if photo && thumbnails[photo.id]?.account === $photoAccount}<img
                 src={thumbnails[photo.id]?.url}
                 alt=""
-              />{:else}<span class="thumb-placeholder">Photo</span>{/if}
+              />{:else}<span class="thumb-placeholder">{m.entry_photo()}</span>{/if}
             <span class="candidate-copy"
               ><strong>{formatSequence(candidate.entry.sequence_number)}</strong><span
                 >{entryDisplayTitle(candidate.entry)}</span
@@ -275,7 +279,7 @@
                   : candidate.entry.unit}</small
               ></span
             >
-            {#if candidate.already_here}<span class="already">Already here</span>{/if}
+            {#if candidate.already_here}<span class="already">{m.entry_already_here()}</span>{/if}
           </label>
         {/each}
       </div>
@@ -284,16 +288,16 @@
           onclick={() => {
             limit += 50
             loadThumbnails(candidates.slice(limit - 50, limit))
-          }}>Show more</Button
+          }}>{m.entry_show_more()}</Button
         >{/if}
     {/if}
     <div class="actions">
-      <span class="selected-count">{selected.size} selected</span><Button
+      <span class="selected-count">{m.entry_selected({ count: selected.size })}</span><Button
         variant="quiet"
         disabled={!selected.size}
-        onclick={() => (selected = new Map())}>Clear</Button
+        onclick={() => (selected = new Map())}>{m.entry_clear()}</Button
       ><Button disabled={selected.size === 0 || busy} onclick={() => void importSelected()}
-        >{busy ? 'Importing…' : `Import ${selected.size}`}</Button
+        >{busy ? m.entry_importing() : m.entry_import_selected({ count: selected.size })}</Button
       >
     </div>
     {#if error}<p role="alert">{error}</p>{/if}
