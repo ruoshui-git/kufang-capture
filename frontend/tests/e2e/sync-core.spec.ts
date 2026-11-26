@@ -107,8 +107,10 @@ test('requires opt-in consent for existing Local Only data and stops future uplo
   const serverCollections = await api<Array<{ id: string; name: string }>>(page, '/api/collections')
   const server = serverCollections.find((item) => item.name === name)
   expect(server).toBeTruthy()
-  const response = await page.request.get('/api/sync/changes?cursor=0&schema=2')
-  const payload = await response.json()
+  const payload = await api<{ changes: Array<{ entity: string; record: { collection_id?: string } }> }>(
+    page,
+    '/api/sync/changes?cursor=0&schema=2',
+  )
   const entriesFromCollection = payload.changes
     .filter(
       (change: { entity: string; record: { collection_id?: string } }) =>

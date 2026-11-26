@@ -73,9 +73,21 @@ export async function addPhoto(page: Page, row = page.locator('[data-entry-id]')
 export async function api<T>(page: Page, path: string, init?: RequestInit): Promise<T> {
   return page.evaluate(
     async ({ path, init }) => {
-      const response = await fetch(path, { credentials: 'include', ...init })
-      if (!response.ok) throw new Error(`${init?.method ?? 'GET'} ${path}: ${response.status}`)
-      return (response.status === 204 ? undefined : response.json()) as T
+      const read = async (url: string) => {
+        const response = await fetch(url, { credentials: 'include', ...init })
+        if (!response.ok) throw new Error(`${init?.method ?? 'GET'} ${url}: ${response.status}`)
+        return response.status === 204 ? undefined : response.json()
+      }
+      const url = new URL(path, location.origin)
+      if (url.pathname !== '/api/sync/changes') return (await read(path)) as T
+      // The suite shares one server, so the change log outgrows a page: follow every page.
+      const changes: unknown[] = []
+      for (;;) {
+        const page = await read(url.pathname + url.search)
+        changes.push(...page.changes)
+        if (!page.has_more) return { ...page, changes } as T
+        url.searchParams.set('cursor', String(page.cursor))
+      }
     },
     { path, init: init as RequestInit | undefined },
   )
