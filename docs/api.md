@@ -19,7 +19,7 @@ All session and People responses use `Cache-Control: no-store`. Timestamps are I
 - **Owner password.** The server checks `CAPTURE_PASSWORD_HASH` using Argon2id. With the hash unset, `CAPTURE_DEV_PASSWORD` is available on loopback HTTP. The route stops accepting attempts from an IP after five failures from that IP in a rolling 15-minute window. It checks one password at a time. Throttled requests return `429 too_many_attempts` with `Retry-After`.
 - **Join code.** Eight characters are displayed as `XXXX-XXXX`. Input ignores case, whitespace and dashes. It treats O as 0 and I or L as 1. Only a successful POST consumes a code. Each code expires after ten minutes. The join route stops accepting attempts after 10 failures from one IP or 100 total in a rolling 15-minute window, independent of password failures. The browser reads the code from the `/join#CODE` fragment and submits it only after confirmation.
 - **CSRF.** POST, PUT, PATCH and DELETE require `X-Capture-Request: 1`. If present, `Origin` must match `CAPTURE_PUBLIC_ORIGIN`. Failure returns `403 csrf_failed`. Login, join, and People create and update accept JSON objects up to 4 KiB. Larger bodies return `413 request_too_large`. Invalid JSON or a value other than an object returns `422 invalid_request`.
-- **Session required.** Protected routes return `401 auth_required` for missing, expired, revoked and disabled sessions. If a helper database fails to open or migrate at startup, that helper's session check, protected requests and sign-in with a valid join code return `503 account_unavailable`. Health, auth and static files are public. The Agent API uses its separate bearer credential.
+- **Session required.** Protected routes return `401 auth_required` for missing, expired, revoked and disabled sessions. If a helper database fails to open or migrate at startup, that helper's session check, protected requests and sign-in with a valid join code return `503 account_unavailable`. Health, auth, the read-only share view (`/api/share`, see below) and static files are public. The Agent API uses its separate bearer credential.
 
 ### Account binding
 
@@ -168,6 +168,107 @@ When the file is complete, the server verifies its size, SHA-256 and CRC-32 agai
 Both methods return `201` for a new install or `200` for an intact stored original, with `{ "photo_id", "sha256", "byte_size", "server_storage_key" }`. The client marks the photo `uploaded` (shown as “Backed up”) after checking this acknowledgment or finding the matching hash on a stored-original `HEAD`.
 
 Partials live in the account's `media/tmp/partial/` as `<photo-id>.<sha256>`. Uploads remove stale hashes for the same photo and discard partials older than seven days during PATCH cleanup. A successful PUT or PATCH, or a photo purge, removes any partial for that photo. Exports, People counts and Agent API reads treat partials as missing originals.
+
+## Read-only share links
+
+An account can share one of its **synced** server collections through a link that works without signing in (owner decision 2026-11-26). The link is read-only and can be revoked. It shows only what has reached the server. Local Only collections never reach these endpoints.
+
+The link is `<CAPTURE_PUBLIC_ORIGIN>/share#<token>`. An entry permalink is `/share#<token>/e/<sequence_number>`, where `sequence_number` is a plain integer like `42`. The token is 32 random bytes, base64url without padding (43 characters, `[A-Za-z0-9_-]`). It stays in the fragment, so browsers never send it in a URL, Referer or proxy log. The page sends it in the `X-Capture-Share` header.
+
+### Managing links (session required)
+
+These routes follow the ordinary session, CSRF and account-binding rules. They act only on the signed-in account's links.
+
+| Method | Path | Body and response |
+|---|---|---|
+| GET | `/api/shares` | `200 {"shares":[ShareLink…]}`. Lists the account's links that are not revoked, newest first. Expired links stay listed until revoked. Add `?collection_id=<id>` to list one collection's links. |
+| POST | `/api/shares` | `{"collection_id":"…","label":"Boss","expires_in_days":30}` → `201` with the new ShareLink. `label` is optional, so it can be omitted, `null` or a string. A string is trimmed, has 1–40 characters and no control characters, and an empty string becomes `null`. `expires_in_days` is an integer 1–365 or `null` for no expiry. If it's omitted, the default is 30. |
+| DELETE | `/api/shares/{id}` | No body → `204`. Sets `revoked_at`. The link stops working at once and leaves the list. |
+
+A ShareLink looks like this. `url` can be read again at any time, so the owner can copy the link later. The server keeps the token for that reason, plus its SHA-256 for lookup. A share token gives only read access to data stored beside it.
+
+```json
+{
+  "id": "01KB0000000000000000000000",
+  "collection_id": "01KAZ…",
+  "collection_name": "Storeroom 2",
+  "label": "Boss",
+  "url": "https://capture.kufang.org/share#3q2-…",
+  "created_at": "2026-11-26T10:00:00.000Z",
+  "expires_at": "2026-12-26T10:00:00.000Z",
+  "last_viewed_at": null,
+  "expired": false
+}
+```
+
+Errors are as follows:
+
+- `404 collection_not_found`: the collection is not on the server for this account, for example because it was never synced or its server copy was removed.
+- `404 share_not_found`: the link is unknown, belongs to another account or was already revoked.
+- `409 too_many_shares`: the account already has 50 unrevoked links.
+- `422 invalid_label`, `422 invalid_expiry`, `422 invalid_request`: malformed body, unknown fields or a non-object body. Bodies have the 4 KiB limit.
+
+### Viewing a shared collection (public, read-only)
+
+`/api/share` and every path under `/api/share/` are public. They need no session cookie, ignore any session cookie that is sent, and never require `X-Capture-Account`. (`/api/shares` is the session-protected management route. The two prefixes must not be confused.) Only `GET` and `HEAD` are accepted. Other methods return `405` with `Allow: GET, HEAD`. Every response carries `Cache-Control: no-store` (photos: `private, no-store`), `Referrer-Policy: no-referrer` and `X-Robots-Tag: noindex, nofollow`.
+
+A link is valid when all of these hold:
+- the token is found;
+- the link is not revoked and not expired;
+- its account exists, is not disabled and is not unavailable;
+- the collection still exists in that account's database.
+
+Errors are as follows:
+
+- `401 share_required`: the `X-Capture-Share` header is missing or malformed.
+- `404 share_not_found`: the token is unknown or revoked, the account is disabled, or the collection is gone.
+- `410 share_expired`: the link has expired.
+- `429 too_many_attempts` with `Retry-After`: more than 10 requests from one IP in a rolling 60 seconds ended in `401` or `404 share_not_found`. Requests with a valid token are never throttled.
+
+| Method | Path | Response |
+|---|---|---|
+| GET | `/api/share` | The SharedCollection snapshot below, read in one SQLite read transaction. It also records `last_viewed_at` at one-minute granularity. |
+| GET, HEAD | `/api/share/photos/{photo_id}/thumbnail` | The stored thumbnail, or the original when no thumbnail exists, as in `/api/photos/{id}/thumbnail`. |
+| GET, HEAD | `/api/share/photos/{photo_id}/original` | The exact original bytes with `Content-Type`, `Content-Length` and `ETag` (the quoted SHA-256). |
+
+A photo is served only when it is not deleted and its item has an active, not deleted, entry in the shared collection. Otherwise the server returns `404 photo_not_found`. A photo whose bytes have not been uploaded returns `404 photo_not_stored`.
+
+SharedCollection:
+
+```json
+{
+  "schema": 1,
+  "share": { "label": "Boss", "expires_at": "2026-12-26T10:00:00.000Z" },
+  "collection": {
+    "id": "01KAZ…", "name": "Storeroom 2", "description": "", "folder": "Building A",
+    "status": "active", "archived_at": null
+  },
+  "updated_at": "2026-11-26T09:58:12.000Z",
+  "entries": [
+    {
+      "id": "01KAZ…", "item_id": "01KAZ…", "sequence_number": 42,
+      "quantity": "5", "unit": "boxes", "count_detail": "", "entry_notes": "",
+      "title": "Incense", "notes": "", "expiration_date": null, "dimensions": "",
+      "review_status": "needs_review",
+      "created_at": "…", "updated_at": "…",
+      "photos": [
+        {
+          "id": "01KAZ…", "mime_type": "image/jpeg", "byte_size": 2481234,
+          "width": 4032, "height": 3024, "captured_at": "…", "caption": "",
+          "is_cover": true, "sort_order": 0, "stored": true
+        }
+      ]
+    }
+  ]
+}
+```
+
+- `entries` holds the collection's active entries in ascending `sequence_number` order. Deleted entries and deleted photos are left out. Item fields (`title`, `notes`, `expiration_date`, `dimensions`, `review_status`) come from the entry's item. Entry `updated_at` is the later of the entry's and the item's `updated_at`.
+- `photos` holds the item's active photos ordered by `sort_order`, then `captured_at`, then `id`. `stored` is true when the original has been uploaded. The client chooses the display order with `byCoverThenNewest`.
+- `updated_at` is the latest of the collection's, its active entries', their items' and their active photos' `updated_at` and `stored_at`.
+- Nothing names the account, other collections, sync state, revisions, movements or storage keys.
+
+The SPA route `/share` is static. The server adds `X-Robots-Tag: noindex, nofollow` and `Referrer-Policy: no-referrer` to it.
 
 ## Collections (desktop export and server-copy removal)
 

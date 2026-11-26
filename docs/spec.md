@@ -140,6 +140,12 @@ Deleting one photo should offer undo and not silently delete other photos or the
 - Creation should not require photos or quantity. Flag incomplete entries in the list instead of blocking work.
 - Detail is primarily for the complete photo gallery and advanced fields; all routine actions also work in the list
 
+### Read-only share links (owner decision 2026-11-26)
+
+An account can share a **Sync to Server** collection with someone who has no account, for example a supervisor checking progress. The link (`/share#<token>`) opens a read-only view of the server copy: collection name, description, per-unit totals, the active entries with their tags, titles, counts, notes and review status, and every photo (thumbnail first, original in the viewer). Nothing on that page can be edited, and it never opens IndexedDB, starts sync or touches the device's account binding. Deleted entries and photos, stars, other collections, sync state and account details are not shown. The view shows only what has reached the server, so it states when the collection was last updated; photos not yet uploaded appear as placeholders.
+
+Local Only collections cannot be shared. The share sheet explains why and transmits nothing. Links default to a 30-day expiry (7, 30, 90 days or never), carry an optional label, show when they were last viewed, can be copied again and are revoked from the same sheet. A link stops working when it is revoked or expires, when its account is disabled or when the server copy is removed. Entry permalinks (`/share#<token>/e/42`) let the owner refer to one entry; the Needs review filter doubles as the list of open questions. There are no comments and no downloads in v1. Contract: `docs/api.md` (Read-only share links), `frontend/src/lib/share/contract.ts`.
+
 ### Delete, archive, and clear
 
 - Deleting an entry or photo is a soft delete with an immediate Undo action and a **Recently Deleted** recovery view. Hide deleted entries from active counts; restoring brings back their original sequence numbers and linked images.

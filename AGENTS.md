@@ -10,6 +10,7 @@ Shared Codex/Claude guide. The product and architecture source of truth is [docs
 - No server backups (nightly or off-VPS). This is a helper tool. A pre-deploy SQLite snapshot is kept only for rollback. Spec acceptance item 13 is waived.
 - The repository is public, `ruoshui-git/kufang-capture`. CI deploys with a forced-command SSH key.
 - The UI ships in English and Simplified Chinese (no Traditional). The app name stays "Capture"; exports stay English (2026-11-26).
+- Synced collections can be shared through revocable, read-only links that need no account (`/share#<token>`, default expiry 30 days). There are no comments or downloads on the shared page (2026-11-26).
 
 ## Invariants
 
